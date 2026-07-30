@@ -1,0 +1,30 @@
+# Created using winget-pkgs manifest generator
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: apexfromparis.OpenReverse
+PackageVersion: 2.0.0
+PackageLocale: en-US
+Publisher: apexfromparis
+PublisherUrl: https://github.com/apexfromparis
+PublisherSupportUrl: https://github.com/apexfromparis/powerfull-ida/issues
+Author: apexfromparis
+PackageName: OPENREVERSE Studio
+PackageUrl: https://github.com/apexfromparis/powerfull-ida
+License: MIT
+LicenseUrl: https://github.com/apexfromparis/powerfull-ida/blob/main/LICENSE
+Copyright: Copyright (c) 2026 apexfromparis
+ShortDescription: AI-powered x64 reverse engineering CLI REPL with Hex-Rays style decompilation and interactive analysis.
+Description: |-
+  OPENREVERSE Studio is a high-performance, AI-powered interactive reverse engineering engine and terminal CLI for x64 Windows binaries.
+  It provides Hex-Rays style C/C++ pseudocode decompilation, control flow graphs, cross-reference scanning, and deep AI Copilot integration in a sleek monochrome terminal interface.
+Tags:
+  - reverse-engineering
+  - decompiler
+  - disassembler
+  - ai
+  - cli
+  - malware-analysis
+  - ida-pro
+  - x64
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
