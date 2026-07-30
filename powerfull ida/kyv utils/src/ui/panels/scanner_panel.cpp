@@ -24,6 +24,8 @@ void ScannerPanel::Render(Application& app)
         "MSVC x64 Prologue (48 89 5C)",
         "MSVC x86 Prologue (55 8B EC)",
         "GCC x64 Prologue (55 48 89 E5)",
+        "Intel CET Endbr64 (F3 0F 1E FA)",
+        "MSVC Hotpatch Prologue (8B FF 55 8B)",
         "PE Magic DOS Header (4D 5A 90)",
         "UPX Packer Magic (55 50 58 30)",
         "Shellcode GetRIP (E8 ?? ?? 5E)"
@@ -33,13 +35,15 @@ void ScannerPanel::Render(Application& app)
         "48 89 5C 24 ?? 48 89 6C 24",
         "55 8B EC 83 EC",
         "55 48 89 E5",
+        "F3 0F 1E FA",
+        "8B FF 55 8B EC",
         "4D 5A 90 00",
         "55 50 58 30",
         "E8 ?? ?? ?? ?? 5E"
     };
-    if (ImGui::Combo("##preset", &selectedPreset_, presets, 7))
+    if (ImGui::Combo("##preset", &selectedPreset_, presets, 9))
     {
-        if (selectedPreset_ > 0 && selectedPreset_ < 7)
+        if (selectedPreset_ > 0 && selectedPreset_ < 9)
         {
             strncpy(patternInput_, presetPatterns[selectedPreset_], sizeof(patternInput_) - 1);
             patternInput_[sizeof(patternInput_) - 1] = 0;

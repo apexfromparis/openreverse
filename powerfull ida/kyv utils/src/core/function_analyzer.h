@@ -45,7 +45,19 @@ public:
     // Discover functions inside a memory buffer (.text section)
     std::vector<FunctionInfo> DiscoverFunctions(const uint8_t* data, size_t dataSize,
                                                 uint64_t baseAddress, bool is64Bit,
-                                                size_t maxFunctions = 500);
+                                                size_t maxFunctions = 10000);
+
+    // Discover additional functions by analyzing CALL targets from XREFs and CFG branches
+    std::vector<FunctionInfo> DiscoverFunctionsFromXRefs(const std::vector<FunctionInfo>& existing,
+                                                         const std::vector<uint64_t>& callTargets,
+                                                         uint64_t codeStart, uint64_t codeEnd, bool is64Bit,
+                                                         size_t maxFunctions = 10000);
+
+    // Discover exported and entry point functions from PE headers
+    std::vector<FunctionInfo> DiscoverFunctionsFromPE(const std::vector<FunctionInfo>& existing,
+                                                      uint64_t entryPoint,
+                                                      const std::vector<uint64_t>& exportAddresses,
+                                                      bool is64Bit);
 
     // Build full CFG & basic blocks for a single function
     FunctionInfo AnalyzeFunction(const uint8_t* data, size_t dataSize,

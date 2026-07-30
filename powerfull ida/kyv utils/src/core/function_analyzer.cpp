@@ -44,57 +44,181 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* dat
     std::vector<FunctionInfo> functions;
     if (!data || dataSize < 16) return functions;
 
-    // Scan for standard x64 / x86 prologues
-    // 0x48 0x89 0x5c 0x24 (mov [rsp+18h], rbx)
-    // 0x48 0x83 0xec (sub rsp, imm)
-    // 0x40 0x53 0x48 0x83 0xec (push rbx; sub rsp, imm)
-    // 0x55 0x48 0x8b 0xec (push rbp; mov rbp, rsp) - x64
-    // 0x55 0x8b 0xec (push ebp; mov ebp, esp) - x86
-    for (size_t i = 0; i + 4 < dataSize && functions.size() < maxFunctions; ++i)
+    std::set<uint64_t> discoveredAddrs;
+
+    auto addCandidate = [&](uint64_t addr) {
+        if (discoveredAddrs.count(addr)) return;
+        if (addr < baseAddress || addr >= baseAddress + dataSize) return;
+        discoveredAddrs.insert(addr);
+    };
+
+    // 1. Scan for x64 / x86 prologues, CET markers, and boundary transitions
+    for (size_t i = 0; i + 4 < dataSize && discoveredAddrs.size() < maxFunctions; ++i)
     {
         bool isPrologue = false;
         if (is64Bit)
         {
             if (data[i] == 0x48 && data[i + 1] == 0x89 && data[i + 2] == 0x5C && data[i + 3] == 0x24)
-                isPrologue = true;
-            else if (data[i] == 0x48 && data[i + 1] == 0x83 && data[i + 2] == 0xEC && data[i + 3] >= 0x18)
-                isPrologue = true;
+                isPrologue = true; // mov [rsp+18h], rbx
+            else if (data[i] == 0x48 && data[i + 1] == 0x83 && data[i + 2] == 0xEC && data[i + 3] >= 0x08)
+                isPrologue = true; // sub rsp, imm8
+            else if (data[i] == 0x48 && data[i + 1] == 0x81 && data[i + 2] == 0xEC)
+                isPrologue = true; // sub rsp, imm32 (large stack frame)
             else if (i + 5 < dataSize && data[i] == 0x40 && data[i + 1] == 0x53 && data[i + 2] == 0x48 && data[i + 3] == 0x83 && data[i + 4] == 0xEC)
-                isPrologue = true;
+                isPrologue = true; // push rbx; sub rsp, imm8
             else if (data[i] == 0x55 && data[i + 1] == 0x48 && data[i + 2] == 0x8B && data[i + 3] == 0xEC)
-                isPrologue = true;
+                isPrologue = true; // push rbp; mov rbp, rsp
             else if (data[i] == 0x4C && data[i + 1] == 0x89 && (data[i + 2] == 0x44 || data[i + 2] == 0x4C) && data[i + 3] == 0x24)
-                isPrologue = true;
+                isPrologue = true; // mov [rsp+imm], r8/r9
+            else if (data[i] == 0xF3 && data[i + 1] == 0x0F && data[i + 2] == 0x1E && data[i + 3] == 0xFA)
+                isPrologue = true; // endbr64 (Intel CET)
+            else if (data[i] == 0x40 && (data[i + 1] >= 0x50 && data[i + 1] <= 0x57) && data[i + 2] == 0x48 && data[i + 3] == 0x83 && data[i + 4] == 0xEC)
+                isPrologue = true; // push r64; sub rsp, imm8
+            else if ((data[i] == 0x53 || data[i] == 0x56 || data[i] == 0x57) && data[i + 1] == 0x48 && data[i + 2] == 0x83 && data[i + 3] == 0xEC)
+                isPrologue = true; // push rbx/rsi/rdi; sub rsp, imm8
+            else if (data[i] == 0x48 && data[i + 1] == 0x8B && data[i + 2] == 0xC4)
+                isPrologue = true; // mov rax, rsp
         }
         else
         {
             if (data[i] == 0x55 && data[i + 1] == 0x8B && data[i + 2] == 0xEC)
-                isPrologue = true;
+                isPrologue = true; // push ebp; mov ebp, esp
             else if (data[i] == 0x83 && data[i + 1] == 0xEC && data[i + 2] >= 0x08)
+                isPrologue = true; // sub esp, imm8
+            else if (data[i] == 0x81 && data[i + 1] == 0xEC)
+                isPrologue = true; // sub esp, imm32
+            else if (data[i] == 0xF3 && data[i + 1] == 0x0F && data[i + 2] == 0x1E && data[i + 3] == 0xFB)
+                isPrologue = true; // endbr32
+            else if (i + 5 < dataSize && data[i] == 0x8B && data[i + 1] == 0xFF && data[i + 2] == 0x55 && data[i + 3] == 0x8B && data[i + 4] == 0xEC)
+                isPrologue = true; // mov edi, edi; push ebp; mov ebp, esp (MSVC hotpatch)
+        }
+
+        // Boundary padding transition check: after CC (int 3) or C3 (ret) + CC/90 padding
+        if (!isPrologue && i >= 2 && data[i] != 0xCC && data[i] != 0x90 && data[i] != 0x00)
+        {
+            if ((data[i - 1] == 0xCC && data[i - 2] == 0xCC) ||
+                (data[i - 1] == 0xC3 && (i == 1 || data[i - 2] == 0xCC || data[i - 2] == 0x90)))
+            {
                 isPrologue = true;
+            }
         }
 
         if (isPrologue)
         {
-            // Make sure not already inside previous function range
-            uint64_t addr = baseAddress + i;
-            if (!functions.empty() && addr < functions.back().endAddress)
-                continue;
-
-            FunctionInfo fi;
-            fi.startAddress = addr;
-            // Estimate default end address (will be refined by CFG analysis)
-            fi.endAddress = addr + 128;
-            fi.size = 128;
-            fi.name = "sub_" + helpers::FormatAddress(addr, is64Bit).substr(2);
-            fi.callingConvention = is64Bit ? "x64 fastcall (RCX, RDX, R8, R9)" : "x86 stdcall / cdecl";
-            functions.push_back(fi);
-
-            i += 16; // Jump ahead to avoid overlapping signatures
+            addCandidate(baseAddress + i);
+            i += 8;
         }
     }
 
+    // 2. Structural discovery: scan for relative CALL instructions (0xE8) in executable code
+    for (size_t i = 0; i + 5 <= dataSize && discoveredAddrs.size() < maxFunctions; ++i)
+    {
+        if (data[i] == 0xE8) // CALL rel32
+        {
+            int32_t rel32 = 0;
+            std::memcpy(&rel32, data + i + 1, sizeof(int32_t));
+            uint64_t target = baseAddress + i + 5 + rel32;
+            if (target >= baseAddress && target < baseAddress + dataSize)
+            {
+                // Ensure target does not land in padding bytes
+                size_t offset = (size_t)(target - baseAddress);
+                if (data[offset] != 0xCC && data[offset] != 0x90 && data[offset] != 0x00)
+                {
+                    addCandidate(target);
+                }
+            }
+        }
+    }
+
+    // 3. Construct sorted function list with smart boundary estimation
+    std::vector<uint64_t> sortedAddrs(discoveredAddrs.begin(), discoveredAddrs.end());
+    for (size_t idx = 0; idx < sortedAddrs.size() && functions.size() < maxFunctions; ++idx)
+    {
+        uint64_t addr = sortedAddrs[idx];
+        uint64_t nextAddr = (idx + 1 < sortedAddrs.size()) ? sortedAddrs[idx + 1] : (baseAddress + dataSize);
+
+        FunctionInfo fi;
+        fi.startAddress = addr;
+        fi.size = (size_t)std::min((uint64_t)2048, (uint64_t)(nextAddr - addr));
+        fi.endAddress = addr + fi.size;
+        fi.name = "sub_" + helpers::FormatAddress(addr, is64Bit).substr(2);
+        fi.callingConvention = is64Bit ? "x64 fastcall (RCX, RDX, R8, R9)" : "x86 stdcall / cdecl";
+        functions.push_back(fi);
+    }
+
     return functions;
+}
+
+std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromXRefs(const std::vector<FunctionInfo>& existing,
+                                                                     const std::vector<uint64_t>& callTargets,
+                                                                     uint64_t codeStart, uint64_t codeEnd, bool is64Bit,
+                                                                     size_t maxFunctions)
+{
+    std::set<uint64_t> known;
+    std::vector<FunctionInfo> out = existing;
+    for (const auto& f : existing)
+        known.insert(f.startAddress);
+
+    for (uint64_t target : callTargets)
+    {
+        if (out.size() >= maxFunctions) break;
+        if (target < codeStart || target >= codeEnd) continue;
+        if (known.count(target)) continue;
+
+        known.insert(target);
+        FunctionInfo fi;
+        fi.startAddress = target;
+        fi.endAddress = target + 128;
+        fi.size = 128;
+        fi.name = "sub_" + helpers::FormatAddress(target, is64Bit).substr(2);
+        fi.callingConvention = is64Bit ? "x64 fastcall" : "stdcall / cdecl";
+        out.push_back(fi);
+    }
+
+    std::sort(out.begin(), out.end(), [](const FunctionInfo& a, const FunctionInfo& b) {
+        return a.startAddress < b.startAddress;
+    });
+    return out;
+}
+
+std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::vector<FunctionInfo>& existing,
+                                                                  uint64_t entryPoint,
+                                                                  const std::vector<uint64_t>& exportAddresses,
+                                                                  bool is64Bit)
+{
+    std::map<uint64_t, FunctionInfo> funcMap;
+    for (const auto& f : existing)
+        funcMap[f.startAddress] = f;
+
+    if (entryPoint != 0)
+    {
+        auto& fi = funcMap[entryPoint];
+        fi.startAddress = entryPoint;
+        if (fi.size == 0) { fi.size = 128; fi.endAddress = entryPoint + 128; }
+        fi.name = "entry_point";
+        fi.callingConvention = is64Bit ? "x64 fastcall" : "stdcall / cdecl";
+    }
+
+    for (size_t i = 0; i < exportAddresses.size(); ++i)
+    {
+        uint64_t addr = exportAddresses[i];
+        if (addr == 0) continue;
+        auto& fi = funcMap[addr];
+        fi.startAddress = addr;
+        if (fi.size == 0) { fi.size = 128; fi.endAddress = addr + 128; }
+        fi.isExported = true;
+        if (fi.name.empty() || fi.name.rfind("sub_", 0) == 0)
+            fi.name = "Export_" + helpers::FormatAddress(addr, is64Bit).substr(2);
+    }
+
+    std::vector<FunctionInfo> out;
+    for (const auto& pair : funcMap)
+        out.push_back(pair.second);
+
+    std::sort(out.begin(), out.end(), [](const FunctionInfo& a, const FunctionInfo& b) {
+        return a.startAddress < b.startAddress;
+    });
+    return out;
 }
 
 FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataSize,

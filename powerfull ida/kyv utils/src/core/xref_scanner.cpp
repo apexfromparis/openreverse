@@ -116,7 +116,7 @@ std::vector<XRefEntry> XRefScanner::SearchXRefsByText(const std::string& query) 
             helpers::ToLower(helpers::FormatAddress(entry.fromAddress)).find(lowerQ) != std::string::npos)
         {
             results.push_back(entry);
-            if (results.size() >= 500) break;
+            if (results.size() >= 5000) break;
         }
     }
     return results;

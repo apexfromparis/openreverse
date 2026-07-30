@@ -53,16 +53,40 @@ void IDAProPanel::AnalyzeCurrentModule(Application& app)
         return;
     }
 
-    // 1. Discover functions
-    functions_ = app.functionAnalyzer.DiscoverFunctions(bytes.data(), bytes.size(), mod->baseAddress, app.is64Bit, 1000);
+    // 1. Discover functions via prologues and CALL rel32 scanning
+    functions_ = app.functionAnalyzer.DiscoverFunctions(bytes.data(), bytes.size(), mod->baseAddress, app.is64Bit, 10000);
 
-    // 2. Scan XREFs across module
+    // 2. Discover additional functions from PE EntryPoint & Exports
+    PEInfo pe = app.peParser.Parse(app.processHandle, mod->baseAddress);
+    if (pe.valid)
+    {
+        uint64_t entryAddr = (pe.entryPoint != 0) ? (mod->baseAddress + pe.entryPoint) : 0;
+        std::vector<uint64_t> exportAddrs;
+        for (const auto& exp : pe.exports)
+            if (exp.rva != 0)
+                exportAddrs.push_back(mod->baseAddress + exp.rva);
+
+        functions_ = app.functionAnalyzer.DiscoverFunctionsFromPE(functions_, entryAddr, exportAddrs, app.is64Bit);
+    }
+
+    // 3. Scan XREFs across module
     app.xrefScanner.ScanBuffer(bytes.data(), bytes.size(), mod->baseAddress, mod->name, app.disassembler, app.is64Bit);
 
-    // 3. Scan ASCII & Unicode strings across module for smart XREF lookup
+    // 4. Discover additional functions from XREF CALL targets (reaches functions without signatures/symbols)
+    std::vector<uint64_t> callTargets;
+    for (const auto& entry : app.xrefScanner.GetAllEntries())
+    {
+        if (entry.type == XRefType::Call && entry.toAddress >= mod->baseAddress && entry.toAddress < (mod->baseAddress + scanSize))
+        {
+            callTargets.push_back(entry.toAddress);
+        }
+    }
+    functions_ = app.functionAnalyzer.DiscoverFunctionsFromXRefs(functions_, callTargets, mod->baseAddress, mod->baseAddress + scanSize, app.is64Bit, 10000);
+
+    // 5. Scan ASCII & Unicode strings across module for smart XREF lookup
     app.stringResults = app.stringScanner.Scan(app.processHandle, mod->baseAddress, mod->baseAddress + scanSize, 4, true, true, 5000);
 
-    // 4. Populate XREF counts for discovered functions
+    // 6. Populate XREF counts for discovered functions
     for (auto& fn : functions_)
     {
         auto xrefs = app.xrefScanner.FindXRefsTo(fn.startAddress);
