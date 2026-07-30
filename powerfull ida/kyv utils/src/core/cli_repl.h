@@ -39,6 +39,7 @@ private:
     void HandleReport(Application& app, const std::vector<std::string>& args);
 
     // AI Copilot & Model Configuration Commands
+    void HandleAIConnect(Application& app, const std::vector<std::string>& args);
     void HandleAIConfig(Application& app, const std::vector<std::string>& args);
     void HandleAIKey(Application& app, const std::vector<std::string>& args);
     void HandleAIModel(Application& app, const std::vector<std::string>& args);
