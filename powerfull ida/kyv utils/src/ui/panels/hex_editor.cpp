@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 namespace kyv { namespace panels {
 
@@ -233,19 +234,35 @@ void HexEditorPanel::Render(Application& app)
     // Update address input display
     snprintf(addressInput_, sizeof(addressInput_), "0x%llX", (unsigned long long)currentAddress_);
 
-    // Compact entropy strip gives the hex view an immediate visual read without
-    // changing the underlying memory engine or pretending to classify bytes.
-    ImGui::TextColored(ImVec4(0.52f, 0.58f, 0.66f, 1.0f), "ENTROPY");
+    // Real-Time Shannon Entropy Analysis of current buffer
+    float currentEntropy = CalculateEntropy(buffer_.data(), buffer_.size());
+    ImVec4 entropyColor = (currentEntropy > 7.0f) ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f) :
+                          (currentEntropy > 6.0f) ? ImVec4(1.0f, 0.7f, 0.25f, 1.0f) :
+                          (currentEntropy > 4.0f) ? ImVec4(0.3f, 0.9f, 0.5f, 1.0f) :
+                                                    ImVec4(0.4f, 0.7f, 0.9f, 1.0f);
+
+    ImGui::TextColored(ImVec4(0.72f, 0.78f, 0.86f, 1.0f), "SHANNON ENTROPY: %.2f / 8.00", currentEntropy);
     ImGui::SameLine();
+    if (currentEntropy > 7.0f)
+        ImGui::TextColored(entropyColor, "[PACKED / ENCRYPTED / COMPRESSED]");
+    else if (currentEntropy > 6.0f)
+        ImGui::TextColored(entropyColor, "[DENSE CODE / MIXED DATA]");
+    else if (currentEntropy > 4.0f)
+        ImGui::TextColored(entropyColor, "[STANDARD CODE / STRUCTURED DATA]");
+    else
+        ImGui::TextColored(entropyColor, "[LOW ENTROPY / ZERO-PADDING / PURE ASCII]");
+
     ImVec2 barMin = ImGui::GetCursorScreenPos();
-    ImVec2 barMax = ImVec2(barMin.x + ImGui::GetContentRegionAvail().x - 12.0f, barMin.y + 8.0f);
+    ImVec2 barMax = ImVec2(barMin.x + ImGui::GetContentRegionAvail().x - 12.0f, barMin.y + 10.0f);
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     float width = barMax.x - barMin.x;
-    drawList->AddRectFilled(barMin, ImVec2(barMin.x + width * 0.34f, barMax.y), ImGui::GetColorU32(ImVec4(0.00f, 0.65f, 0.74f, 0.95f)), 3.0f);
-    drawList->AddRectFilled(ImVec2(barMin.x + width * 0.34f, barMin.y), ImVec2(barMin.x + width * 0.72f, barMax.y), ImGui::GetColorU32(ImVec4(0.00f, 0.90f, 0.46f, 0.95f)), 3.0f);
-    drawList->AddRectFilled(ImVec2(barMin.x + width * 0.72f, barMin.y), barMax, ImGui::GetColorU32(ImVec4(1.00f, 0.67f, 0.25f, 0.95f)), 3.0f);
-    ImGui::Dummy(ImVec2(width, 9.0f));
-    ImGui::TextColored(ImVec4(0.31f, 0.38f, 0.48f, 1.0f), "low 0-4.0     structured 4.0-6.8     packed / encrypted 6.8-8.0");
+    drawList->AddRectFilled(barMin, barMax, ImGui::GetColorU32(ImVec4(0.12f, 0.14f, 0.18f, 1.0f)), 3.0f);
+
+    // Render live filled gauge proportional to Shannon Entropy (0 to 8)
+    float fillPct = std::min(1.0f, std::max(0.0f, currentEntropy / 8.0f));
+    ImVec2 fillMax = ImVec2(barMin.x + width * fillPct, barMax.y);
+    drawList->AddRectFilled(barMin, fillMax, ImGui::GetColorU32(entropyColor), 3.0f);
+    ImGui::Dummy(ImVec2(width, 11.0f));
 
     // ── Hex Grid ──
     if (ImFont* mono = UIManager::GetMonoFont())
@@ -378,6 +395,24 @@ void HexEditorPanel::RenderHexRow(Application& app, int row, uint64_t rowAddr)
     ImGui::TextColored(ImVec4(0.55f, 0.75f, 0.55f, 1.0f), "%s", asciiLine);
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.35f, 1.0f), "|");
+}
+
+float HexEditorPanel::CalculateEntropy(const uint8_t* data, size_t len) const
+{
+    if (!data || len == 0) return 0.0f;
+    size_t counts[256] = {0};
+    for (size_t i = 0; i < len; ++i)
+        counts[data[i]]++;
+    float entropy = 0.0f;
+    for (int i = 0; i < 256; ++i)
+    {
+        if (counts[i] > 0)
+        {
+            float p = (float)counts[i] / (float)len;
+            entropy -= p * log2f(p);
+        }
+    }
+    return entropy;
 }
 
 }} // namespace kyv::panels

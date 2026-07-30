@@ -46,6 +46,14 @@ struct PEInfo {
 
     // Imports
     std::vector<PEImportEntry> imports;
+
+    // Exports
+    struct PEExportEntry {
+        std::string name;
+        uint32_t    rva;
+        uint16_t    ordinal;
+    };
+    std::vector<PEExportEntry> exports;
 };
 
 class PEParser {
@@ -58,6 +66,8 @@ private:
                         uint16_t numSections, bool is64bit, PEInfo& info);
     void ParseImports(HANDLE processHandle, uint64_t baseAddress,
                        uint32_t importDirRVA, bool is64bit, PEInfo& info);
+    void ParseExports(HANDLE processHandle, uint64_t baseAddress,
+                       uint32_t exportDirRVA, bool is64bit, PEInfo& info);
 };
 
 } // namespace kyv

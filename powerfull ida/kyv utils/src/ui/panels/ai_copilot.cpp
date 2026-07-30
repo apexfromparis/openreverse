@@ -1,6 +1,7 @@
 #include "ai_copilot.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
+#include "utils/helpers.h"
 
 #include <imgui.h>
 
@@ -55,6 +56,34 @@ void AICopilotPanel::Render(Application& app)
             ImGui::EndCombo();
         }
         ImGui::TextWrapped("%s", skills[(size_t)selectedSkill_].description.c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.92f, 1.0f), "Quick Context Injectors (1-Click attach to prompt):");
+    if (ImGui::SmallButton("+ Disassembly"))
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "Analyze this x86/x64 disassembly at 0x%llX:\n", (unsigned long long)app.currentAddress);
+        size_t len = strlen(prompt_);
+        if (len + strlen(buf) < sizeof(prompt_) - 1)
+            strcat(prompt_, buf);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Hex Dump (64B)"))
+    {
+        auto bytes = app.memoryReader.ReadBytes(app.processHandle, app.currentAddress, 64);
+        std::string hex = "Memory Hex Dump at 0x" + helpers::FormatAddress(app.currentAddress, app.is64Bit) + ":\n" + helpers::BytesToHex(bytes.data(), bytes.size(), " ") + "\n";
+        size_t len = strlen(prompt_);
+        if (len + hex.size() < sizeof(prompt_) - 1)
+            strcat(prompt_, hex.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ PE Audit Req"))
+    {
+        std::string sum = "Audit PE module headers, exports, and sections for security risks or packing indicators:\n";
+        size_t len = strlen(prompt_);
+        if (len + sum.size() < sizeof(prompt_) - 1)
+            strcat(prompt_, sum.c_str());
     }
 
     ImGui::Separator();

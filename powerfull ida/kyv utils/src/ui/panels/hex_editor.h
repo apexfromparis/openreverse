@@ -41,6 +41,10 @@ private:
     bool HasSelection() const;
     void CopySelectionHex();
     void CopySelectionCArray();
+
+    // Entropy Heatmap Analysis
+    bool     showEntropy_ = true;
+    float    CalculateEntropy(const uint8_t* data, size_t len) const;
 };
 
 }} // namespace kyv::panels

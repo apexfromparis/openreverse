@@ -16,9 +16,39 @@ void ScannerPanel::Render(Application& app)
     ImGui::Begin("Pattern Scanner", nullptr, ImGuiWindowFlags_None);
 
     UIManager::BeginToolbar();
-    ImGui::Text("AOB pattern");
+    ImGui::Text("Preset");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(-120.0f);
+    ImGui::SetNextItemWidth(185.0f);
+    const char* presets[] = {
+        "Custom AOB...",
+        "MSVC x64 Prologue (48 89 5C)",
+        "MSVC x86 Prologue (55 8B EC)",
+        "GCC x64 Prologue (55 48 89 E5)",
+        "PE Magic DOS Header (4D 5A 90)",
+        "UPX Packer Magic (55 50 58 30)",
+        "Shellcode GetRIP (E8 ?? ?? 5E)"
+    };
+    const char* presetPatterns[] = {
+        "",
+        "48 89 5C 24 ?? 48 89 6C 24",
+        "55 8B EC 83 EC",
+        "55 48 89 E5",
+        "4D 5A 90 00",
+        "55 50 58 30",
+        "E8 ?? ?? ?? ?? 5E"
+    };
+    if (ImGui::Combo("##preset", &selectedPreset_, presets, 7))
+    {
+        if (selectedPreset_ > 0 && selectedPreset_ < 7)
+        {
+            strncpy(patternInput_, presetPatterns[selectedPreset_], sizeof(patternInput_) - 1);
+            patternInput_[sizeof(patternInput_) - 1] = 0;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::Text("AOB");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-135.0f);
     ImGui::InputTextWithHint("##pattern", "48 8B ?? ?? 74 0A  (?? = wildcard)", patternInput_, sizeof(patternInput_));
     bool canScan = app.isAttached && strlen(patternInput_) > 0;
     if (!canScan) ImGui::BeginDisabled();

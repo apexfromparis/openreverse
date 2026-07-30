@@ -50,6 +50,7 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress)
     info.is64bit = (optMagic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
 
     uint32_t importDirRVA = 0;
+    uint32_t exportDirRVA = 0;
 
     if (info.is64bit)
     {
@@ -62,6 +63,8 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress)
 
         if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_IMPORT)
             importDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
+            exportDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
     }
     else
     {
@@ -74,6 +77,8 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress)
 
         if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_IMPORT)
             importDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
+            exportDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
     }
 
     // Parse sections
@@ -83,6 +88,10 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress)
     // Parse imports
     if (importDirRVA != 0)
         ParseImports(processHandle, baseAddress, importDirRVA, info.is64bit, info);
+
+    // Parse exports
+    if (exportDirRVA != 0)
+        ParseExports(processHandle, baseAddress, exportDirRVA, info.is64bit, info);
 
     info.valid = true;
     return info;
@@ -180,6 +189,64 @@ void PEParser::ParseImports(HANDLE processHandle, uint64_t baseAddress,
         }
 
         info.imports.push_back(entry);
+    }
+}
+
+void PEParser::ParseExports(HANDLE processHandle, uint64_t baseAddress,
+                             uint32_t exportDirRVA, bool is64bit, PEInfo& info)
+{
+    (void)is64bit;
+    uint64_t exportAddr = baseAddress + exportDirRVA;
+    SIZE_T bytesRead;
+
+    IMAGE_EXPORT_DIRECTORY exportDir;
+    if (!ReadProcessMemory(processHandle, (LPCVOID)exportAddr, &exportDir, sizeof(exportDir), &bytesRead))
+        return;
+
+    uint32_t numFuncs = exportDir.NumberOfFunctions;
+    uint32_t numNames = exportDir.NumberOfNames;
+    if (numFuncs == 0 || numFuncs > 10000)
+        return;
+
+    std::vector<uint32_t> funcRVAs(numFuncs);
+    if (!ReadProcessMemory(processHandle, (LPCVOID)(baseAddress + exportDir.AddressOfFunctions),
+                           funcRVAs.data(), numFuncs * sizeof(uint32_t), &bytesRead))
+        return;
+
+    std::vector<uint32_t> nameRVAs(numNames);
+    std::vector<uint16_t> ordinals(numNames);
+    if (numNames > 0)
+    {
+        ReadProcessMemory(processHandle, (LPCVOID)(baseAddress + exportDir.AddressOfNames),
+                           nameRVAs.data(), numNames * sizeof(uint32_t), &bytesRead);
+        ReadProcessMemory(processHandle, (LPCVOID)(baseAddress + exportDir.AddressOfNameOrdinals),
+                           ordinals.data(), numNames * sizeof(uint16_t), &bytesRead);
+    }
+
+    for (uint32_t i = 0; i < numFuncs && i < 2000; ++i)
+    {
+        if (funcRVAs[i] == 0) continue;
+
+        PEInfo::PEExportEntry ee;
+        ee.rva = funcRVAs[i];
+        ee.ordinal = (uint16_t)(exportDir.Base + i);
+        ee.name = "Ordinal#" + std::to_string(ee.ordinal);
+
+        for (uint32_t j = 0; j < numNames; ++j)
+        {
+            if (ordinals[j] == i)
+            {
+                char nameBuf[256];
+                if (ReadProcessMemory(processHandle, (LPCVOID)(baseAddress + nameRVAs[j]),
+                                       nameBuf, sizeof(nameBuf) - 1, &bytesRead))
+                {
+                    nameBuf[255] = 0;
+                    ee.name = nameBuf;
+                }
+                break;
+            }
+        }
+        info.exports.push_back(ee);
     }
 }
 

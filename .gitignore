@@ -1,6 +1,7 @@
 # Native build output
 **/build/
 **/build-fresh/
+**/build_ninja/
 *.exe
 *.dll
 *.obj

@@ -57,7 +57,7 @@ target_link_libraries(imgui_lib PUBLIC d3d11 d3dcompiler dxgi)
 # ─── KYV Executable ───────────────────────────────────────────────────────────
 file(GLOB_RECURSE KYV_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
-add_executable(KYV WIN32 ${KYV_SOURCES})
+add_executable(KYV ${KYV_SOURCES})
 
 target_include_directories(KYV PRIVATE
     src
@@ -80,4 +80,11 @@ target_compile_definitions(KYV PRIVATE
     _UNICODE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
+)
+
+add_custom_command(TARGET KYV POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:KYV>"
+            "$<TARGET_FILE_DIR:KYV>/openreverse.exe"
+    COMMENT "Creating openreverse.exe CLI binary in bin/"
 )

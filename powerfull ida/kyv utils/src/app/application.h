@@ -11,6 +11,8 @@
 #include "core/module_manager.h"
 #include "core/string_scanner.h"
 #include "core/pe_parser.h"
+#include "core/function_analyzer.h"
+#include "core/xref_scanner.h"
 
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
@@ -25,6 +27,7 @@
 #include "ui/panels/console_panel.h"
 #include "ui/panels/offsets_panel.h"
 #include "ui/panels/ai_copilot.h"
+#include "ui/panels/ida_pro_panel.h"
 
 #include <string>
 #include <memory>
@@ -46,7 +49,10 @@ public:
     ModuleManager    moduleManager;
     StringScanner    stringScanner;
     PEParser         peParser;
+    FunctionAnalyzer functionAnalyzer;
+    XRefScanner      xrefScanner;
     ai::AIService    aiService;
+    panels::IDAProPanel idaProPanel;
 
     // ── State ──
     bool             isAttached = false;

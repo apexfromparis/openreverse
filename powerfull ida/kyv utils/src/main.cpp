@@ -5,6 +5,10 @@
 
 #include "app/application.h"
 #include "ui/ui_manager.h"
+#include "core/automator.h"
+#include "core/cli_repl.h"
+#include <fstream>
+#include <iostream>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -38,7 +42,104 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     (void)hPrevInstance;
-    (void)lpCmdLine;
+
+    // Check for Headless Automated Decompilation Mode
+    // Usage: KYV.exe --decompile-exe <exe_path> [output_file.md]
+    //        KYV.exe --decompile-pid <PID> [output_file.md]
+    for (int i = 1; i < __argc; ++i)
+    {
+        std::string arg = __argv[i];
+        if (arg == "--decompile-exe" && i + 1 < __argc)
+        {
+            std::string exePath = __argv[i + 1];
+            std::string outFile = (i + 2 < __argc) ? __argv[i + 2] : "kyv_decompile_report.md";
+
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            freopen("CONOUT$", "w", stdout);
+            printf("[+] KYV Headless Engine: Launching and decompiling '%s'...\n", exePath.c_str());
+
+            STARTUPINFOA si = { sizeof(si) };
+            PROCESS_INFORMATION pi = {};
+            std::string cmd = "\"" + exePath + "\" --daemon";
+            if (CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            {
+                Sleep(1200);
+                kyv::Application app;
+                kyv::Automator automator;
+                auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
+                if (res.success)
+                {
+                    std::string report = kyv::Automator::FormatReport(res);
+                    std::ofstream ofs(outFile);
+                    ofs << report;
+                    ofs.close();
+                    printf("[+] SUCCESS! Report saved to: %s (%zu functions decompiled, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
+                }
+                else
+                {
+                    printf("[-] FAILED to analyze target process PID %lu\n", pi.dwProcessId);
+                }
+                TerminateProcess(pi.hProcess, 0);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return res.success ? 0 : 1;
+            }
+            else
+            {
+                printf("[-] FAILED to launch executable: %s\n", exePath.c_str());
+                return 1;
+            }
+        }
+        else if (arg == "--decompile-pid" && i + 1 < __argc)
+        {
+            DWORD targetPid = (DWORD)atoi(__argv[i + 1]);
+            std::string outFile = (i + 2 < __argc) ? __argv[i + 2] : "kyv_decompile_report.md";
+
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            freopen("CONOUT$", "w", stdout);
+            printf("[+] KYV Headless Engine: Starting IDA Pro automated decompilation on PID %lu...\n", targetPid);
+
+            kyv::Application app;
+            kyv::Automator automator;
+            auto res = automator.AnalyzeProcess(app, targetPid);
+            if (res.success)
+            {
+                std::string report = kyv::Automator::FormatReport(res);
+                std::ofstream ofs(outFile);
+                ofs << report;
+                ofs.close();
+                printf("[+] SUCCESS! Report saved to: %s (%zu functions decompiled, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
+                return 0;
+            }
+            else
+            {
+                printf("[-] FAILED to attach or read process PID %lu\n", targetPid);
+                return 1;
+            }
+        }
+        else if (arg == "--cli" || arg == "-c" || arg == "--repl")
+        {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut == INVALID_HANDLE_VALUE || hOut == nullptr)
+            {
+                AllocConsole();
+            }
+            freopen("CONIN$", "r", stdin);
+            freopen("CONOUT$", "w", stdout);
+            freopen("CONOUT$", "w", stderr);
+
+            kyv::Application app;
+            kyv::CLIRepl repl;
+            bool switchToGui = repl.Run(app);
+            if (!switchToGui)
+            {
+                return 0;
+            }
+            // If user typed 'gui' in REPL, we break and continue to launch ImGui DX11 window!
+            break;
+        }
+    }
 
     // Register window class
     WNDCLASSEXW wc = {};
@@ -233,4 +334,39 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// ─── Standard Console Entry Point (for native CONSOLE subsystem) ─────────────
+int main(int argc, char** argv)
+{
+    bool runGui = false;
+    bool runDecompile = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+        if (arg == "--gui" || arg == "-g")
+        {
+            runGui = true;
+            break;
+        }
+        else if (arg == "--decompile-exe" || arg == "--decompile-pid")
+        {
+            runDecompile = true;
+            break;
+        }
+    }
+
+    // Run OpenReverse Interactive CLI REPL by default or when requested
+    if (!runGui && !runDecompile)
+    {
+        kyv::Application app;
+        kyv::CLIRepl repl;
+        bool switchToGui = repl.Run(app);
+        if (!switchToGui)
+        {
+            return 0;
+        }
+    }
+
+    return WinMain(GetModuleHandleW(nullptr), nullptr, GetCommandLineA(), SW_SHOWDEFAULT);
 }

@@ -18,6 +18,8 @@ struct StringResult {
     std::string     value;
     StringEncoding  encoding;
     size_t          length;
+    std::string     category = "General";
+    int             riskLevel = 0; // 0=Normal, 1=Low, 2=Medium, 3=High Risk (C2/Exec)
 };
 
 class StringScanner {
@@ -39,6 +41,7 @@ private:
     void ScanUnicodeStrings(const uint8_t* data, size_t dataSize, uint64_t baseAddr,
                              size_t minLength, std::vector<StringResult>& results, size_t maxResults);
     bool IsPrintableAscii(uint8_t c);
+    void ClassifyString(StringResult& sr);
 };
 
 } // namespace kyv

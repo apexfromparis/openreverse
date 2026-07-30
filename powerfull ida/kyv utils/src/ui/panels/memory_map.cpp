@@ -25,6 +25,10 @@ void MemoryMapPanel::Render(Application& app)
     }
     UIManager::ToolbarSeparator();
     ImGui::Checkbox("Show Free", &showFree_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Exec Only (X/RWX)", &showExecOnly_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Injected / Private Exec", &showPrivateExec_);
     UIManager::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##mmfilter", "Filter regions...", filterText_, sizeof(filterText_));
@@ -56,6 +60,10 @@ void MemoryMapPanel::Render(Application& app)
         for (const auto& region : regions)
         {
             if (!showFree_ && region.state == MEM_FREE)
+                continue;
+            if (showExecOnly_ && !(region.protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+                continue;
+            if (showPrivateExec_ && (region.type != MEM_PRIVATE || !(region.protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))))
                 continue;
 
             ImGui::TableNextRow();

@@ -10,5 +10,6 @@ private:
     char patternInput_[512] = {};
     std::vector<ScanResult> results_;
     bool scanning_ = false;
+    int selectedPreset_ = 0;
 };
 }} // namespace

@@ -89,6 +89,13 @@ void Application::Render()
 {
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_G) && ImGui::GetIO().KeyCtrl)
         showGotoModal_ = true;
+    if (isAttached && ImGui::IsKeyPressed(ImGuiKey_I) && ImGui::GetIO().KeyCtrl)
+        ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+    if (isAttached && ImGui::IsKeyPressed(ImGuiKey_X) && !ImGui::GetIO().WantCaptureKeyboard)
+    {
+        idaProPanel.OpenXrefsForAddress(currentAddress);
+        ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_F5))
         processListPanel.ForceRefresh();
 
@@ -100,6 +107,7 @@ void Application::Render()
     memoryMapPanel.Render(*this);
     hexEditorPanel.Render(*this);
     disasmViewPanel.Render(*this);
+    idaProPanel.Render(*this);
     modulesPanel.Render(*this);
     scannerPanel.Render(*this);
     stringsPanel.Render(*this);
@@ -159,9 +167,10 @@ void Application::RenderDockspace()
         ImGui::DockBuilderDockWindow("Modules", left);
         ImGui::DockBuilderDockWindow("Memory Map", left);
 
-        // Center: hex + disasm (main work area)
+        // Center: hex + disasm + IDA Studio (main work area)
         ImGui::DockBuilderDockWindow("Hex Editor", main);
         ImGui::DockBuilderDockWindow("Disassembly", main);
+        ImGui::DockBuilderDockWindow("IDA Studio / Functions & CFG", main);
 
         // Right: tools stacked as tabs (exact window names)
         ImGui::DockBuilderDockWindow("PE Header", right);
@@ -210,6 +219,8 @@ void Application::RenderMenuBar()
 
     if (ImGui::BeginMenu("View"))
     {
+        if (ImGui::MenuItem("IDA Studio (Functions, CFG & XREFs)", "Ctrl+I"))
+            ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
         if (ImGui::MenuItem("Goto Address...", "Ctrl+G", false, isAttached))
             showGotoModal_ = true;
         if (ImGui::MenuItem("Reset layout"))

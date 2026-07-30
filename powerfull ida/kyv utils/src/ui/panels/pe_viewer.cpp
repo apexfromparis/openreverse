@@ -120,6 +120,39 @@ void PEViewerPanel::Render(Application& app)
         }
     }
 
+    // Exports
+    if (ImGui::CollapsingHeader("Exports"))
+    {
+        if (peInfo_.exports.empty())
+        {
+            ImGui::TextDisabled("No exported functions found in this module.");
+        }
+        else if (ImGui::BeginTable("ExportsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
+        {
+            ImGui::TableSetupColumn("Ordinal", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("RVA / Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+            ImGui::TableHeadersRow();
+
+            for (const auto& exp : peInfo_.exports)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("#%u", exp.ordinal);
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Selectable(exp.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    app.NavigateToAddress(loadedBase_ + exp.rva);
+                }
+
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("0x%08X (0x%llX)", exp.rva, (unsigned long long)(loadedBase_ + exp.rva));
+            }
+            ImGui::EndTable();
+        }
+    }
+
     ImGui::End();
 }
 

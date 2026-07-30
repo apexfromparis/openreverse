@@ -166,6 +166,16 @@ void DisasmViewPanel::Render(Application& app)
                     if (ImGui::MenuItem("Copy Module+Offset"))
                         ImGui::SetClipboardText(offStr.c_str());
                 }
+                if (ImGui::MenuItem("Find XREFs to this address (X)"))
+                {
+                    app.idaProPanel.OpenXrefsForAddress(inst.address);
+                    ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+                }
+                if (ImGui::MenuItem("Decompile function in IDA Studio"))
+                {
+                    app.idaProPanel.SelectFunction(app, inst.address);
+                    ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+                }
                 if (ImGui::MenuItem("Add to Game Offsets"))
                     app.AddOffsetFromAddress(inst.address);
                 ImGui::EndPopup();
@@ -175,7 +185,7 @@ void DisasmViewPanel::Render(Application& app)
                 ImGui::PopFont();
 
             // Bytes
-            ImGui::TableSetColumnIndex(1);
+            ImGui::TableSetColumnIndex(2);
             if (UIManager::GetMonoFont())
                 ImGui::PushFont(UIManager::GetMonoFont());
             std::string bytes = helpers::BytesToHex(inst.bytes, inst.size);
@@ -184,7 +194,7 @@ void DisasmViewPanel::Render(Application& app)
                 ImGui::PopFont();
 
             // Mnemonic (color coded)
-            ImGui::TableSetColumnIndex(2);
+            ImGui::TableSetColumnIndex(3);
             ImVec4 mnemonicColor;
             if (inst.isCall)
                 mnemonicColor = ImVec4(0.00f, 0.90f, 1.0f, 1.0f);  // cyan for calls
@@ -203,9 +213,24 @@ void DisasmViewPanel::Render(Application& app)
 
             ImGui::TextColored(mnemonicColor, "%s", inst.mnemonic.c_str());
 
-            // Operands
-            ImGui::TableSetColumnIndex(3);
+            // Operands with deep inline symbol/target comment resolution
+            ImGui::TableSetColumnIndex(4);
             ImGui::TextColored(ImVec4(0.7f, 0.75f, 0.8f, 1.0f), "%s", inst.operands.c_str());
+
+            if ((inst.isJump || inst.isCall) && inst.targetAddress != 0)
+            {
+                ImGui::SameLine();
+                auto* mod = app.moduleManager.FindModuleByAddress(inst.targetAddress);
+                if (mod)
+                {
+                    uint64_t offset = inst.targetAddress - mod->baseAddress;
+                    ImGui::TextColored(ImVec4(0.45f, 0.72f, 0.50f, 1.0f), "; -> %s+0x%llX", mod->name.c_str(), (unsigned long long)offset);
+                }
+                else
+                {
+                    ImGui::TextColored(ImVec4(0.45f, 0.72f, 0.50f, 1.0f), "; -> 0x%llX", (unsigned long long)inst.targetAddress);
+                }
+            }
 
             // Follow jump/call on double click
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))

@@ -6,6 +6,8 @@ public:
     void Render(Application& app);
 private:
     bool showFree_ = false;
+    bool showExecOnly_ = false;
+    bool showPrivateExec_ = false;
     bool needsRefresh_ = false;
     char filterText_[128] = {};
 };
