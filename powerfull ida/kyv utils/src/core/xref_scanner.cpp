@@ -42,7 +42,7 @@ void XRefScanner::ScanBuffer(const uint8_t* data, size_t dataSize, uint64_t base
         else if (ins.mnemonic == "lea" && ins.targetAddress != 0)
         {
             targetAddr = ins.targetAddress;
-            type = XRefType::Lea;
+            type = XRefType::Read; // LEA loads address of data/string
         }
         else if (ins.targetAddress != 0)
         {
@@ -98,6 +98,25 @@ std::vector<XRefEntry> XRefScanner::FindXRefsFrom(uint64_t sourceAddress) const
         {
             if (idx < entries_.size())
                 results.push_back(entries_[idx]);
+        }
+    }
+    return results;
+}
+
+std::vector<XRefEntry> XRefScanner::SearchXRefsByText(const std::string& query) const
+{
+    std::vector<XRefEntry> results;
+    if (query.empty()) return results;
+    std::string lowerQ = helpers::ToLower(query);
+
+    for (const auto& entry : entries_)
+    {
+        if (helpers::ToLower(entry.instructionText).find(lowerQ) != std::string::npos ||
+            helpers::ToLower(helpers::FormatAddress(entry.toAddress)).find(lowerQ) != std::string::npos ||
+            helpers::ToLower(helpers::FormatAddress(entry.fromAddress)).find(lowerQ) != std::string::npos)
+        {
+            results.push_back(entry);
+            if (results.size() >= 500) break;
         }
     }
     return results;

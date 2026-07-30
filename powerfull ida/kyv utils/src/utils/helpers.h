@@ -84,13 +84,44 @@ inline std::string BytesToCArray(const uint8_t* data, size_t size)
 // Parse hex string to uint64_t address
 inline uint64_t ParseAddress(const std::string& str)
 {
-    uint64_t addr = 0;
+    if (str.empty()) return 0;
     std::string s = str;
 
-    // Remove 0x prefix
-    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
-        s = s.substr(2);
+    // Trim whitespace
+    while (!s.empty() && isspace((unsigned char)s.front())) s.erase(s.begin());
+    while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
+    if (s.empty()) return 0;
 
+    bool hasHexPrefix = false;
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+    {
+        hasHexPrefix = true;
+        s = s.substr(2);
+    }
+
+    // Check if string contains only hex digits (0-9, a-f, A-F)
+    for (char c : s)
+    {
+        if (!isxdigit((unsigned char)c))
+            return 0; // Not a pure hex address, so return 0 to allow symbol/string lookup
+    }
+
+    // If it's a short token without 0x prefix and contains only ASCII letters (e.g. "KYV", "exit"), don't treat as hex address unless prefixed
+    if (!hasHexPrefix && s.size() <= 4)
+    {
+        bool allLetters = true;
+        for (char c : s)
+        {
+            if (!isalpha((unsigned char)c))
+            {
+                allLetters = false;
+                break;
+            }
+        }
+        if (allLetters) return 0;
+    }
+
+    uint64_t addr = 0;
     std::istringstream iss(s);
     iss >> std::hex >> addr;
     return addr;

@@ -399,6 +399,8 @@ void IDAProPanel::RenderXRefsTab(Application& app)
     {
         uint64_t addr = resolveAddr(xrefAddressInput_);
         currentXrefs_ = app.xrefScanner.FindXRefsTo(addr);
+        if (currentXrefs_.empty() && xrefAddressInput_[0] != '\0')
+            currentXrefs_ = app.xrefScanner.SearchXRefsByText(xrefAddressInput_);
         xrefModeTo_ = true;
     }
     ImGui::SameLine();
@@ -406,6 +408,8 @@ void IDAProPanel::RenderXRefsTab(Application& app)
     {
         uint64_t addr = resolveAddr(xrefAddressInput_);
         currentXrefs_ = app.xrefScanner.FindXRefsFrom(addr);
+        if (currentXrefs_.empty() && xrefAddressInput_[0] != '\0')
+            currentXrefs_ = app.xrefScanner.SearchXRefsByText(xrefAddressInput_);
         xrefModeTo_ = false;
     }
     ImGui::SameLine();

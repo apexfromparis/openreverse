@@ -47,6 +47,9 @@ public:
     // Query XREFs originating from a specific address (Where does this instruction jump/call/reference?)
     std::vector<XRefEntry> FindXRefsFrom(uint64_t sourceAddress) const;
 
+    // Substring/fuzzy search across instruction operands and addresses
+    std::vector<XRefEntry> SearchXRefsByText(const std::string& query) const;
+
     // Total indexed references
     size_t GetTotalXRefsCount() const { return entries_.size(); }
 
