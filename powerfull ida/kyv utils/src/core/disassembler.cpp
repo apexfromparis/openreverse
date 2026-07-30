@@ -106,7 +106,24 @@ uint64_t Disassembler::ExtractTarget(cs_insn* insn)
     for (int i = 0; i < x86->op_count; ++i)
     {
         if (x86->operands[i].type == X86_OP_IMM)
+        {
             return (uint64_t)x86->operands[i].imm;
+        }
+        else if (x86->operands[i].type == X86_OP_MEM)
+        {
+            // In x64 RIP-relative addressing: [rip + disp]
+            if (x86->operands[i].mem.base == X86_REG_RIP)
+            {
+                return (uint64_t)(insn->address + insn->size + x86->operands[i].mem.disp);
+            }
+            // Absolute memory address without base/index register
+            if (x86->operands[i].mem.base == X86_REG_INVALID &&
+                x86->operands[i].mem.index == X86_REG_INVALID &&
+                x86->operands[i].mem.disp != 0)
+            {
+                return (uint64_t)x86->operands[i].mem.disp;
+            }
+        }
     }
     return 0;
 }

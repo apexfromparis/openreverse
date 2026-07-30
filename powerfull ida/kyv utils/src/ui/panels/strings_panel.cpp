@@ -40,6 +40,7 @@ void StringsPanel::Render(Application& app)
             results_.insert(results_.end(), partial.begin(), partial.end());
             if (results_.size() >= 5000) break;
         }
+        app.stringResults = results_;
     }
     if (!canScan) ImGui::EndDisabled();
     ImGui::SameLine();

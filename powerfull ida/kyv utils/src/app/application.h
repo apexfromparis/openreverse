@@ -68,6 +68,7 @@ public:
 
     // ── Shared state for panels ──
     uint64_t         currentAddress = 0;
+    std::vector<StringResult> stringResults;
     std::vector<uint8_t> selectedBytes;
 
     void ShowGotoAddressDialog();

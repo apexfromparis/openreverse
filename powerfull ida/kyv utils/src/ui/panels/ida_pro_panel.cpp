@@ -5,6 +5,7 @@
 #include "ida_pro_panel.h"
 #include "app/application.h"
 #include "core/module_manager.h"
+#include "core/string_scanner.h"
 #include "ui/ui_manager.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
@@ -58,7 +59,10 @@ void IDAProPanel::AnalyzeCurrentModule(Application& app)
     // 2. Scan XREFs across module
     app.xrefScanner.ScanBuffer(bytes.data(), bytes.size(), mod->baseAddress, mod->name, app.disassembler, app.is64Bit);
 
-    // 3. Populate XREF counts for discovered functions
+    // 3. Scan ASCII & Unicode strings across module for smart XREF lookup
+    app.stringResults = app.stringScanner.Scan(app.processHandle, mod->baseAddress, mod->baseAddress + scanSize, 4, true, true, 5000);
+
+    // 4. Populate XREF counts for discovered functions
     for (auto& fn : functions_)
     {
         auto xrefs = app.xrefScanner.FindXRefsTo(fn.startAddress);
@@ -66,8 +70,8 @@ void IDAProPanel::AnalyzeCurrentModule(Application& app)
     }
 
     hasAnalyzed_ = true;
-    Logger::Get().Log(LogLevel::Info, "IDA Studio analysis complete: %zu functions, %zu total XREFs.",
-                      functions_.size(), app.xrefScanner.GetTotalXRefsCount());
+    Logger::Get().Log(LogLevel::Info, "IDA Studio analysis complete: %zu functions, %zu total XREFs, %zu strings.",
+                      functions_.size(), app.xrefScanner.GetTotalXRefsCount(), app.stringResults.size());
 
     if (!functions_.empty())
         SelectFunction(app, functions_[0].startAddress);
@@ -364,20 +368,43 @@ void IDAProPanel::RenderXRefsTab(Application& app)
     ImGui::InputText("##xrefaddr", xrefAddressInput_, sizeof(xrefAddressInput_));
     ImGui::SameLine();
 
+    auto resolveAddr = [&](const char* input) -> uint64_t {
+        if (!input || input[0] == '\0') return activeFunction_.startAddress;
+        uint64_t addr = helpers::ParseAddress(input);
+        if (addr != 0) return addr;
+
+        std::string lowerInput = helpers::ToLower(input);
+        // 1. Check String table
+        for (const auto& s : app.stringResults)
+        {
+            if (helpers::ToLower(s.value) == lowerInput ||
+                helpers::ToLower(s.value).find(lowerInput) != std::string::npos)
+            {
+                return s.address;
+            }
+        }
+        // 2. Check function names
+        for (const auto& fn : functions_)
+        {
+            if (helpers::ToLower(fn.name) == lowerInput ||
+                helpers::ToLower(fn.name).find(lowerInput) != std::string::npos)
+            {
+                return fn.startAddress;
+            }
+        }
+        return activeFunction_.startAddress;
+    };
+
     if (ImGui::Button("Find XREFs TO Address"))
     {
-        uint64_t addr = helpers::ParseAddress(xrefAddressInput_);
-        if (addr == 0 && activeFunction_.startAddress != 0)
-            addr = activeFunction_.startAddress;
+        uint64_t addr = resolveAddr(xrefAddressInput_);
         currentXrefs_ = app.xrefScanner.FindXRefsTo(addr);
         xrefModeTo_ = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Find XREFs FROM Address"))
     {
-        uint64_t addr = helpers::ParseAddress(xrefAddressInput_);
-        if (addr == 0 && activeFunction_.startAddress != 0)
-            addr = activeFunction_.startAddress;
+        uint64_t addr = resolveAddr(xrefAddressInput_);
         currentXrefs_ = app.xrefScanner.FindXRefsFrom(addr);
         xrefModeTo_ = false;
     }
