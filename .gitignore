@@ -1,5 +1,23 @@
+# Native build output
+**/build/
+**/build-fresh/
+*.exe
+*.dll
 *.obj
+*.lib
 *.pdb
 *.ilk
-*.res
-powerfull-ida.exe
+*.tlog/
+
+# Generated local state and diagnostics
+imgui.ini
+**/imgui.ini
+*.log
+msbuild_errors*.txt
+build_log*.txt
+
+# Local secrets and provider settings
+.env
+.env.*
+*.key
+*.pem
