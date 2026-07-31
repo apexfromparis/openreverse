@@ -561,6 +561,27 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
             if (mc == 2) model = "deepseek-coder-v2";
             else if (mc == 3) model = "llama3.1:8b";
             else model = (choice == 1) ? "qwen2.5-coder:7b" : "qwen2.5-coder-7b-instruct";
+
+            if (choice == 1)
+            {
+                std::cout << "\n\033[1;36m[*] Verification du moteur IA local Ollama et du modele '" << model << "'...\033[0m\n";
+                int probe = system("ollama list >nul 2>&1");
+                if (probe != 0)
+                {
+                    std::cout << "\033[1;33m[*] Ollama ne semble pas installe ou lance sur ce PC.\033[0m\n";
+                    std::cout << "[?] Voulez-vous installer Ollama automatiquement via WinGet maintenant ? [O/n] : ";
+                    std::string ans;
+                    std::getline(std::cin, ans);
+                    if (ans.empty() || ans == "O" || ans == "o" || ans == "Y" || ans == "y")
+                    {
+                        std::cout << "\033[1;32m[*] Installation automatique d'Ollama via WinGet... Veuillez patienter...\033[0m\n";
+                        system("winget install --id Ollama.Ollama -e --silent");
+                    }
+                }
+                std::cout << "\033[1;32m[*] Telechargement / Activation du modele gratuit '" << model << "'...\033[0m\n";
+                std::string pullCmd = "ollama pull " + model;
+                system(pullCmd.c_str());
+            }
         }
         else
         {
@@ -957,7 +978,8 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "\033[1;36m                OPENREVERSE / OPENCODE SLASH COMMANDS REFERENCE                  \033[0m\n";
     std::cout << "\033[1;36m=================================================================================\033[0m\n";
     std::cout << "  \033[1;32m/help\033[0m               Show all slash commands and reverse engineering tools\n";
-    std::cout << "  \033[1;32m/connect\033[0m [provider] Quick Connect / Interactive Setup (openai, anthropic, groq...)\n";
+    std::cout << "  \033[1;32m/setup\033[0m              One-click interactive AI installer & free model selector (/models, /install)\n";
+    std::cout << "  \033[1;32m/connect\033[0m [provider] Quick Connect / Interactive Setup (ollama, groq, openrouter...)\n";
     std::cout << "  \033[1;32m/open\033[0m <path.exe>    Launch binary & run full automatic static/dynamic analysis\n";
     std::cout << "  \033[1;32m/attach\033[0m <PID>       Attach to a running process PID\n";
     std::cout << "  \033[1;32m/sessions\033[0m           List all active reverse engineering & chat sessions\n";
@@ -1073,7 +1095,8 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     {
         HandleSessionSwitch(app, args);
     }
-    else if (cmd == "/connect" || cmd == "/login" || cmd == "/ai" || cmd == "/ai-connect")
+    else if (cmd == "/connect" || cmd == "/login" || cmd == "/ai" || cmd == "/ai-connect" ||
+             cmd == "/setup" || cmd == "/models" || cmd == "/model" || cmd == "/install" || cmd == "/init")
     {
         HandleAIConnect(app, args);
     }

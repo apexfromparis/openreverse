@@ -141,6 +141,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             arg == "-v" || arg == "--version" || arg == "version" ||
             arg == "models" || arg == "model" ||
             arg == "providers" || arg == "auth" ||
+            arg == "setup" || arg == "init" || arg == "install-ai" ||
             arg == "session" || arg == "sessions" ||
             arg == "stats" || arg == "run" ||
             arg == "--cli" || arg == "-c" || arg == "--repl" || arg == "tui" ||
@@ -194,7 +195,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                           << "mistral/codestral-latest\n";
                 return 0;
             }
-            else if (arg == "providers" || arg == "auth")
+            else if (arg == "providers" || arg == "auth" || arg == "setup" || arg == "init" || arg == "install-ai")
             {
                 kyv::Application app;
                 kyv::CLIRepl repl;
