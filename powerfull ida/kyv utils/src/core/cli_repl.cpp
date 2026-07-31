@@ -802,6 +802,87 @@ void CLIRepl::HandleAIRename(Application& app, const std::vector<std::string>& a
     }
 }
 
+void CLIRepl::HandleAITriage(Application& app, const std::vector<std::string>& args)
+{
+    (void)args;
+    std::cout << "\033[1;36m[*] Executing AI Zero-Click Threat Report & automatic MITRE ATT&CK mapping...\033[0m\n";
+    std::string exeName = app.attachedProcessName.empty() ? "Target Binary" : app.attachedProcessName;
+    size_t fnCount = app.idaProPanel.GetFunctions().size();
+    
+    std::string prompt = "Generate an executive Zero-Click Threat Triage Report and MITRE ATT&CK mapping for reverse engineering target: `" + exeName + "` (" + std::to_string(fnCount) + " functions discovered).\n"
+                         "Include:\n"
+                         "1. **Threat Score**: (0-100 severity assessment)\n"
+                         "2. **Executive Summary**: What this binaire appears to do based on strings/imports.\n"
+                         "3. **MITRE ATT&CK Matrix**: Map observed behaviors to TTPs (e.g. T1055 Process Injection, T1056 Input Capture, T1027 Obfuscation).\n"
+                         "4. **Key Functions of Interest**: Top 3 suspicious addresses/entry points to audit first.";
+
+    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+
+    int timeoutMs = 30000;
+    while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
+    {
+        Sleep(100);
+        timeoutMs -= 100;
+    }
+
+    const auto& conv = app.aiService.Conversation();
+    if (!conv.empty() && conv.back().role == "assistant")
+    {
+        std::cout << "\n\033[1;33m=== OPENREVERSE ZERO-CLICK THREAT TRIAGE & MITRE ATT&CK REPORT ===\033[0m\n";
+        std::cout << conv.back().content << "\n";
+        std::cout << "\033[1;33m==================================================================\033[0m\n\n";
+    }
+    else
+    {
+        std::cout << "[-] AI Copilot request failed or timed out: " << app.aiService.Status() << "\n";
+    }
+}
+
+void CLIRepl::HandleAIAutoRename(Application& app, const std::vector<std::string>& args)
+{
+    (void)args;
+    std::cout << "\033[1;36m[*] Launching Global AI Name & Type Inference across all discovered functions...\033[0m\n";
+    auto funcs = app.idaProPanel.GetFunctions();
+    if (funcs.empty()) {
+        std::cout << "[-] No functions discovered in current target. Open a binary (/open) or attach (/attach) first.\n";
+        return;
+    }
+
+    std::string sampleList = "";
+    int count = 0;
+    for (const auto& fn : funcs) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "0x%llX", (unsigned long long)fn.startAddress);
+        sampleList += std::string(buf) + " (" + fn.name + "), ";
+        if (++count >= 15) break;
+    }
+
+    std::string prompt = "Perform Global AI Semantic Type & Name Inference on this target binary.\n"
+                         "Functions sample: " + sampleList + "\n\n"
+                         "Generate a markdown table proposing clean, descriptive C/C++ function signatures and inferred struct types for the core routines of this executable.";
+
+    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+
+    int timeoutMs = 35000;
+    while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
+    {
+        Sleep(100);
+        timeoutMs -= 100;
+    }
+
+    const auto& conv = app.aiService.Conversation();
+    if (!conv.empty() && conv.back().role == "assistant")
+    {
+        std::cout << "\n\033[1;32m=== GLOBAL AI INFERRED SYMBOL & TYPE PROPAGATION TABLE ===\033[0m\n";
+        std::cout << conv.back().content << "\n";
+        std::cout << "\033[1;32m==========================================================\033[0m\n\n";
+    }
+    else
+    {
+        std::cout << "[-] AI Copilot request failed or timed out: " << app.aiService.Status() << "\n";
+    }
+}
+
 void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& args)
 {
     if (args.size() < 2)
@@ -845,6 +926,8 @@ struct SlashCommandItemInfo {
 };
 
 static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
+    {"/triage",    "AI Zero-Click Threat Report & automatic MITRE ATT&CK mapping"},
+    {"/auto-rename","Global AI name & type inference across all functions"},
     {"/open",      "Open binary file & launch automated Hex-Rays analysis"},
     {"/attach",    "Attach to running Windows process PID for dynamic analysis"},
     {"/functions", "List discovered functions & entry points in target binary"},
@@ -1162,7 +1245,8 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/strings\033[0m [filt]     List extracted ASCII/UTF-16 strings (URLs, C2, Registry)\n";
     std::cout << "  \033[1;32m/explain\033[0m <addr>     Ask AI to decompile & explain a function in detail\n";
     std::cout << "  \033[1;32m/rename\033[0m <addr>      Ask AI to suggest descriptive variable & function names\n";
-    std::cout << "  \033[1;32m/vuln\033[0m <addr>        Audit decompiled function for security vulnerabilities\n";
+    std::cout << "  \033[1;32m/triage\033[0m             AI Zero-Click Threat Report & automatic MITRE ATT&CK mapping\n";
+    std::cout << "  \033[1;32m/auto-rename\033[0m        Global AI name & type inference across all functions\n";
     std::cout << "  \033[1;32m/model\033[0m <name>       Change AI model (gpt-4o, claude-3-5-sonnet, llama3...)\n";
     std::cout << "  \033[1;32m/gui\033[0m                Handover session immediately to Graphical User Interface\n";
     std::cout << "  \033[1;32m/clear\033[0m              Clear terminal screen\n";
@@ -1352,6 +1436,14 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     else if (cmd == "/vuln" || cmd == "/ai-vuln")
     {
         HandleAIVuln(app, args);
+    }
+    else if (cmd == "/triage" || cmd == "/ai-triage")
+    {
+        HandleAITriage(app, args);
+    }
+    else if (cmd == "/auto-rename" || cmd == "/ai-auto-rename")
+    {
+        HandleAIAutoRename(app, args);
     }
     else if (cmd == "/model" || cmd == "/ai-model")
     {

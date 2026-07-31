@@ -54,6 +54,8 @@ private:
     void HandleAIExplain(Application& app, const std::vector<std::string>& args);
     void HandleAIRename(Application& app, const std::vector<std::string>& args);
     void HandleAIVuln(Application& app, const std::vector<std::string>& args);
+    void HandleAITriage(Application& app, const std::vector<std::string>& args);
+    void HandleAIAutoRename(Application& app, const std::vector<std::string>& args);
 
     // Multi-Session & OpenCode Slash Command Management
     struct Session {
