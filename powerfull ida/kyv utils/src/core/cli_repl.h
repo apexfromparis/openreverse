@@ -72,6 +72,7 @@ private:
     void HandleSessionSwitch(Application& app, const std::vector<std::string>& args);
     void HandleSlashCommand(Application& app, const std::string& cmd, const std::vector<std::string>& args);
     void PrintSlashHelp();
+    void ShowSlashMenuPopup(Application& app);
 
     uint64_t ParseAddressOrName(Application& app, const std::string& token);
     std::string DecompileHelper(Application& app, uint64_t addr);

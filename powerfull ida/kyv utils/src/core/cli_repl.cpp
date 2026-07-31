@@ -874,7 +874,7 @@ bool CLIRepl::Run(Application& app)
         if (cmd[0] == '/' || cmd == "/")
         {
             if (cmd == "/" && args.size() == 1) {
-                PrintSlashHelp();
+                ShowSlashMenuPopup(app);
             } else {
                 std::string slashCmd = helpers::ToLower(cmd);
                 HandleSlashCommand(app, slashCmd, args);
@@ -1009,6 +1009,27 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/exit\033[0m               Exit OPENREVERSE Studio\n";
     std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
     std::cout << "Tip: Any regular message without '/' is sent directly to your AI Copilot as chat!\n\n";
+}
+
+void CLIRepl::ShowSlashMenuPopup(Application& app)
+{
+    std::cout << "\n\033[1;30;47m┌────────────────────────────────────────────────────────────────────────┐\033[0m\n";
+    std::cout << "\033[1;30;47m│ OpenCode Slash Command Palette (Type a command or press Enter)        │\033[0m\n";
+    std::cout << "\033[1;30;47m├────────────────────────────────────────────────────────────────────────┤\033[0m\n";
+    std::cout << "│ \033[1;33m/connect\033[0m   Connect AI provider (Ollama, OpenRouter, Groq Cloud...)     │\033[0m\n";
+    std::cout << "│ \033[1;33m/open\033[0m      Open binary file & launch automated Hex-Rays analysis       │\033[0m\n";
+    std::cout << "│ \033[1;33m/attach\033[0m    Attach to running Windows process PID                       │\033[0m\n";
+    std::cout << "│ \033[1;33m/sessions\033[0m  Manage OpenCode interactive reverse engineering sessions    │\033[0m\n";
+    std::cout << "│ \033[1;33m/functions\033[0m List all discovered functions & entry points                │\033[0m\n";
+    std::cout << "│ \033[1;33m/decompile\033[0m Decompile x64 assembly into readable Hex-Rays C pseudocode  │\033[0m\n";
+    std::cout << "│ \033[1;33m/explain\033[0m   Ask AI Copilot to explain current function logic            │\033[0m\n";
+    std::cout << "│ \033[1;33m/vuln\033[0m      Audit decompiled C code for vulnerabilities / license check │\033[0m\n";
+    std::cout << "│ \033[1;33m/models\033[0m    Switch AI Copilot LLM model (Qwen, DeepSeek, Claude...)     │\033[0m\n";
+    std::cout << "│ \033[1;33m/gui\033[0m       Handover session to Graphical Studio interface              │\033[0m\n";
+    std::cout << "│ \033[1;33m/help\033[0m      Show detailed syntax and parameters for all commands        │\033[0m\n";
+    std::cout << "│ \033[1;33m/exit\033[0m      Quit OpenReverse Studio                                     │\033[0m\n";
+    std::cout << "\033[1;30;47m└────────────────────────────────────────────────────────────────────────┘\033[0m\n";
+    std::cout << "\033[1;32m/\033[0m ";
 }
 
 void CLIRepl::HandleSessions(Application& app, const std::vector<std::string>& args)
