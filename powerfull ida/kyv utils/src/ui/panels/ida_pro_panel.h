@@ -44,6 +44,25 @@ private:
     void RenderCFGTab(Application& app);
     void RenderDecompilerTab(Application& app);
     void RenderXRefsTab(Application& app);
+    void RenderScriptEditorTab(Application& app);
+
+    // Dev Creator Studio (Script Editor & AI Assistant Tab)
+    char                      scriptBuffer_[8192] =
+        "// =========================================================================\n"
+        "// ODNC OpenReverse Dev Creator Studio - Plugin Script Editor\n"
+        "// Access loaded functions, memory & AI SDK in your custom heuristics\n"
+        "// =========================================================================\n"
+        "void OnAnalyzeModule(kyv::Application& app, std::vector<kyv::FunctionInfo>& funcs) {\n"
+        "    // Example: Auto-tag suspicious cryptographic loops\n"
+        "    for (auto& fn : funcs) {\n"
+        "        if (fn.cyclomaticComplexity > 10 && fn.name.find(\"sub_\") == 0) {\n"
+        "            fn.name = \"crypto_candidate_\" + helpers::FormatAddress(fn.startAddress, true);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    char                      devAiPrompt_[1024] = "";
+    std::string               devAiResponse_ = "Welcome to ODNC Dev Creator Studio. Type a prompt below to ask AI for script heuristics!";
+    std::string               scriptLog_ = "[*] ODNC Dev Creator Studio initialized. Ready to execute scripts against target binary.\n";
 };
 
 }} // namespace kyv::panels

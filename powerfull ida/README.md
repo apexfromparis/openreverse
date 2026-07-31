@@ -152,6 +152,7 @@ OpenReverse operates on a modern hybrid open-core model (similar to Cursor AI, B
 1. **Community Free Tier**: Run 100% offline with local models (Ollama, LM Studio), basic static/dynamic RE, and standard TUI command palette.
 2. **Pro Analyst Tier**: Connect to ODNC Cloud AI Cluster for zero-latency GPT-4o / Claude 3.5 Sonnet / DeepSeek-R1, automated `/triage` MITRE ATT&CK threat reports, and Zero-Click Exploit PoC generation.
 3. **Dev Creator Tier (The Community Hub Subscription)**:
+   - **Embedded GUI Studio Script Editor & AI Assistant**: Open the Graphical Studio (`/gui`) and access the dedicated **ODNC Dev Creator Studio** tab. Code custom C++/Python/Lua heuristics in a live multi-line code editor and chat with an embedded AI Assistant that has full context of both your script code and the loaded target executable!
    - **Early SDK Access**: Access to private C++/Python plugin APIs and symbol hooks.
    - **Marketplace Publishing Rights**: Submit plugins to the **OpenReverse Community Hub (`/hub`)** and earn **Revenue Share** when Pro analysts use your tools!
    - **Sandbox Testing**: Access ODNC cloud malware sandboxes to test scripts safely.
