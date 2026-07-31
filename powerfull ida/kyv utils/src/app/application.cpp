@@ -343,7 +343,7 @@ std::string Application::GetAIContextSummary() const
 {
     if (!isAttached && attachedProcessName.empty())
     {
-        return "[Active Target Context: No executable or process is currently opened/attached in OpenReverse Studio.]\n\n";
+        return "[Active Target Context: NO PROCESS OR BINARY IS CURRENTLY ATTACHED in OpenReverse Studio. CRITICAL INSTRUCTION: If the user asks to analyze 'this program' or 'this binary', do NOT give a generic refusal! Instead, tell the user in French: 'Vous n'avez pas encore rattaché de processus ou chargé de binaire dans OpenReverse Studio ! Allez dans le menu Process -> Attach (ou l'onglet Process List) pour sélectionner une cible, puis reposez votre question.']\n\n";
     }
 
     std::stringstream ss;
