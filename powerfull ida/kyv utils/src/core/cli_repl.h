@@ -57,6 +57,22 @@ private:
     void HandleAITriage(Application& app, const std::vector<std::string>& args);
     void HandleAIAutoRename(Application& app, const std::vector<std::string>& args);
 
+    // Subscription Tiers & Developer Community Hub Commands
+    enum class SubscriptionTier {
+        COMMUNITY_FREE = 0,
+        PRO_ANALYST = 1,
+        DEV_CREATOR_PRO = 2
+    };
+    SubscriptionTier userTier_ = SubscriptionTier::DEV_CREATOR_PRO; // Default dev creator tier unlocked for testing
+    std::string licenseKey_ = "OPENREVERSE-DEV-COMMUNITY-2026";
+    std::vector<std::string> installedPlugins_;
+
+    void HandleAccount(Application& app, const std::vector<std::string>& args);
+    void HandleLogin(Application& app, const std::vector<std::string>& args);
+    void HandleHub(Application& app, const std::vector<std::string>& args);
+    void HandleInstallPlugin(Application& app, const std::vector<std::string>& args);
+    void HandlePlugins(Application& app, const std::vector<std::string>& args);
+
     // Multi-Session & OpenCode Slash Command Management
     struct Session {
         int id = 1;

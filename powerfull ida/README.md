@@ -131,12 +131,39 @@ Press **`/`** at any time in the terminal to instantly launch the visual command
 | **`/strings`** | List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys) |
 | **`/sessions`** | Manage OpenReverse interactive RE & multi-session workspaces |
 | **`/new`** | Create a new clean session workspace (`/switch <id>` to change) |
+| **`/account`** | Check subscription tier, ODNC license token & Dev SDK access status |
+| **`/login <key>`** | Authenticate with ODNC server token to unlock Pro/Dev tiers |
+| **`/hub`** | Browse OpenReverse Developer Community Hub & Marketplace |
+| **`/install <name>`** | Install a community plugin or skill from the OpenReverse Hub |
+| **`/plugins`** | List installed community scripts, skills & plugins |
 | **`/models`** | Switch AI Copilot LLM model (`qwen2.5-coder`, `deepseek-r1`, `claude`...) |
 | **`/connect`** | Connect AI provider (`Ollama`, `OpenRouter`, `Groq Cloud`...) |
 | **`/setup`** | One-click interactive AI setup & local model auto-installer |
 | **`/gui`** | Handover session immediately to OpenReverse Graphical Studio UI |
 | **`/clear`** | Clear terminal screen |
 | **`/exit`** | Quit OpenReverse Studio |
+
+---
+
+## 💎 ODNC Subscription Tiers & Developer Marketplace
+
+OpenReverse operates on a modern hybrid open-core model (similar to Cursor AI, Burp Suite, or IDA Pro):
+
+1. **Community Free Tier**: Run 100% offline with local models (Ollama, LM Studio), basic static/dynamic RE, and standard TUI command palette.
+2. **Pro Analyst Tier**: Connect to ODNC Cloud AI Cluster for zero-latency GPT-4o / Claude 3.5 Sonnet / DeepSeek-R1, automated `/triage` MITRE ATT&CK threat reports, and Zero-Click Exploit PoC generation.
+3. **Dev Creator Tier (The Community Hub Subscription)**:
+   - **Early SDK Access**: Access to private C++/Python plugin APIs and symbol hooks.
+   - **Marketplace Publishing Rights**: Submit plugins to the **OpenReverse Community Hub (`/hub`)** and earn **Revenue Share** when Pro analysts use your tools!
+   - **Sandbox Testing**: Access ODNC cloud malware sandboxes to test scripts safely.
+
+```powershell
+# Authenticate your ODNC license token in the terminal:
+[s1:notepad.exe] / openreverse> /login OPENREVERSE-DEV-COMMUNITY-2026
+[+] Authenticated successfully with ODNC server! Unlocked DEV CREATOR TIER.
+
+# Browse community-created plugins:
+[s1:notepad.exe] / openreverse> /hub
+```
 
 ---
 

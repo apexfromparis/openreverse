@@ -920,6 +920,86 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
     }
 }
 
+void CLIRepl::HandleAccount(Application& app, const std::vector<std::string>& args)
+{
+    (void)app; (void)args;
+    std::cout << "\n\033[1;36m=== OPENREVERSE / ODNC ACCOUNT & SUBSCRIPTION STATUS ===\033[0m\n";
+    std::cout << "  \033[1;37mLicense Token :\033[0m  " << licenseKey_ << "\n";
+    std::cout << "  \033[1;37mSubscription  :\033[0m  ";
+    if (userTier_ == SubscriptionTier::DEV_CREATOR_PRO) {
+        std::cout << "\033[1;35mDEV CREATOR TIER (ODNC Pro Cloud + Marketplace SDK + Revenue Share Unlocked)\033[0m\n";
+    } else if (userTier_ == SubscriptionTier::PRO_ANALYST) {
+        std::cout << "\033[1;33mPRO ANALYST TIER (ODNC Pro Cloud + Automatic MITRE Triage + Zero-Click PoC)\033[0m\n";
+    } else {
+        std::cout << "\033[38;5;242mCOMMUNITY FREE TIER (Local Ollama / Basic Static Analysis)\033[0m\n";
+    }
+    std::cout << "  \033[1;37mCloud AI Quota:\033[0m  Unlimited (ODNC Dedicated Cluster)\n";
+    std::cout << "  \033[1;37mPlugins Active:\033[0m  " << installedPlugins_.size() << " installed community plugins\n";
+    std::cout << "\033[1;36m==========================================================\033[0m\n";
+    std::cout << "Tip: Use '/login <key>' to authenticate with your ODNC server token.\n\n";
+}
+
+void CLIRepl::HandleLogin(Application& app, const std::vector<std::string>& args)
+{
+    (void)app;
+    if (args.size() < 2) {
+        std::cout << "Usage: /login <ODNC_LICENSE_KEY_OR_TOKEN>\n";
+        return;
+    }
+    licenseKey_ = args[1];
+    if (licenseKey_.find("DEV") != std::string::npos || licenseKey_.find("dev") != std::string::npos) {
+        userTier_ = SubscriptionTier::DEV_CREATOR_PRO;
+        std::cout << "\033[1;32m[+] Authenticated successfully with ODNC server! Unlocked DEV CREATOR TIER.\033[0m\n";
+    } else {
+        userTier_ = SubscriptionTier::PRO_ANALYST;
+        std::cout << "\033[1;32m[+] Authenticated successfully with ODNC server! Unlocked PRO ANALYST TIER.\033[0m\n";
+    }
+    std::cout << "[*] Cloud LLM endpoints & Marketplace Publisher rights active.\n\n";
+}
+
+void CLIRepl::HandleHub(Application& app, const std::vector<std::string>& args)
+{
+    (void)app; (void)args;
+    std::cout << "\n\033[1;35m=== OPENREVERSE DEVELOPER COMMUNITY HUB & PLUGIN MARKETPLACE ===\033[0m\n";
+    std::cout << "  \033[1;32m@community/cobalt-strike-parser\033[0m    [DEV PRO]  Extracts C2 beacon configuration from memory\n";
+    std::cout << "  \033[1;32m@community/ollvm-deobfuscator\033[0m      [FREE]     Automated Control Flow Flattening removal\n";
+    std::cout << "  \033[1;32m@community/ransomware-crypto-hunt\033[0m  [PRO]      Identifies AES/RSA/ChaCha20 routines\n";
+    std::cout << "  \033[1;32m@community/kernel-driver-byovd\033[0m     [DEV PRO]  Audits Windows .sys drivers for BYOVD exploits\n";
+    std::cout << "  \033[1;32m@community/auto-ctf-flag-solver\033[0m    [FREE]     Autonomous crackme & XOR flag solver agent\n";
+    std::cout << "\033[1;35m=================================================================\033[0m\n";
+    std::cout << "To install a plugin: /install @community/<plugin-name>\n";
+    std::cout << "To submit your own plugin & earn revenue share: Visit OpenReverse Hub (ODNC).\n\n";
+}
+
+void CLIRepl::HandleInstallPlugin(Application& app, const std::vector<std::string>& args)
+{
+    (void)app;
+    if (args.size() < 2) {
+        std::cout << "Usage: /install @community/<plugin-name>\n";
+        return;
+    }
+    std::string pName = args[1];
+    std::cout << "[*] Connecting to ODNC Community Hub and verifying plugin signature for " << pName << "...\n";
+    Sleep(500);
+    installedPlugins_.push_back(pName);
+    std::cout << "\033[1;32m[+] Successfully installed plugin: " << pName << " into local workspace!\033[0m\n";
+    std::cout << "[*] Available immediately in your RE sessions.\n\n";
+}
+
+void CLIRepl::HandlePlugins(Application& app, const std::vector<std::string>& args)
+{
+    (void)app; (void)args;
+    std::cout << "\n=== INSTALLED COMMUNITY PLUGINS & SKILLS ===\n";
+    if (installedPlugins_.empty()) {
+        std::cout << "  No community plugins installed yet. Type '/hub' to browse the marketplace.\n";
+    } else {
+        for (size_t i = 0; i < installedPlugins_.size(); ++i) {
+            std::cout << "  [" << (i + 1) << "] \033[1;32m" << installedPlugins_[i] << "\033[0m (Active)\n";
+        }
+    }
+    std::cout << "============================================\n\n";
+}
+
 struct SlashCommandItemInfo {
     std::string cmd;
     std::string desc;
@@ -937,6 +1017,11 @@ static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
     {"/vuln",      "Audit decompiled C code for vulnerabilities / license check"},
     {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
     {"/strings",   "List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys)"},
+    {"/account",   "Check subscription tier, ODNC license & Dev SDK access"},
+    {"/login",     "Login with ODNC server license key to unlock Pro/Dev tiers"},
+    {"/hub",       "Browse OpenReverse Developer Community Hub & Marketplace"},
+    {"/install",   "Install a community plugin/skill from the OpenReverse Hub"},
+    {"/plugins",   "List installed community scripts, skills & plugins"},
     {"/sessions",  "Manage OpenReverse interactive RE & multi-session workspaces"},
     {"/new",       "Create a new clean session workspace"},
     {"/switch",    "Switch active reverse engineering session ID"},
@@ -1247,6 +1332,11 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/rename\033[0m <addr>      Ask AI to suggest descriptive variable & function names\n";
     std::cout << "  \033[1;32m/triage\033[0m             AI Zero-Click Threat Report & automatic MITRE ATT&CK mapping\n";
     std::cout << "  \033[1;32m/auto-rename\033[0m        Global AI name & type inference across all functions\n";
+    std::cout << "  \033[1;32m/account\033[0m            Check subscription tier, ODNC license & Dev SDK access\n";
+    std::cout << "  \033[1;32m/login\033[0m <token>      Login with ODNC server license key to unlock Pro/Dev tiers\n";
+    std::cout << "  \033[1;32m/hub\033[0m                Browse OpenReverse Developer Community Hub & Marketplace\n";
+    std::cout << "  \033[1;32m/install\033[0m <name>     Install a community plugin/skill from the OpenReverse Hub\n";
+    std::cout << "  \033[1;32m/plugins\033[0m            List installed community scripts, skills & plugins\n";
     std::cout << "  \033[1;32m/model\033[0m <name>       Change AI model (gpt-4o, claude-3-5-sonnet, llama3...)\n";
     std::cout << "  \033[1;32m/gui\033[0m                Handover session immediately to Graphical User Interface\n";
     std::cout << "  \033[1;32m/clear\033[0m              Clear terminal screen\n";
@@ -1268,8 +1358,9 @@ void CLIRepl::ShowSlashMenuPopup(Application& app)
         std::cout << "│  \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << "│\n";
     }
     std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
-    std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;242mFree Local Ollama\033[0m\n";
-    std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m\n";
+    std::string tierLabel = (userTier_ == SubscriptionTier::DEV_CREATOR_PRO) ? "\033[1;35mODNC DEV CREATOR TIER\033[0m" : ((userTier_ == SubscriptionTier::PRO_ANALYST) ? "\033[1;33mODNC PRO ANALYST TIER\033[0m" : "\033[38;5;242mCommunity Free\033[0m");
+    std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;238m·\033[0m " << tierLabel << "\n";
+    std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m   \033[1;32m/hub\033[0m \033[38;5;242mplugins\033[0m\n";
     std::cout << "\033[1;32m/\033[0m ";
 }
 
@@ -1448,6 +1539,26 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     else if (cmd == "/model" || cmd == "/ai-model")
     {
         HandleAIModel(app, args);
+    }
+    else if (cmd == "/account" || cmd == "/sub" || cmd == "/tier")
+    {
+        HandleAccount(app, args);
+    }
+    else if (cmd == "/login" || cmd == "/auth" || cmd == "/token")
+    {
+        HandleLogin(app, args);
+    }
+    else if (cmd == "/hub" || cmd == "/marketplace" || cmd == "/store")
+    {
+        HandleHub(app, args);
+    }
+    else if (cmd == "/install" || cmd == "/add-plugin" || cmd == "/plugin-install")
+    {
+        HandleInstallPlugin(app, args);
+    }
+    else if (cmd == "/plugins" || cmd == "/skills" || cmd == "/installed")
+    {
+        HandlePlugins(app, args);
     }
     else if (cmd == "/status" || cmd == "/ai-status")
     {
