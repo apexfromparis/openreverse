@@ -104,6 +104,87 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 return 1;
             }
         }
+        else if (arg == "--test-ai-context" && i + 1 < cmdArgs.size())
+        {
+            std::string exePath = cmdArgs[i + 1];
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            freopen("CONOUT$", "w", stdout);
+            printf("[+] KYV Testing AI Context Injection on '%s'...\n", exePath.c_str());
+            STARTUPINFOA si = { sizeof(si) };
+            PROCESS_INFORMATION pi = {};
+            if (CreateProcessA(exePath.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi))
+            {
+                app.AttachToProcess(pi.dwProcessId);
+                kyv::Automator automator;
+                auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
+                app.idaProPanel.AnalyzeCurrentModule(app);
+                std::string summary = app.GetAIContextSummary();
+                printf("=== TESTED AI CONTEXT SUMMARY OUTPUT ===\n%s\n========================================\n", summary.c_str());
+                TerminateProcess(pi.hProcess, 0);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return 0;
+            }
+            else
+            {
+                printf("[-] FAILED to launch executable: %s\n", exePath.c_str());
+                return 1;
+            }
+        }
+        else if (arg == "--test-ai-chat" && i + 2 < cmdArgs.size())
+        {
+            std::string exePath = cmdArgs[i + 1];
+            std::string question = cmdArgs[i + 2];
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            freopen("CONOUT$", "w", stdout);
+            printf("[+] KYV Testing AI Chat with live context on '%s'...\n", exePath.c_str());
+            STARTUPINFOA si = { sizeof(si) };
+            PROCESS_INFORMATION pi = {};
+            std::string cmd = "\"" + exePath + "\"";
+            if (CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            {
+                Sleep(1200);
+                app.AttachToProcess(pi.dwProcessId);
+                kyv::Automator automator;
+                auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
+                app.idaProPanel.AnalyzeCurrentModule(app);
+                if (!app.idaProPanel.GetFunctions().empty())
+                {
+                    app.currentAddress = app.idaProPanel.GetFunctions()[0].startAddress;
+                    app.idaProPanel.SelectFunction(app, app.currentAddress);
+                }
+                std::string summary = app.GetAIContextSummary();
+                app.aiService.Send(question, nullptr, summary);
+                int timeoutMs = 35000;
+                while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
+                {
+                    Sleep(100);
+                    timeoutMs -= 100;
+                }
+                std::string aiReply = "No response";
+                const auto& conv = app.aiService.Conversation();
+                if (!conv.empty() && conv.back().role == "assistant")
+                {
+                    aiReply = conv.back().content;
+                }
+                std::ofstream ofs("ai_chat_test_report.md");
+                ofs << "# KYV AI Chat Test Report\n\n";
+                ofs << "## Question\n" << question << "\n\n";
+                ofs << "## AI Response\n" << aiReply << "\n\n";
+                ofs << "## Injected Context Summary\n```\n" << summary << "\n```\n";
+                ofs.close();
+                printf("[+] AI Test complete! Saved to ai_chat_test_report.md\n");
+                TerminateProcess(pi.hProcess, 0);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return 0;
+            }
+            else
+            {
+                printf("[-] FAILED to launch executable: %s\n", exePath.c_str());
+                return 1;
+            }
+        }
         else if (arg == "--decompile-pid" && i + 1 < cmdArgs.size())
         {
             DWORD targetPid = (DWORD)atoi(cmdArgs[i + 1].c_str());

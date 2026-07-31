@@ -4,6 +4,7 @@
 
 #include "process_list.h"
 #include "app/application.h"
+#include "core/automator.h"
 #include "ui/ui_manager.h"
 #include "utils/helpers.h"
 
@@ -91,6 +92,14 @@ void ProcessListPanel::Render(Application& app)
                 if (ImGui::IsMouseDoubleClicked(0))
                 {
                     app.AttachToProcess(proc.pid);
+                    kyv::Automator automator;
+                    automator.AnalyzeProcess(app, proc.pid, proc.name);
+                    app.idaProPanel.AnalyzeCurrentModule(app);
+                    if (!app.idaProPanel.GetFunctions().empty())
+                    {
+                        app.currentAddress = app.idaProPanel.GetFunctions()[0].startAddress;
+                        app.idaProPanel.SelectFunction(app, app.currentAddress);
+                    }
                 }
             }
 
@@ -124,6 +133,14 @@ void ProcessListPanel::Render(Application& app)
         if (ImGui::Button("Attach", ImVec2(80, 0)))
         {
             app.AttachToProcess(cachedProcesses_[selectedIdx_].pid);
+            kyv::Automator automator;
+            automator.AnalyzeProcess(app, cachedProcesses_[selectedIdx_].pid, cachedProcesses_[selectedIdx_].name);
+            app.idaProPanel.AnalyzeCurrentModule(app);
+            if (!app.idaProPanel.GetFunctions().empty())
+            {
+                app.currentAddress = app.idaProPanel.GetFunctions()[0].startAddress;
+                app.idaProPanel.SelectFunction(app, app.currentAddress);
+            }
         }
         ImGui::SameLine();
     }
