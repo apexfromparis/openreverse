@@ -42,11 +42,8 @@ void CLIRepl::EnableAnsiColors()
 
 void CLIRepl::PrintBanner()
 {
-    std::cout << "█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▄ █▀▀▀ █  █ █▀▀▀ █▀▀▄ █▀▀▀ █▀▀▀\n";
-    std::cout << "█  █ █  █ █▀▀▀ █  █ █▀▀▄ █▀▀  ▀▄▄▀ █▀▀  █▀▀▄ ▀▀▀█ █▀▀ \n";
-    std::cout << "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀  ▀ ▀▀▀▀  ▀▀  ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀\n\n";
-    std::cout << "openreverse tui | agentic reverse engineering shell\n";
-    std::cout << "Type '/' for commands (/help, /open, /sessions...) or type directly to chat.\n\n";
+    std::cout << "\033[1;36m  OpenReverse\033[0m \033[38;5;242mv2.0.0 (agentic reverse engineering shell)\033[0m\n";
+    std::cout << "  \033[38;5;242mType \033[0m\033[1;37m/\033[0m\033[38;5;242m to open command palette (/open, /attach, /decompile...) or type to chat with AI Copilot.\033[0m\n\n";
 }
 
 void CLIRepl::PrintOpenCodeVersion()
@@ -845,22 +842,22 @@ struct SlashCommandItemInfo {
 };
 
 static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
-    {"/connect",   "Connect AI provider (Ollama, OpenRouter, Groq Cloud...)"},
-    {"/models",    "Switch AI Copilot LLM model (Qwen, DeepSeek, Claude...)"},
-    {"/setup",     "One-click interactive AI setup & local model auto-installer"},
     {"/open",      "Open binary file & launch automated Hex-Rays analysis"},
-    {"/attach",    "Attach to running Windows process PID"},
-    {"/sessions",  "Manage OpenCode interactive reverse engineering sessions"},
-    {"/new",       "Create a new clean session workspace"},
-    {"/switch",    "Switch active session ID"},
-    {"/functions", "List all discovered functions & entry points"},
+    {"/attach",    "Attach to running Windows process PID for dynamic analysis"},
+    {"/functions", "List discovered functions & entry points in target binary"},
     {"/decompile", "Decompile x64 assembly into readable Hex-Rays C pseudocode"},
-    {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
-    {"/strings",   "List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys)"},
-    {"/explain",   "Ask AI Copilot to explain current function logic"},
+    {"/explain",   "Ask AI Copilot to explain current function logic in detail"},
     {"/rename",    "Ask AI to suggest descriptive variable & function names"},
     {"/vuln",      "Audit decompiled C code for vulnerabilities / license check"},
-    {"/gui",       "Handover session to Graphical Studio interface"},
+    {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
+    {"/strings",   "List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys)"},
+    {"/sessions",  "Manage OpenReverse interactive RE & multi-session workspaces"},
+    {"/new",       "Create a new clean session workspace"},
+    {"/switch",    "Switch active reverse engineering session ID"},
+    {"/models",    "Switch AI Copilot LLM model (Qwen, DeepSeek, Claude...)"},
+    {"/connect",   "Connect AI provider (Ollama, OpenRouter, Groq Cloud...)"},
+    {"/setup",     "One-click interactive AI setup & local model auto-installer"},
+    {"/gui",       "Handover session to OpenReverse Graphical Studio UI"},
     {"/clear",     "Clear terminal screen"},
     {"/exit",      "Exit OpenReverse Studio"}
 };
@@ -899,20 +896,26 @@ std::string CLIRepl::ReadInteractiveLine(Application& app, const std::string& ta
             if (selectedIndex >= (int)filtered.size()) selectedIndex = 0;
             if (selectedIndex < 0) selectedIndex = (int)filtered.size() - 1;
 
-            std::cout << "\033[38;5;238m┌────────────────────────────────────────────────────────────────────────┐\033[0m\n";
+            std::cout << "\033[38;5;238m┌──────────────────────────────────────────────────────────────────────────┐\033[0m\n";
             lastMenuLines++;
-            int maxShow = (int)std::min((size_t)8, filtered.size());
+            int maxShow = (int)std::min((size_t)9, filtered.size());
             for (int idx = 0; idx < maxShow; ++idx) {
                 const auto& sc = filtered[idx];
                 bool isSel = (idx == selectedIndex);
+                std::string cmdPadded = sc.cmd;
+                while (cmdPadded.length() < 12) cmdPadded += " ";
+                std::string descPadded = sc.desc;
+                if (descPadded.length() > 59) descPadded = descPadded.substr(0, 59);
+                while (descPadded.length() < 59) descPadded += " ";
+
                 if (isSel) {
-                    std::cout << "\033[48;5;208;1;37m│ " << std::left << std::setw(12) << sc.cmd << " " << std::setw(55) << sc.desc << "│\033[0m\n";
+                    std::cout << "\033[48;5;208;1;37m│ " << cmdPadded << " " << descPadded << " │\033[0m\n";
                 } else {
-                    std::cout << "│ \033[38;5;208m" << std::left << std::setw(12) << sc.cmd << "\033[0m " << std::setw(55) << sc.desc << "│\n";
+                    std::cout << "│ \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << " │\n";
                 }
                 lastMenuLines++;
             }
-            std::cout << "\033[38;5;238m└────────────────────────────────────────────────────────────────────────┘\033[0m\n";
+            std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
             lastMenuLines++;
         }
 
@@ -1165,22 +1168,19 @@ void CLIRepl::PrintSlashHelp()
 
 void CLIRepl::ShowSlashMenuPopup(Application& app)
 {
-    std::cout << "\n\033[1;30;47m┌────────────────────────────────────────────────────────────────────────┐\033[0m\n";
-    std::cout << "\033[1;30;47m│ OpenCode Slash Command Palette (Type a command or press Enter)        │\033[0m\n";
-    std::cout << "\033[1;30;47m├────────────────────────────────────────────────────────────────────────┤\033[0m\n";
-    std::cout << "│ \033[1;33m/connect\033[0m   Connect AI provider (Ollama, OpenRouter, Groq Cloud...)     │\033[0m\n";
-    std::cout << "│ \033[1;33m/open\033[0m      Open binary file & launch automated Hex-Rays analysis       │\033[0m\n";
-    std::cout << "│ \033[1;33m/attach\033[0m    Attach to running Windows process PID                       │\033[0m\n";
-    std::cout << "│ \033[1;33m/sessions\033[0m  Manage OpenCode interactive reverse engineering sessions    │\033[0m\n";
-    std::cout << "│ \033[1;33m/functions\033[0m List all discovered functions & entry points                │\033[0m\n";
-    std::cout << "│ \033[1;33m/decompile\033[0m Decompile x64 assembly into readable Hex-Rays C pseudocode  │\033[0m\n";
-    std::cout << "│ \033[1;33m/explain\033[0m   Ask AI Copilot to explain current function logic            │\033[0m\n";
-    std::cout << "│ \033[1;33m/vuln\033[0m      Audit decompiled C code for vulnerabilities / license check │\033[0m\n";
-    std::cout << "│ \033[1;33m/models\033[0m    Switch AI Copilot LLM model (Qwen, DeepSeek, Claude...)     │\033[0m\n";
-    std::cout << "│ \033[1;33m/gui\033[0m       Handover session to Graphical Studio interface              │\033[0m\n";
-    std::cout << "│ \033[1;33m/help\033[0m      Show detailed syntax and parameters for all commands        │\033[0m\n";
-    std::cout << "│ \033[1;33m/exit\033[0m      Quit OpenReverse Studio                                     │\033[0m\n";
-    std::cout << "\033[1;30;47m└────────────────────────────────────────────────────────────────────────┘\033[0m\n";
+    (void)app;
+    std::cout << "\n\033[38;5;238m┌──────────────────────────────────────────────────────────────────────────┐\033[0m\n";
+    std::cout << "\033[38;5;238m│\033[0m \033[1;37mOpenReverse Command Palette — Use UP/DOWN arrows or type a command\033[0m       \033[38;5;238m│\033[0m\n";
+    std::cout << "\033[38;5;238m├──────────────────────────────────────────────────────────────────────────┤\033[0m\n";
+    for (const auto& sc : g_interactiveCommands) {
+        std::string cmdPadded = sc.cmd;
+        while (cmdPadded.length() < 12) cmdPadded += " ";
+        std::string descPadded = sc.desc;
+        if (descPadded.length() > 59) descPadded = descPadded.substr(0, 59);
+        while (descPadded.length() < 59) descPadded += " ";
+        std::cout << "\033[38;5;238m│\033[0m \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << " \033[38;5;238m│\033[0m\n";
+    }
+    std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
     std::cout << "\033[1;32m/\033[0m ";
 }
 
