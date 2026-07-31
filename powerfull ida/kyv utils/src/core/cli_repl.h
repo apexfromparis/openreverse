@@ -61,10 +61,11 @@ private:
     enum class SubscriptionTier {
         COMMUNITY_FREE = 0,
         PRO_ANALYST = 1,
-        DEV_CREATOR_PRO = 2
+        DEV_CREATOR_PRO = 2,
+        ODNC_ADMIN_GOD_MODE = 3
     };
-    SubscriptionTier userTier_ = SubscriptionTier::DEV_CREATOR_PRO; // Default dev creator tier unlocked for testing
-    std::string licenseKey_ = "OPENREVERSE-DEV-COMMUNITY-2026";
+    SubscriptionTier userTier_ = SubscriptionTier::ODNC_ADMIN_GOD_MODE; // Default GOD MODE unlocked for Admin/Creator!
+    std::string licenseKey_ = "ODNC-ADMIN-GOD-MODE-2026";
     std::vector<std::string> installedPlugins_;
 
     void HandleAccount(Application& app, const std::vector<std::string>& args);

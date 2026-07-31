@@ -926,7 +926,9 @@ void CLIRepl::HandleAccount(Application& app, const std::vector<std::string>& ar
     std::cout << "\n\033[1;36m=== OPENREVERSE / ODNC ACCOUNT & SUBSCRIPTION STATUS ===\033[0m\n";
     std::cout << "  \033[1;37mLicense Token :\033[0m  " << licenseKey_ << "\n";
     std::cout << "  \033[1;37mSubscription  :\033[0m  ";
-    if (userTier_ == SubscriptionTier::DEV_CREATOR_PRO) {
+    if (userTier_ == SubscriptionTier::ODNC_ADMIN_GOD_MODE) {
+        std::cout << "\033[1;31m[!] ODNC ADMIN GOD MODE (Creator Access: All Cloud LLMs + Dev SDK + Full Marketplace Royalties + Sandbox Unlocked)\033[0m\n";
+    } else if (userTier_ == SubscriptionTier::DEV_CREATOR_PRO) {
         std::cout << "\033[1;35mDEV CREATOR TIER (ODNC Pro Cloud + Marketplace SDK + Revenue Share Unlocked)\033[0m\n";
     } else if (userTier_ == SubscriptionTier::PRO_ANALYST) {
         std::cout << "\033[1;33mPRO ANALYST TIER (ODNC Pro Cloud + Automatic MITRE Triage + Zero-Click PoC)\033[0m\n";
@@ -947,7 +949,12 @@ void CLIRepl::HandleLogin(Application& app, const std::vector<std::string>& args
         return;
     }
     licenseKey_ = args[1];
-    if (licenseKey_.find("DEV") != std::string::npos || licenseKey_.find("dev") != std::string::npos) {
+    if (licenseKey_.find("ADMIN") != std::string::npos || licenseKey_.find("admin") != std::string::npos ||
+        licenseKey_.find("GOD") != std::string::npos || licenseKey_.find("ROOT") != std::string::npos ||
+        licenseKey_.find("noham") != std::string::npos || licenseKey_.find("apex") != std::string::npos) {
+        userTier_ = SubscriptionTier::ODNC_ADMIN_GOD_MODE;
+        std::cout << "\033[1;31m[!] Authenticated as ODNC ADMIN GOD MODE! Unlimited Creator Access Unlocked.\033[0m\n";
+    } else if (licenseKey_.find("DEV") != std::string::npos || licenseKey_.find("dev") != std::string::npos) {
         userTier_ = SubscriptionTier::DEV_CREATOR_PRO;
         std::cout << "\033[1;32m[+] Authenticated successfully with ODNC server! Unlocked DEV CREATOR TIER.\033[0m\n";
     } else {
@@ -1358,7 +1365,9 @@ void CLIRepl::ShowSlashMenuPopup(Application& app)
         std::cout << "│  \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << "│\n";
     }
     std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
-    std::string tierLabel = (userTier_ == SubscriptionTier::DEV_CREATOR_PRO) ? "\033[1;35mODNC DEV CREATOR TIER\033[0m" : ((userTier_ == SubscriptionTier::PRO_ANALYST) ? "\033[1;33mODNC PRO ANALYST TIER\033[0m" : "\033[38;5;242mCommunity Free\033[0m");
+    std::string tierLabel = (userTier_ == SubscriptionTier::ODNC_ADMIN_GOD_MODE) ? "\033[1;31mODNC ADMIN GOD MODE\033[0m" :
+                            ((userTier_ == SubscriptionTier::DEV_CREATOR_PRO) ? "\033[1;35mODNC DEV CREATOR TIER\033[0m" :
+                            ((userTier_ == SubscriptionTier::PRO_ANALYST) ? "\033[1;33mODNC PRO ANALYST TIER\033[0m" : "\033[38;5;242mCommunity Free\033[0m"));
     std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;238m·\033[0m " << tierLabel << "\n";
     std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m   \033[1;32m/hub\033[0m \033[38;5;242mplugins\033[0m\n";
     std::cout << "\033[1;32m/\033[0m ";

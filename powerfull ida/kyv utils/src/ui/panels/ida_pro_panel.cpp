@@ -504,9 +504,9 @@ void IDAProPanel::RenderXRefsTab(Application& app)
 
 void IDAProPanel::RenderScriptEditorTab(Application& app)
 {
-    ImGui::TextColored(ImVec4(0.80f, 0.40f, 1.0f, 1.0f), "[ODNC DEV CREATOR STUDIO - SCRIPT EDITOR & AI CONTEXT ASSISTANT]");
+    ImGui::TextColored(ImVec4(1.0f, 0.30f, 0.30f, 1.0f), "[ODNC ADMIN GOD MODE - CREATOR STUDIO & AI SCRIPT EDITOR]");
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.60f, 0.85f, 0.60f, 1.0f), "| SDK: Active | Marketplace Revenue Share: Unlocked");
+    ImGui::TextColored(ImVec4(0.60f, 0.85f, 0.60f, 1.0f), "| SDK: Unrestricted | All Cloud AI Clusters & Marketplace Royalties: Active");
     ImGui::Separator();
 
     // Toolbar buttons for Developer Scripting
