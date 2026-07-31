@@ -564,8 +564,19 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
 
             if (choice == 1)
             {
+                std::string ollamaExe = "ollama";
+                char localAppData[1024] = {};
+                if (GetEnvironmentVariableA("LOCALAPPDATA", localAppData, sizeof(localAppData)) > 0)
+                {
+                    std::string fullPath = std::string(localAppData) + "\\Programs\\Ollama\\ollama.exe";
+                    if (GetFileAttributesA(fullPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+                    {
+                        ollamaExe = "\"" + fullPath + "\"";
+                    }
+                }
+
                 std::cout << "\n\033[1;36m[*] Verification du moteur IA local Ollama et du modele '" << model << "'...\033[0m\n";
-                int probe = system("ollama list >nul 2>&1");
+                int probe = system((ollamaExe + " list >nul 2>&1").c_str());
                 if (probe != 0)
                 {
                     std::cout << "\033[1;33m[*] Ollama ne semble pas installe ou lance sur ce PC.\033[0m\n";
@@ -579,7 +590,7 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
                     }
                 }
                 std::cout << "\033[1;32m[*] Telechargement / Activation du modele gratuit '" << model << "'...\033[0m\n";
-                std::string pullCmd = "ollama pull " + model;
+                std::string pullCmd = ollamaExe + " pull " + model;
                 system(pullCmd.c_str());
             }
         }

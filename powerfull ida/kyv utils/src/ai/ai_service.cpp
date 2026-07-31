@@ -254,7 +254,29 @@ std::string AIService::Request(const std::string& apiKey, const std::string& sys
     if (!error.empty()) return {};
     if (statusCode < 200 || statusCode >= 300)
     {
-        error = "Provider returned HTTP " + std::to_string(statusCode);
+        std::string detail = "";
+        try {
+            auto errJson = json::parse(response);
+            if (errJson.contains("error")) {
+                if (errJson["error"].is_object() && errJson["error"].contains("message"))
+                    detail = errJson["error"]["message"].get<std::string>();
+                else if (errJson["error"].is_string())
+                    detail = errJson["error"].get<std::string>();
+            }
+        } catch (...) {}
+
+        if (statusCode == 404 && detail.find("not found") != std::string::npos)
+        {
+            error = "Model '" + model + "' not found. Run '/setup' in shell or 'ollama pull " + model + "' in terminal to download it.";
+        }
+        else if (!detail.empty())
+        {
+            error = "HTTP " + std::to_string(statusCode) + ": " + detail;
+        }
+        else
+        {
+            error = "HTTP " + std::to_string(statusCode) + (response.empty() ? "" : ": " + response);
+        }
         return {};
     }
     try
