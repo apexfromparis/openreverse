@@ -49,6 +49,26 @@ private:
     void HandleAIRename(Application& app, const std::vector<std::string>& args);
     void HandleAIVuln(Application& app, const std::vector<std::string>& args);
 
+    // Multi-Session & OpenCode Slash Command Management
+    struct Session {
+        int id = 1;
+        std::string name;
+        std::string targetExe;
+        DWORD pid = 0;
+        uint64_t baseAddress = 0;
+        size_t functionsCount = 0;
+        std::vector<ai::ChatMessage> aiHistory;
+    };
+    std::vector<Session> sessions_;
+    int currentSessionId_ = 1;
+
+    void HandleSessions(Application& app, const std::vector<std::string>& args);
+    void HandleSessionNew(Application& app, const std::vector<std::string>& args);
+    void HandleSessionSwitch(Application& app, const std::vector<std::string>& args);
+    void HandleSlashCommand(Application& app, const std::string& cmd, const std::vector<std::string>& args);
+    void HandleChat(Application& app, const std::string& userMessage);
+    void PrintSlashHelp();
+
     uint64_t ParseAddressOrName(Application& app, const std::string& token);
     std::string DecompileHelper(Application& app, uint64_t addr);
 };

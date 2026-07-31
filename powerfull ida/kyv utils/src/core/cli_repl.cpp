@@ -19,6 +19,7 @@ namespace kyv {
 CLIRepl::CLIRepl()
 {
     EnableAnsiColors();
+    sessions_.push_back({1, "default-session", "", 0, 0, 0, {}});
 }
 
 CLIRepl::~CLIRepl() = default;
@@ -49,7 +50,7 @@ void CLIRepl::PrintBanner()
     std::cout << "---------------------------------------------------------------------------------\n";
     std::cout << "   OPENREVERSE Studio v2.0 | x64 Interactive CLI REPL | AI-Powered Reverse Engine \n";
     std::cout << "=================================================================================\n";
-    std::cout << "Type 'help' for commands, 'open <exe>' to load binary, 'gui' to switch to GUI.\n\n";
+    std::cout << "Type '/' to see slash commands (/help, /open, /sessions...), or type directly to talk with AI.\n\n";
 }
 
 void CLIRepl::PrintHelp()
@@ -741,7 +742,15 @@ bool CLIRepl::Run(Application& app)
     std::string line;
     while (true)
     {
-        std::cout << "openreverse> ";
+        // OpenCode style prompt showing current session & loaded target
+        std::string targetLabel = "no target";
+        for (const auto& s : sessions_) {
+            if (s.id == currentSessionId_ && !s.targetExe.empty()) {
+                targetLabel = s.targetExe;
+                break;
+            }
+        }
+        std::cout << "\033[1;36m[s" << currentSessionId_ << ":" << targetLabel << "]\033[0m \033[1;32m/\033[0m openreverse> ";
         if (!std::getline(std::cin, line))
         {
             break;
@@ -758,24 +767,38 @@ bool CLIRepl::Run(Application& app)
         std::string token;
         while (iss >> token) args.push_back(token);
 
-        std::string cmd = helpers::ToLower(args[0]);
-        if (cmd == "help" || cmd == "?" || cmd == "openreverse")
+        std::string cmd = args[0];
+        // 1. If command starts with '/' OR is '/' -> Handle as OpenCode slash command
+        if (cmd[0] == '/' || cmd == "/")
         {
-            PrintHelp();
+            if (cmd == "/" && args.size() == 1) {
+                PrintSlashHelp();
+            } else {
+                std::string slashCmd = helpers::ToLower(cmd);
+                HandleSlashCommand(app, slashCmd, args);
+            }
+            continue;
         }
-        else if (cmd == "attach" || cmd == "p")
+
+        // 2. Legacy commands support (without slash) for backward compatibility
+        std::string lowerCmd = helpers::ToLower(cmd);
+        if (lowerCmd == "help" || lowerCmd == "?" || lowerCmd == "openreverse")
+        {
+            PrintSlashHelp();
+        }
+        else if (lowerCmd == "attach" || lowerCmd == "p")
         {
             HandleAttach(app, args);
         }
-        else if (cmd == "open" || cmd == "o")
+        else if (lowerCmd == "open" || lowerCmd == "o")
         {
             HandleOpen(app, args);
         }
-        else if (cmd == "functions" || cmd == "fn")
+        else if (lowerCmd == "functions" || lowerCmd == "fn")
         {
             HandleFunctions(app, args);
         }
-        else if (cmd == "decompile" || cmd == "dec")
+        else if (lowerCmd == "decompile" || lowerCmd == "dec")
         {
             HandleDecompile(app, args);
         }
@@ -851,10 +874,224 @@ bool CLIRepl::Run(Application& app)
         }
         else
         {
-            std::cout << "Unknown command: " << cmd << ". Type 'help' for available commands.\n";
+            // 3. OpenCode natural chat behavior: anything not recognized as a command is treated as a prompt to the AI!
+            HandleChat(app, line);
         }
     }
     return false;
+}
+
+void CLIRepl::PrintSlashHelp()
+{
+    std::cout << "\n\033[1;36m=================================================================================\033[0m\n";
+    std::cout << "\033[1;36m                OPENREVERSE / OPENCODE SLASH COMMANDS REFERENCE                  \033[0m\n";
+    std::cout << "\033[1;36m=================================================================================\033[0m\n";
+    std::cout << "  \033[1;32m/help\033[0m               Show all slash commands and reverse engineering tools\n";
+    std::cout << "  \033[1;32m/connect\033[0m [provider] Quick Connect / Interactive Setup (openai, anthropic, groq...)\n";
+    std::cout << "  \033[1;32m/open\033[0m <path.exe>    Launch binary & run full automatic static/dynamic analysis\n";
+    std::cout << "  \033[1;32m/attach\033[0m <PID>       Attach to a running process PID\n";
+    std::cout << "  \033[1;32m/sessions\033[0m           List all active reverse engineering & chat sessions\n";
+    std::cout << "  \033[1;32m/new-session\033[0m [name] Create a new clean session workspace\n";
+    std::cout << "  \033[1;32m/switch\033[0m <id>        Switch to another active session ID\n";
+    std::cout << "  \033[1;32m/functions\033[0m [filt]   List discovered functions in current binary\n";
+    std::cout << "  \033[1;32m/decompile\033[0m <addr>   Decompile x64 assembly to C/C++ Hex-Rays pseudocode\n";
+    std::cout << "  \033[1;32m/xrefs\033[0m <addr>       Show all cross-references (CALL, JUMP, MEM) to/from address\n";
+    std::cout << "  \033[1;32m/strings\033[0m [filt]     List extracted ASCII/UTF-16 strings (URLs, C2, Registry)\n";
+    std::cout << "  \033[1;32m/explain\033[0m <addr>     Ask AI to decompile & explain a function in detail\n";
+    std::cout << "  \033[1;32m/rename\033[0m <addr>      Ask AI to suggest descriptive variable & function names\n";
+    std::cout << "  \033[1;32m/vuln\033[0m <addr>        Audit decompiled function for security vulnerabilities\n";
+    std::cout << "  \033[1;32m/model\033[0m <name>       Change AI model (gpt-4o, claude-3-5-sonnet, llama3...)\n";
+    std::cout << "  \033[1;32m/gui\033[0m                Handover session immediately to Graphical User Interface\n";
+    std::cout << "  \033[1;32m/clear\033[0m              Clear terminal screen\n";
+    std::cout << "  \033[1;32m/exit\033[0m               Exit OPENREVERSE Studio\n";
+    std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
+    std::cout << "Tip: Any regular message without '/' is sent directly to your AI Copilot as chat!\n\n";
+}
+
+void CLIRepl::HandleSessions(Application& app, const std::vector<std::string>& args)
+{
+    (void)args;
+    std::cout << "\n=== ACTIVE REVERSE ENGINEERING SESSIONS ===\n";
+    for (const auto& s : sessions_)
+    {
+        bool isCurrent = (s.id == currentSessionId_);
+        std::cout << (isCurrent ? "\033[1;32m* [" : "  [") << s.id << "] "
+                  << std::left << std::setw(18) << s.name
+                  << " | Target: " << (s.targetExe.empty() ? "[No Binary Loaded]" : s.targetExe)
+                  << " | PID: " << s.pid
+                  << (isCurrent ? " (ACTIVE)\033[0m\n" : "\n");
+    }
+    std::cout << "===========================================\n";
+    std::cout << "Use '/switch <id>' to change session, or '/new-session [name]' to create one.\n\n";
+}
+
+void CLIRepl::HandleSessionNew(Application& app, const std::vector<std::string>& args)
+{
+    int newId = (int)sessions_.size() + 1;
+    std::string name = (args.size() > 1) ? args[1] : ("session-" + std::to_string(newId));
+    Session s;
+    s.id = newId;
+    s.name = name;
+    s.targetExe = "";
+    s.pid = 0;
+    s.baseAddress = 0;
+    s.functionsCount = 0;
+    sessions_.push_back(s);
+    currentSessionId_ = newId;
+    std::cout << "\033[1;32m[+] Created & switched to new session [" << newId << "]: " << name << "\033[0m\n\n";
+}
+
+void CLIRepl::HandleSessionSwitch(Application& app, const std::vector<std::string>& args)
+{
+    if (args.size() < 2)
+    {
+        std::cout << "Usage: /switch <session_id>\n";
+        return;
+    }
+    int targetId = atoi(args[1].c_str());
+    for (auto& s : sessions_)
+    {
+        if (s.id == targetId)
+        {
+            currentSessionId_ = s.id;
+            std::cout << "\033[1;32m[+] Switched active session to [" << s.id << "]: " << s.name << "\033[0m\n\n";
+            return;
+        }
+    }
+    std::cout << "\033[1;31m[-] Session ID " << targetId << " not found. Type '/sessions' to list all.\033[0m\n";
+}
+
+void CLIRepl::HandleChat(Application& app, const std::string& userMessage)
+{
+    std::cout << "\033[1;36m[AI Chat - " << app.aiService.Model() << "]\033[0m Thinking...\n";
+    app.aiService.Send(userMessage, nullptr);
+
+    int timeoutMs = 30000;
+    while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
+    {
+        Sleep(100);
+        timeoutMs -= 100;
+    }
+
+    const auto& conv = app.aiService.Conversation();
+    if (!conv.empty() && conv.back().role == "assistant")
+    {
+        std::cout << "\n\033[1;37m" << conv.back().content << "\033[0m\n\n";
+    }
+    else
+    {
+        std::cout << "\033[1;31m[-] AI request failed or timed out: " << app.aiService.Status() << "\033[0m\n";
+        std::cout << "Tip: Use '/connect' to configure or check your API key and provider.\n\n";
+    }
+}
+
+void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const std::vector<std::string>& args)
+{
+    if (cmd == "/help" || cmd == "/?" || cmd == "/")
+    {
+        PrintSlashHelp();
+    }
+    else if (cmd == "/sessions")
+    {
+        HandleSessions(app, args);
+    }
+    else if (cmd == "/new-session" || cmd == "/new")
+    {
+        HandleSessionNew(app, args);
+    }
+    else if (cmd == "/switch" || cmd == "/session")
+    {
+        HandleSessionSwitch(app, args);
+    }
+    else if (cmd == "/connect" || cmd == "/login" || cmd == "/ai" || cmd == "/ai-connect")
+    {
+        HandleAIConnect(app, args);
+    }
+    else if (cmd == "/open" || cmd == "/o")
+    {
+        HandleOpen(app, args);
+        for (auto& s : sessions_) {
+            if (s.id == currentSessionId_) {
+                s.targetExe = (args.size() > 1) ? args[1] : "";
+                s.pid = app.attachedPID;
+                s.functionsCount = app.idaProPanel.GetFunctions().size();
+                break;
+            }
+        }
+    }
+    else if (cmd == "/attach" || cmd == "/p")
+    {
+        HandleAttach(app, args);
+        for (auto& s : sessions_) {
+            if (s.id == currentSessionId_) {
+                s.targetExe = app.attachedProcessName;
+                s.pid = app.attachedPID;
+                s.functionsCount = app.idaProPanel.GetFunctions().size();
+                break;
+            }
+        }
+    }
+    else if (cmd == "/functions" || cmd == "/fn")
+    {
+        HandleFunctions(app, args);
+    }
+    else if (cmd == "/decompile" || cmd == "/dec")
+    {
+        HandleDecompile(app, args);
+    }
+    else if (cmd == "/xrefs" || cmd == "/x")
+    {
+        HandleXRefs(app, args);
+    }
+    else if (cmd == "/strings" || cmd == "/str")
+    {
+        HandleStrings(app, args);
+    }
+    else if (cmd == "/disasm" || cmd == "/d")
+    {
+        HandleDisasm(app, args);
+    }
+    else if (cmd == "/modules" || cmd == "/mod")
+    {
+        HandleModules(app, args);
+    }
+    else if (cmd == "/report")
+    {
+        HandleReport(app, args);
+    }
+    else if (cmd == "/explain" || cmd == "/ai-explain")
+    {
+        HandleAIExplain(app, args);
+    }
+    else if (cmd == "/rename" || cmd == "/ai-rename")
+    {
+        HandleAIRename(app, args);
+    }
+    else if (cmd == "/vuln" || cmd == "/ai-vuln")
+    {
+        HandleAIVuln(app, args);
+    }
+    else if (cmd == "/model" || cmd == "/ai-model")
+    {
+        HandleAIModel(app, args);
+    }
+    else if (cmd == "/status" || cmd == "/ai-status")
+    {
+        HandleAIStatus(app, args);
+    }
+    else if (cmd == "/clear" || cmd == "/cls")
+    {
+        system("cls");
+    }
+    else if (cmd == "/exit" || cmd == "/quit" || cmd == "/q")
+    {
+        std::cout << "[*] Exiting OPENREVERSE Studio.\n";
+        exit(0);
+    }
+    else
+    {
+        std::cout << "\033[1;31m[-] Unknown slash command: " << cmd << ". Type '/help' for reference.\033[0m\n";
+    }
 }
 
 std::string CLIRepl::DecompileHelper(Application& app, uint64_t addr)
