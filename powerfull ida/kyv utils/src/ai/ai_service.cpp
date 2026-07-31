@@ -167,9 +167,10 @@ std::string AIService::Request(const std::string& apiKey, const std::string& sys
         baseUrl = baseUrl_;
         model = model_;
     }
-    if (baseUrl.rfind("https://", 0) != 0)
+    bool isHttps = (baseUrl.rfind("https://", 0) == 0);
+    if (!isHttps && baseUrl.rfind("http://", 0) != 0)
     {
-        error = "HTTPS is required for model requests";
+        error = "URL must start with http:// or https://";
         return {};
     }
 
@@ -183,7 +184,7 @@ std::string AIService::Request(const std::string& apiKey, const std::string& sys
     url.dwUrlPathLength = sizeof(path);
     if (!WinHttpCrackUrl(Widen(baseUrl).c_str(), 0, 0, &url))
     {
-        error = "Invalid HTTPS base URL";
+        error = "Invalid API base URL";
         return {};
     }
 
@@ -193,23 +194,30 @@ std::string AIService::Request(const std::string& apiKey, const std::string& sys
 
     json body;
     body["model"] = model;
-    body["temperature"] = 0.2;
     body["messages"] = json::array();
-    body["messages"].push_back({{"role", "system"}, {"content", systemPrompt.empty() ?
-        "You are a careful reverse-engineering assistant. Use only supplied evidence, state uncertainty, and never instruct the user to modify a live process." : systemPrompt}});
-    for (const auto& message : history)
-        body["messages"].push_back({{"role", message.role}, {"content", message.content}});
+    if (!systemPrompt.empty()) body["messages"].push_back({ {"role", "system"}, {"content", systemPrompt} });
+    for (const auto& msg : history) body["messages"].push_back({ {"role", msg.role}, {"content", msg.content} });
+    if (model.find("o1") != std::string::npos || model.find("o3") != std::string::npos)
+    {
+        if (!systemPrompt.empty()) { body["messages"][0]["role"] = "user"; }
+    }
+    else
+    {
+        body["temperature"] = 0.2;
+    }
 
-    HINTERNET session = WinHttpOpen(L"KYV/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
-    if (!session) { error = "Could not initialize HTTPS client"; return {}; }
+    HINTERNET session = WinHttpOpen(L"KYV-Agent/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) { error = "Could not initialize HTTP session"; return {}; }
     HINTERNET connection = WinHttpConnect(session, host, url.nPort, 0);
     if (!connection) { WinHttpCloseHandle(session); error = "Could not connect to provider"; return {}; }
+    DWORD reqFlags = isHttps ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET request = WinHttpOpenRequest(connection, L"POST", Widen(endpoint).c_str(), nullptr,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, reqFlags);
     if (!request)
     {
         WinHttpCloseHandle(connection); WinHttpCloseHandle(session);
-        error = "Could not create HTTPS request"; return {};
+        error = "Could not create HTTP request"; return {};
     }
     WinHttpSetTimeouts(request, 5000, 5000, 10000, 30000);
 
