@@ -58,6 +58,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         LocalFree(cmdArgvW);
     }
 
+    kyv::Application app;
+
     // Check for Headless Automated Decompilation Mode and OpenCode CLI commands
     for (size_t i = 1; i < cmdArgs.size(); ++i)
     {
@@ -77,7 +79,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             {
                 Sleep(1200);
-                kyv::Application app;
                 kyv::Automator automator;
                 auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
                 if (res.success)
@@ -112,7 +113,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             freopen("CONOUT$", "w", stdout);
             printf("[+] KYV Headless Engine: Starting IDA Pro automated decompilation on PID %lu...\n", targetPid);
 
-            kyv::Application app;
             kyv::Automator automator;
             auto res = automator.AnalyzeProcess(app, targetPid);
             if (res.success)
@@ -197,14 +197,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
             else if (arg == "providers" || arg == "auth" || arg == "setup" || arg == "init" || arg == "install-ai")
             {
-                kyv::Application app;
                 kyv::CLIRepl repl;
                 repl.HandleAIConnect(app, {});
                 return 0;
             }
             else if (arg == "session" || arg == "sessions")
             {
-                kyv::Application app;
                 kyv::CLIRepl repl;
                 repl.HandleSessions(app, {});
                 return 0;
@@ -222,7 +220,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             {
                 std::string prompt = cmdArgs[i + 1];
                 for (size_t j = i + 2; j < cmdArgs.size(); ++j) prompt += " " + cmdArgs[j];
-                kyv::Application app;
                 kyv::CLIRepl repl;
                 repl.HandleChat(app, prompt);
                 return 0;
@@ -230,7 +227,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             else if (arg == "--cli" || arg == "-c" || arg == "--repl" || arg == "tui" ||
                      (i == 1 && arg.find("-") != 0 && GetFileAttributesA(arg.c_str()) != INVALID_FILE_ATTRIBUTES))
             {
-                kyv::Application app;
                 kyv::CLIRepl repl;
                 if (i == 1 && arg.find("-") != 0 && arg != "tui")
                 {
@@ -248,13 +244,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         if (cmdArgs.size() <= 1)
         {
-            kyv::Application app;
             kyv::CLIRepl repl;
             bool switchToGui = repl.Run(app);
             if (!switchToGui)
             {
                 return 0;
             }
+        }
+    }
+
+    // If GUI mode was launched with a target executable argument (e.g. openreverse --gui crackme.exe), load it
+    for (size_t i = 1; i < cmdArgs.size(); ++i)
+    {
+        std::string arg = cmdArgs[i];
+        if (arg != "--gui" && arg != "-g" && arg.find("-") != 0 && GetFileAttributesA(arg.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            kyv::CLIRepl repl;
+            std::vector<std::string> openArgs = { "open", arg };
+            repl.HandleOpen(app, openArgs);
+            break;
         }
     }
 
@@ -272,7 +280,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     HWND hwnd = CreateWindowExW(
         0,
         wc.lpszClassName,
-        L"KYV - Memory Analysis & Reverse Engineering",
+        L"OpenReverse Studio - Agentic Memory Analysis & Reverse Engineering",
         WS_OVERLAPPEDWINDOW,
         100, 100, 1600, 1000,
         nullptr, nullptr, hInstance, nullptr
@@ -304,8 +312,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    // Create application
-    kyv::Application app;
     kyv::UIManager::ApplyTheme();
 
     // Main loop

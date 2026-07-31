@@ -232,9 +232,9 @@ void Application::RenderMenuBar()
 
     if (ImGui::BeginMenu("Help"))
     {
-        if (ImGui::MenuItem("About KYV"))
+        if (ImGui::MenuItem("About OpenReverse Studio"))
         {
-            ImGui::OpenPopup("About KYV");
+            ImGui::OpenPopup("About OpenReverse Studio");
         }
         ImGui::EndMenu();
     }
@@ -266,13 +266,13 @@ void Application::RenderMenuBar()
     }
 
     // About popup
-    if (ImGui::BeginPopupModal("About KYV", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal("About OpenReverse Studio", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("KYV - Memory Analysis & Reverse Engineering");
-        ImGui::Text("Version 1.0.0");
+        ImGui::Text("OpenReverse Studio - Agentic Memory Analysis & Reverse Engineering");
+        ImGui::Text("Version 2.0 (OpenCode Style CLI & Studio GUI)");
         ImGui::Separator();
-        ImGui::Text("Read and analyze process memory (hex, disassembly, modules, strings).");
-        ImGui::Text("Attach to a process from the Processes panel to begin.");
+        ImGui::Text("Read and analyze process memory, Hex-Rays pseudo-C decompilation, and AI security audit.");
+        ImGui::Text("Type '/gui' in the shell or use the menu to switch views.");
         if (ImGui::Button("OK", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -330,8 +330,8 @@ void Application::RenderStatusBar()
 
     ImGui::SameLine(ImGui::GetWindowWidth() - 280.0f);
     ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.55f, 1.0f), "Ctrl+G Goto | F5 Refresh");
-    ImGui::SameLine(ImGui::GetWindowWidth() - 120.0f);
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.7f, 1.0f), "KYV v1.0.0");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 140.0f);
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.7f, 1.0f), "OpenReverse v2.0");
 
     ImGui::End();
     ImGui::PopStyleColor();

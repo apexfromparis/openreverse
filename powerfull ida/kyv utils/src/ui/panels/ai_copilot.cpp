@@ -10,7 +10,7 @@ namespace kyv::panels {
 void AICopilotPanel::Render(Application& app)
 {
     ImGui::Begin("AI Copilot", nullptr, ImGuiWindowFlags_None);
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.00f, 1.0f), "KYV AI COPILOT");
+    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.00f, 1.0f), "OPENREVERSE STUDIO - AI COPILOT");
     ImGui::SameLine();
     ImGui::TextDisabled("secure provider bridge");
     ImGui::Separator();
