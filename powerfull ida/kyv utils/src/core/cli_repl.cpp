@@ -707,7 +707,7 @@ void CLIRepl::HandleAIAsk(Application& app, const std::vector<std::string>& args
         prompt += args[i];
     }
     std::cout << "[*] Sending request to AI Copilot (" << app.aiService.Model() << ")...\n";
-    app.aiService.Send(prompt, nullptr);
+    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
@@ -744,7 +744,7 @@ void CLIRepl::HandleAIExplain(Application& app, const std::vector<std::string>& 
     std::string prompt = "Analyze this decompiled C/C++ function from an x64 binary and explain what it does in detail:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Explaining function 0x" << std::hex << addr << std::dec << " via AI Copilot...\n";
-    app.aiService.Send(prompt, nullptr);
+    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
@@ -781,7 +781,7 @@ void CLIRepl::HandleAIRename(Application& app, const std::vector<std::string>& a
     std::string prompt = "Analyze this decompiled C function and suggest clean, descriptive function names and variable names formatted as a markdown table:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Asking AI Copilot for renaming suggestions for 0x" << std::hex << addr << std::dec << "...\n";
-    app.aiService.Send(prompt, nullptr);
+    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
@@ -818,7 +818,7 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
     std::string prompt = "Audit this decompiled C function for security vulnerabilities (buffer overflows, format strings, logic flaws, integer overflows) and report severity:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Auditing function 0x" << std::hex << addr << std::dec << " for vulnerabilities via AI Copilot...\n";
-    app.aiService.Send(prompt, nullptr);
+    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)
@@ -1067,7 +1067,7 @@ void CLIRepl::HandleSessionSwitch(Application& app, const std::vector<std::strin
 void CLIRepl::HandleChat(Application& app, const std::string& userMessage)
 {
     std::cout << "\033[1;36m[AI Chat - " << app.aiService.Model() << "]\033[0m Thinking...\n";
-    app.aiService.Send(userMessage, nullptr);
+    app.aiService.Send(userMessage, nullptr, app.GetAIContextSummary());
 
     int timeoutMs = 30000;
     while (app.aiService.State() == kyv::ai::ChatState::Working && timeoutMs > 0)

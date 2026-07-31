@@ -32,7 +32,7 @@ public:
     bool HasSavedApiKey() const;
     void ClearApiKey();
 
-    bool Send(const std::string& prompt, const ReverseSkill* skill);
+    bool Send(const std::string& prompt, const ReverseSkill* skill, const std::string& hiddenContext = "");
     void ClearConversation();
 
     ChatState State() const;
@@ -43,7 +43,7 @@ public:
     std::vector<ChatMessage> Conversation() const;
 
 private:
-    void Worker(std::string prompt, std::string skillPrompt);
+    void Worker(std::string prompt, std::string skillPrompt, std::string hiddenContext);
     std::string LoadApiKey() const;
     std::string Request(const std::string& apiKey, const std::string& systemPrompt,
         const std::vector<ChatMessage>& history, std::string& error) const;

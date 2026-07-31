@@ -74,6 +74,7 @@ public:
     void ShowGotoAddressDialog();
     void AddOffsetFromAddress(uint64_t address, const std::string& name = "");
     void ResetLayout() { layoutInitialized_ = false; }
+    std::string GetAIContextSummary() const;
 
 private:
     // ── UI Panels ──

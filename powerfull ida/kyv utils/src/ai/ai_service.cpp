@@ -101,7 +101,7 @@ void AIService::ClearApiKey()
     CredDeleteA(target.c_str(), CRED_TYPE_GENERIC, 0);
 }
 
-bool AIService::Send(const std::string& prompt, const ReverseSkill* skill)
+bool AIService::Send(const std::string& prompt, const ReverseSkill* skill, const std::string& hiddenContext)
 {
     if (prompt.empty() || prompt.size() > 32000) return false;
     {
@@ -117,11 +117,11 @@ bool AIService::Send(const std::string& prompt, const ReverseSkill* skill)
         state_ = ChatState::Working;
         status_ = "Sending request securely...";
     }
-    worker_ = std::thread(&AIService::Worker, this, prompt, skill ? skill->systemPrompt : std::string());
+    worker_ = std::thread(&AIService::Worker, this, prompt, skill ? skill->systemPrompt : std::string(), hiddenContext);
     return true;
 }
 
-void AIService::Worker(std::string prompt, std::string skillPrompt)
+void AIService::Worker(std::string prompt, std::string skillPrompt, std::string hiddenContext)
 {
     (void)prompt;
     std::string key = LoadApiKey();
@@ -141,7 +141,14 @@ void AIService::Worker(std::string prompt, std::string skillPrompt)
         return;
     }
 
-    std::string answer = Request(key, skillPrompt, history, error);
+    std::string combinedSystemPrompt = skillPrompt;
+    if (!hiddenContext.empty())
+    {
+        if (!combinedSystemPrompt.empty()) combinedSystemPrompt += "\n\n";
+        combinedSystemPrompt += hiddenContext;
+    }
+
+    std::string answer = Request(key, combinedSystemPrompt, history, error);
     std::lock_guard<std::mutex> lock(mutex_);
     if (!error.empty())
     {
@@ -195,7 +202,10 @@ std::string AIService::Request(const std::string& apiKey, const std::string& sys
     json body;
     body["model"] = model;
     body["messages"] = json::array();
-    if (!systemPrompt.empty()) body["messages"].push_back({ {"role", "system"}, {"content", systemPrompt} });
+    std::string effectiveSys = systemPrompt.empty() ?
+        "You are OpenReverse Studio AI Copilot, a senior reverse engineering assistant integrated directly into OpenReverse Studio. Always use the active target executable context provided to you." :
+        systemPrompt;
+    body["messages"].push_back({ {"role", "system"}, {"content", effectiveSys} });
     for (const auto& msg : history) body["messages"].push_back({ {"role", msg.role}, {"content", msg.content} });
     if (model.find("o1") != std::string::npos || model.find("o3") != std::string::npos)
     {

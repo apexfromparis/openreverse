@@ -145,7 +145,7 @@ void AICopilotPanel::Render(Application& app)
     if (ImGui::Button("Send", ImVec2(90, 0)))
     {
         app.aiService.Configure(provider_, baseUrl_, model_);
-        app.aiService.Send(prompt_, skills.empty() ? nullptr : &skills[(size_t)selectedSkill_]);
+        app.aiService.Send(prompt_, skills.empty() ? nullptr : &skills[(size_t)selectedSkill_], app.GetAIContextSummary());
         prompt_[0] = '\0';
     }
     ImGui::SameLine();

@@ -6,6 +6,7 @@
 #include "ui/ui_manager.h"
 #include "utils/logger.h"
 #include "utils/helpers.h"
+#include "ui/panels/ida_pro_panel.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -336,6 +337,55 @@ void Application::RenderStatusBar()
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+}
+
+std::string Application::GetAIContextSummary() const
+{
+    if (!isAttached && attachedProcessName.empty())
+    {
+        return "[Active Target Context: No executable or process is currently opened/attached in OpenReverse Studio.]\n\n";
+    }
+
+    std::stringstream ss;
+    ss << "=== ACTIVE TARGET PROGRAM CONTEXT ===\n";
+    ss << "Target Executable/Process Name: " << (attachedProcessName.empty() ? "Unknown" : attachedProcessName) << "\n";
+    ss << "Architecture: " << (is64Bit ? "x64 (64-bit)" : "x86 (32-bit)") << " Windows PE executable\n";
+    if (attachedPID != 0)
+        ss << "Process ID (PID): " << attachedPID << "\n";
+    if (currentAddress != 0)
+    {
+        ss << "Current Memory Address / Entry Point: 0x" << std::hex << currentAddress << std::dec << "\n";
+    }
+
+    const auto& funcs = idaProPanel.GetFunctions();
+    if (!funcs.empty())
+    {
+        ss << "Analyzed Functions (" << funcs.size() << " detected): ";
+        size_t limit = funcs.size() < 6 ? funcs.size() : 6;
+        for (size_t i = 0; i < limit; ++i)
+        {
+            if (i > 0) ss << ", ";
+            ss << funcs[i].name << " (0x" << std::hex << funcs[i].startAddress << std::dec << ")";
+        }
+        ss << "\n";
+    }
+
+    const auto& strings = stringResults;
+    if (!strings.empty())
+    {
+        ss << "Notable Strings in Target Memory (" << strings.size() << " total): ";
+        size_t limit = strings.size() < 6 ? strings.size() : 6;
+        for (size_t i = 0; i < limit; ++i)
+        {
+            if (i > 0) ss << " | ";
+            ss << "\"" << strings[i].value << "\"";
+        }
+        ss << "\n";
+    }
+    ss << "=== END TARGET PROGRAM CONTEXT ===\n\n";
+    ss << "CRITICAL INSTRUCTION FOR AI COPILOT: You ARE attached to and analyzing the executable described above right now! Rely on this exact context. DO NOT ask the user for architecture, OS, or executable type because it is already provided above. Answer directly and specifically about this program.\n\n";
+
+    return ss.str();
 }
 
 } // namespace kyv
