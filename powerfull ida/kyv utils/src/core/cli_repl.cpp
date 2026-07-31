@@ -41,16 +41,40 @@ void CLIRepl::EnableAnsiColors()
 
 void CLIRepl::PrintBanner()
 {
-    std::cout << "=================================================================================\n";
-    std::cout << "   ___  ____  _____ _   _ ____  _____ __     _____ ____  ____  _____ \n";
-    std::cout << "  / _ \\|  _ \\| ____| \\ | |  _ \\| ____|\\ \\   / / ____|  _ \\/ ___|| ____|\n";
-    std::cout << " | | | | |_) |  _| |  \\| | |_) |  _|   \\ \\ / /|  _| | |_) \\___ \\|  _|  \n";
-    std::cout << " | |_| |  __/| |___| |\\  |  _ <| |___   \\ V / | |___|  _ < ___) | |___ \n";
-    std::cout << "  \\___/|_|   |_____|_| \\_|_| \\_\\_____|   \\_/  |_____|_| \\_\\____/|_____|\n";
-    std::cout << "---------------------------------------------------------------------------------\n";
-    std::cout << "   OPENREVERSE Studio v2.0 | x64 Interactive CLI REPL | AI-Powered Reverse Engine \n";
-    std::cout << "=================================================================================\n";
-    std::cout << "Type '/' to see slash commands (/help, /open, /sessions...), or type directly to talk with AI.\n\n";
+    std::cout << "█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▄ █▀▀▀ █  █ █▀▀▀ █▀▀▄ █▀▀▀ █▀▀▀\n";
+    std::cout << "█  █ █  █ █▀▀▀ █  █ █▀▀▄ █▀▀  ▀▄▄▀ █▀▀  █▀▀▄ ▀▀▀█ █▀▀ \n";
+    std::cout << "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀  ▀ ▀▀▀▀  ▀▀  ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀\n\n";
+    std::cout << "openreverse tui | agentic reverse engineering shell\n";
+    std::cout << "Type '/' for commands (/help, /open, /sessions...) or type directly to chat.\n\n";
+}
+
+void CLIRepl::PrintOpenCodeVersion()
+{
+    std::cout << "2.0.0 (openreverse-studio)\n";
+}
+
+void CLIRepl::PrintOpenCodeHelp()
+{
+    std::cout << "█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▄ █▀▀▀ █  █ █▀▀▀ █▀▀▄ █▀▀▀ █▀▀▀\n";
+    std::cout << "█  █ █  █ █▀▀▀ █  █ █▀▀▄ █▀▀  ▀▄▄▀ █▀▀  █▀▀▄ ▀▀▀█ █▀▀ \n";
+    std::cout << "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀  ▀ ▀▀▀▀  ▀▀  ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀\n\n";
+    std::cout << "Commands:\n";
+    std::cout << "  openreverse completion          generate shell completion script\n";
+    std::cout << "  openreverse [project/exe]       start openreverse tui [default]\n";
+    std::cout << "  openreverse attach <pid>        attach to a running target or PID\n";
+    std::cout << "  openreverse run [message..]     run openreverse with a message / prompt\n";
+    std::cout << "  openreverse providers           manage AI providers and credentials [aliases: auth]\n";
+    std::cout << "  openreverse models [provider]   list all available models\n";
+    std::cout << "  openreverse stats               show token usage and cost statistics\n";
+    std::cout << "  openreverse export [sessionID]  export session data as JSON/Markdown\n";
+    std::cout << "  openreverse session             manage sessions\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  -h, --help          show help                                                            [boolean]\n";
+    std::cout << "  -v, --version       show version number                                                  [boolean]\n";
+    std::cout << "  -m, --model         model to use in the format of provider/model                          [string]\n";
+    std::cout << "  -c, --continue      continue the last session                                            [boolean]\n";
+    std::cout << "  -s, --session       session id to continue                                                [string]\n";
+    std::cout << "      --prompt        prompt to use                                                         [string]\n\n";
 }
 
 void CLIRepl::PrintHelp()

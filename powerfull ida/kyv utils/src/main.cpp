@@ -19,6 +19,7 @@
 #include <dwmapi.h>
 #include <tchar.h>
 #include <windows.h>
+#include <shellapi.h>
 
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -43,16 +44,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 {
     (void)hPrevInstance;
 
-    // Check for Headless Automated Decompilation Mode
-    // Usage: KYV.exe --decompile-exe <exe_path> [output_file.md]
-    //        KYV.exe --decompile-pid <PID> [output_file.md]
-    for (int i = 1; i < __argc; ++i)
+    int cmdArgc = 0;
+    LPWSTR* cmdArgvW = CommandLineToArgvW(GetCommandLineW(), &cmdArgc);
+    std::vector<std::string> cmdArgs;
+    if (cmdArgvW)
     {
-        std::string arg = __argv[i];
-        if (arg == "--decompile-exe" && i + 1 < __argc)
+        for (int i = 0; i < cmdArgc; ++i)
         {
-            std::string exePath = __argv[i + 1];
-            std::string outFile = (i + 2 < __argc) ? __argv[i + 2] : "kyv_decompile_report.md";
+            char buf[2048] = {};
+            WideCharToMultiByte(CP_UTF8, 0, cmdArgvW[i], -1, buf, sizeof(buf), nullptr, nullptr);
+            cmdArgs.push_back(buf);
+        }
+        LocalFree(cmdArgvW);
+    }
+
+    // Check for Headless Automated Decompilation Mode and OpenCode CLI commands
+    for (size_t i = 1; i < cmdArgs.size(); ++i)
+    {
+        std::string arg = cmdArgs[i];
+        if (arg == "--decompile-exe" && i + 1 < cmdArgs.size())
+        {
+            std::string exePath = cmdArgs[i + 1];
+            std::string outFile = (i + 2 < cmdArgs.size()) ? cmdArgs[i + 2] : "kyv_decompile_report.md";
 
             AttachConsole(ATTACH_PARENT_PROCESS);
             freopen("CONOUT$", "w", stdout);
@@ -90,10 +103,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 return 1;
             }
         }
-        else if (arg == "--decompile-pid" && i + 1 < __argc)
+        else if (arg == "--decompile-pid" && i + 1 < cmdArgs.size())
         {
-            DWORD targetPid = (DWORD)atoi(__argv[i + 1]);
-            std::string outFile = (i + 2 < __argc) ? __argv[i + 2] : "kyv_decompile_report.md";
+            DWORD targetPid = (DWORD)atoi(cmdArgs[i + 1].c_str());
+            std::string outFile = (i + 2 < cmdArgs.size()) ? cmdArgs[i + 2] : "kyv_decompile_report.md";
 
             AttachConsole(ATTACH_PARENT_PROCESS);
             freopen("CONOUT$", "w", stdout);
@@ -117,18 +130,123 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 return 1;
             }
         }
-        else if (arg == "--cli" || arg == "-c" || arg == "--repl")
+    }
+
+    // Determine if we should attach to Windows Console for OpenCode CLI commands or TUI mode
+    bool isConsoleCommand = (cmdArgs.size() <= 1);
+    for (size_t i = 1; i < cmdArgs.size(); ++i)
+    {
+        std::string arg = cmdArgs[i];
+        if (arg == "-h" || arg == "--help" || arg == "help" ||
+            arg == "-v" || arg == "--version" || arg == "version" ||
+            arg == "models" || arg == "model" ||
+            arg == "providers" || arg == "auth" ||
+            arg == "session" || arg == "sessions" ||
+            arg == "stats" || arg == "run" ||
+            arg == "--cli" || arg == "-c" || arg == "--repl" || arg == "tui" ||
+            (i == 1 && arg.find("-") != 0 && GetFileAttributesA(arg.c_str()) != INVALID_FILE_ATTRIBUTES))
         {
-            AttachConsole(ATTACH_PARENT_PROCESS);
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-            if (hOut == INVALID_HANDLE_VALUE || hOut == nullptr)
-            {
-                AllocConsole();
-            }
-            freopen("CONIN$", "r", stdin);
+            isConsoleCommand = true;
+            break;
+        }
+    }
+
+    if (isConsoleCommand)
+    {
+        if (!AttachConsole(ATTACH_PARENT_PROCESS))
+        {
+            AllocConsole();
+        }
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hOut == INVALID_HANDLE_VALUE || hOut == nullptr)
+        {
+            AllocConsole();
             freopen("CONOUT$", "w", stdout);
             freopen("CONOUT$", "w", stderr);
+        }
+        freopen("CONIN$", "r", stdin);
+        std::ios::sync_with_stdio(true);
 
+        for (size_t i = 1; i < cmdArgs.size(); ++i)
+        {
+            std::string arg = cmdArgs[i];
+            if (arg == "-h" || arg == "--help" || arg == "help")
+            {
+                kyv::CLIRepl::PrintOpenCodeHelp();
+                return 0;
+            }
+            else if (arg == "-v" || arg == "--version" || arg == "version")
+            {
+                kyv::CLIRepl::PrintOpenCodeVersion();
+                return 0;
+            }
+            else if (arg == "models" || arg == "model")
+            {
+                std::cout << "ollama/qwen2.5-coder:7b [FREE LOCAL - DEFAULT]\n"
+                          << "ollama/deepseek-coder-v2 [FREE LOCAL]\n"
+                          << "ollama/llama3.1:8b [FREE LOCAL]\n"
+                          << "lmstudio/qwen2.5-coder-7b-instruct [FREE LOCAL]\n"
+                          << "groq/llama-3.3-70b-versatile [FREE TIER]\n"
+                          << "openrouter/qwen-2.5-coder-32b-instruct:free [FREE TIER]\n"
+                          << "openai/gpt-4o\n"
+                          << "anthropic/claude-3-5-sonnet\n"
+                          << "gemini/gemini-1.5-pro\n"
+                          << "mistral/codestral-latest\n";
+                return 0;
+            }
+            else if (arg == "providers" || arg == "auth")
+            {
+                kyv::Application app;
+                kyv::CLIRepl repl;
+                repl.HandleAIConnect(app, {});
+                return 0;
+            }
+            else if (arg == "session" || arg == "sessions")
+            {
+                kyv::Application app;
+                kyv::CLIRepl repl;
+                repl.HandleSessions(app, {});
+                return 0;
+            }
+            else if (arg == "stats")
+            {
+                std::cout << "=== OPENREVERSE SESSION STATS ===\n"
+                          << "  Active AI Provider: Ollama (Free Local)\n"
+                          << "  Model             : qwen2.5-coder:7b\n"
+                          << "  Token Usage       : 0 prompt / 0 completion ($0.00 FREE)\n"
+                          << "=================================\n";
+                return 0;
+            }
+            else if (arg == "run" && i + 1 < cmdArgs.size())
+            {
+                std::string prompt = cmdArgs[i + 1];
+                for (size_t j = i + 2; j < cmdArgs.size(); ++j) prompt += " " + cmdArgs[j];
+                kyv::Application app;
+                kyv::CLIRepl repl;
+                repl.HandleChat(app, prompt);
+                return 0;
+            }
+            else if (arg == "--cli" || arg == "-c" || arg == "--repl" || arg == "tui" ||
+                     (i == 1 && arg.find("-") != 0 && GetFileAttributesA(arg.c_str()) != INVALID_FILE_ATTRIBUTES))
+            {
+                kyv::Application app;
+                kyv::CLIRepl repl;
+                if (i == 1 && arg.find("-") != 0 && arg != "tui")
+                {
+                    std::vector<std::string> openArgs = { "open", arg };
+                    repl.HandleOpen(app, openArgs);
+                }
+                bool switchToGui = repl.Run(app);
+                if (!switchToGui)
+                {
+                    return 0;
+                }
+                break;
+            }
+        }
+
+        if (cmdArgs.size() <= 1)
+        {
             kyv::Application app;
             kyv::CLIRepl repl;
             bool switchToGui = repl.Run(app);
@@ -136,8 +254,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             {
                 return 0;
             }
-            // If user typed 'gui' in REPL, we break and continue to launch ImGui DX11 window!
-            break;
         }
     }
 
@@ -339,34 +455,7 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // ─── Standard Console Entry Point (for native CONSOLE subsystem) ─────────────
 int main(int argc, char** argv)
 {
-    bool runGui = false;
-    bool runDecompile = false;
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string arg = argv[i];
-        if (arg == "--gui" || arg == "-g")
-        {
-            runGui = true;
-            break;
-        }
-        else if (arg == "--decompile-exe" || arg == "--decompile-pid")
-        {
-            runDecompile = true;
-            break;
-        }
-    }
-
-    // Run OpenReverse Interactive CLI REPL by default or when requested
-    if (!runGui && !runDecompile)
-    {
-        kyv::Application app;
-        kyv::CLIRepl repl;
-        bool switchToGui = repl.Run(app);
-        if (!switchToGui)
-        {
-            return 0;
-        }
-    }
-
+    (void)argc;
+    (void)argv;
     return WinMain(GetModuleHandleW(nullptr), nullptr, GetCommandLineA(), SW_SHOWDEFAULT);
 }

@@ -19,16 +19,23 @@ public:
     // Enable Windows Terminal ANSI escape codes (colors & formatting)
     static void EnableAnsiColors();
 
+    static void PrintOpenCodeHelp();
+    static void PrintOpenCodeVersion();
+
     // Start interactive command-line REPL loop
     // Returns true if user requested to switch to GUI mode ('gui' command)
     // Returns false if user requested to exit ('exit' command)
     bool Run(Application& app);
 
+    void HandleOpen(Application& app, const std::vector<std::string>& args);
+    void HandleAttach(Application& app, const std::vector<std::string>& args);
+    void HandleAIConnect(Application& app, const std::vector<std::string>& args);
+    void HandleSessions(Application& app, const std::vector<std::string>& args);
+    void HandleChat(Application& app, const std::string& userMessage);
+
 private:
     void PrintBanner();
     void PrintHelp();
-    void HandleAttach(Application& app, const std::vector<std::string>& args);
-    void HandleOpen(Application& app, const std::vector<std::string>& args);
     void HandleFunctions(Application& app, const std::vector<std::string>& args);
     void HandleDecompile(Application& app, const std::vector<std::string>& args);
     void HandleCFG(Application& app, const std::vector<std::string>& args);
@@ -39,7 +46,6 @@ private:
     void HandleReport(Application& app, const std::vector<std::string>& args);
 
     // AI Copilot & Model Configuration Commands
-    void HandleAIConnect(Application& app, const std::vector<std::string>& args);
     void HandleAIConfig(Application& app, const std::vector<std::string>& args);
     void HandleAIKey(Application& app, const std::vector<std::string>& args);
     void HandleAIModel(Application& app, const std::vector<std::string>& args);
@@ -62,11 +68,9 @@ private:
     std::vector<Session> sessions_;
     int currentSessionId_ = 1;
 
-    void HandleSessions(Application& app, const std::vector<std::string>& args);
     void HandleSessionNew(Application& app, const std::vector<std::string>& args);
     void HandleSessionSwitch(Application& app, const std::vector<std::string>& args);
     void HandleSlashCommand(Application& app, const std::string& cmd, const std::vector<std::string>& args);
-    void HandleChat(Application& app, const std::string& userMessage);
     void PrintSlashHelp();
 
     uint64_t ParseAddressOrName(Application& app, const std::string& token);
