@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <fstream>
 #include <algorithm>
+#include <conio.h>
 
 namespace kyv {
 
@@ -838,6 +839,161 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
     }
 }
 
+struct SlashCommandItemInfo {
+    std::string cmd;
+    std::string desc;
+};
+
+static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
+    {"/connect",   "Connect AI provider (Ollama, OpenRouter, Groq Cloud...)"},
+    {"/models",    "Switch AI Copilot LLM model (Qwen, DeepSeek, Claude...)"},
+    {"/setup",     "One-click interactive AI setup & local model auto-installer"},
+    {"/open",      "Open binary file & launch automated Hex-Rays analysis"},
+    {"/attach",    "Attach to running Windows process PID"},
+    {"/sessions",  "Manage OpenCode interactive reverse engineering sessions"},
+    {"/new",       "Create a new clean session workspace"},
+    {"/switch",    "Switch active session ID"},
+    {"/functions", "List all discovered functions & entry points"},
+    {"/decompile", "Decompile x64 assembly into readable Hex-Rays C pseudocode"},
+    {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
+    {"/strings",   "List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys)"},
+    {"/explain",   "Ask AI Copilot to explain current function logic"},
+    {"/rename",    "Ask AI to suggest descriptive variable & function names"},
+    {"/vuln",      "Audit decompiled C code for vulnerabilities / license check"},
+    {"/gui",       "Handover session to Graphical Studio interface"},
+    {"/clear",     "Clear terminal screen"},
+    {"/exit",      "Exit OpenReverse Studio"}
+};
+
+std::string CLIRepl::ReadInteractiveLine(Application& app, const std::string& targetLabel)
+{
+    (void)app;
+    std::string promptPrefix = "\r\033[2K\033[1;36m[s" + std::to_string(currentSessionId_) + ":" + targetLabel + "]\033[0m \033[1;32m/\033[0m openreverse> ";
+    std::string inputBuffer = "";
+    bool inSlashMenu = false;
+    int selectedIndex = 0;
+    int lastMenuLines = 0;
+
+    auto getFiltered = [&]() {
+        std::vector<SlashCommandItemInfo> filtered;
+        std::string prefix = helpers::ToLower(inputBuffer);
+        for (const auto& sc : g_interactiveCommands) {
+            if (sc.cmd.find(prefix) == 0) {
+                filtered.push_back(sc);
+            }
+        }
+        if (filtered.empty()) filtered = g_interactiveCommands;
+        return filtered;
+    };
+
+    auto updateScreen = [&]() {
+        if (lastMenuLines > 0) {
+            std::cout << "\r\033[" << lastMenuLines << "A\033[J";
+            lastMenuLines = 0;
+        } else {
+            std::cout << "\r\033[2K";
+        }
+
+        if (inSlashMenu) {
+            auto filtered = getFiltered();
+            if (selectedIndex >= (int)filtered.size()) selectedIndex = 0;
+            if (selectedIndex < 0) selectedIndex = (int)filtered.size() - 1;
+
+            std::cout << "\033[38;5;238m┌────────────────────────────────────────────────────────────────────────┐\033[0m\n";
+            lastMenuLines++;
+            int maxShow = (int)std::min((size_t)8, filtered.size());
+            for (int idx = 0; idx < maxShow; ++idx) {
+                const auto& sc = filtered[idx];
+                bool isSel = (idx == selectedIndex);
+                if (isSel) {
+                    std::cout << "\033[48;5;208;1;37m│ " << std::left << std::setw(12) << sc.cmd << " " << std::setw(55) << sc.desc << "│\033[0m\n";
+                } else {
+                    std::cout << "│ \033[38;5;208m" << std::left << std::setw(12) << sc.cmd << "\033[0m " << std::setw(55) << sc.desc << "│\n";
+                }
+                lastMenuLines++;
+            }
+            std::cout << "\033[38;5;238m└────────────────────────────────────────────────────────────────────────┘\033[0m\n";
+            lastMenuLines++;
+        }
+
+        std::cout << promptPrefix << inputBuffer << std::flush;
+    };
+
+    updateScreen();
+
+    while (true)
+    {
+        int ch = _getch();
+        if (ch == '\r' || ch == '\n') // Enter
+        {
+            if (inSlashMenu) {
+                auto filtered = getFiltered();
+                if (!filtered.empty() && selectedIndex >= 0 && selectedIndex < (int)filtered.size()) {
+                    inputBuffer = filtered[selectedIndex].cmd;
+                }
+                inSlashMenu = false;
+            }
+            if (lastMenuLines > 0) {
+                std::cout << "\r\033[" << lastMenuLines << "A\033[J";
+                lastMenuLines = 0;
+            }
+            std::cout << promptPrefix << inputBuffer << "\n";
+            return inputBuffer;
+        }
+        else if (ch == 8 || ch == 127) // Backspace
+        {
+            if (!inputBuffer.empty()) {
+                inputBuffer.pop_back();
+            }
+            inSlashMenu = (!inputBuffer.empty() && inputBuffer[0] == '/');
+            selectedIndex = 0;
+            updateScreen();
+        }
+        else if (ch == '\t') // Tab completion
+        {
+            if (inSlashMenu) {
+                auto filtered = getFiltered();
+                if (!filtered.empty() && selectedIndex >= 0 && selectedIndex < (int)filtered.size()) {
+                    inputBuffer = filtered[selectedIndex].cmd + " ";
+                    inSlashMenu = false;
+                }
+            }
+            updateScreen();
+        }
+        else if (ch == 224 || ch == 0) // Windows arrow key prefix
+        {
+            int code = _getch();
+            if (inSlashMenu) {
+                auto filtered = getFiltered();
+                if (code == 72) // UP Arrow
+                {
+                    selectedIndex = (selectedIndex - 1 + (int)filtered.size()) % (int)filtered.size();
+                }
+                else if (code == 80) // DOWN Arrow
+                {
+                    selectedIndex = (selectedIndex + 1) % (int)filtered.size();
+                }
+            }
+            updateScreen();
+        }
+        else if (ch == 27) // ESC
+        {
+            inSlashMenu = false;
+            updateScreen();
+        }
+        else if (ch == 3) // Ctrl+C
+        {
+            return "/exit";
+        }
+        else if (isprint(ch))
+        {
+            inputBuffer += (char)ch;
+            inSlashMenu = (inputBuffer[0] == '/');
+            updateScreen();
+        }
+    }
+}
+
 bool CLIRepl::Run(Application& app)
 {
     PrintBanner();
@@ -852,11 +1008,7 @@ bool CLIRepl::Run(Application& app)
                 break;
             }
         }
-        std::cout << "\033[1;36m[s" << currentSessionId_ << ":" << targetLabel << "]\033[0m \033[1;32m/\033[0m openreverse> ";
-        if (!std::getline(std::cin, line))
-        {
-            break;
-        }
+        line = ReadInteractiveLine(app, targetLabel);
 
         // Trim leading and trailing spaces
         line.erase(0, line.find_first_not_of(" \t\r\n"));

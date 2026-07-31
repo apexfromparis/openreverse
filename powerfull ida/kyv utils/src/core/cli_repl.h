@@ -73,6 +73,7 @@ private:
     void HandleSlashCommand(Application& app, const std::string& cmd, const std::vector<std::string>& args);
     void PrintSlashHelp();
     void ShowSlashMenuPopup(Application& app);
+    std::string ReadInteractiveLine(Application& app, const std::string& targetLabel);
 
     uint64_t ParseAddressOrName(Application& app, const std::string& token);
     std::string DecompileHelper(Application& app, uint64_t addr);
