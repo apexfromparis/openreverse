@@ -18,6 +18,46 @@ void AICopilotPanel::Render(Application& app)
     if (ImGui::CollapsingHeader("Provider settings", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextDisabled("Keys are stored in Windows Credential Manager, never in project files.");
+        ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "Free Local & Fast Cloud Presets:");
+        if (ImGui::SmallButton("Ollama (Qwen-Coder 7B) [FREE]"))
+        {
+            strncpy(provider_, "Ollama (Free Local)", sizeof(provider_) - 1);
+            strncpy(baseUrl_, "http://localhost:11434/v1", sizeof(baseUrl_) - 1);
+            strncpy(model_, "qwen2.5-coder:7b", sizeof(model_) - 1);
+            app.aiService.Configure(provider_, baseUrl_, model_);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Ollama (DeepSeek-Coder) [FREE]"))
+        {
+            strncpy(provider_, "Ollama (Free Local)", sizeof(provider_) - 1);
+            strncpy(baseUrl_, "http://localhost:11434/v1", sizeof(baseUrl_) - 1);
+            strncpy(model_, "deepseek-coder-v2", sizeof(model_) - 1);
+            app.aiService.Configure(provider_, baseUrl_, model_);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("LM Studio (Free Local) [FREE]"))
+        {
+            strncpy(provider_, "LM Studio (Free Local)", sizeof(provider_) - 1);
+            strncpy(baseUrl_, "http://localhost:1234/v1", sizeof(baseUrl_) - 1);
+            strncpy(model_, "qwen2.5-coder-7b-instruct", sizeof(model_) - 1);
+            app.aiService.Configure(provider_, baseUrl_, model_);
+        }
+        if (ImGui::SmallButton("Groq Cloud (Llama-3.3 70B) [FREE TIER]"))
+        {
+            strncpy(provider_, "Groq Cloud (Free Tier)", sizeof(provider_) - 1);
+            strncpy(baseUrl_, "https://api.groq.com/openai/v1", sizeof(baseUrl_) - 1);
+            strncpy(model_, "llama-3.3-70b-versatile", sizeof(model_) - 1);
+            app.aiService.Configure(provider_, baseUrl_, model_);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("OpenRouter (Qwen-Coder 32B Free)"))
+        {
+            strncpy(provider_, "OpenRouter (Free Tier)", sizeof(provider_) - 1);
+            strncpy(baseUrl_, "https://openrouter.ai/api/v1", sizeof(baseUrl_) - 1);
+            strncpy(model_, "qwen/qwen-2.5-coder-32b-instruct:free", sizeof(model_) - 1);
+            app.aiService.Configure(provider_, baseUrl_, model_);
+        }
+        ImGui::Separator();
         ImGui::SetNextItemWidth(-1);
         ImGui::InputText("Provider", provider_, sizeof(provider_));
         ImGui::SetNextItemWidth(-1);

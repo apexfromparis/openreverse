@@ -381,104 +381,135 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
 
 void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& args)
 {
-    std::string provider = "OpenAI";
-    std::string baseUrl = "https://api.openai.com/v1";
-    std::string model = "gpt-4o";
-    std::string apiKey = "";
+    std::string provider = "Ollama (Free Local)";
+    std::string baseUrl = "http://localhost:11434/v1";
+    std::string model = "qwen2.5-coder:7b";
+    std::string apiKey = "ollama";
 
-    // 1. One-command preset mode: ai-connect <provider> [api_key] [model]
+    // 1. One-command preset mode: /connect <provider> [api_key] [model]
     if (args.size() >= 2)
     {
         std::string provInput = helpers::ToLower(args[1]);
-        if (provInput == "openai" || provInput == "1" || provInput == "gpt")
+        if (provInput == "ollama" || provInput == "local" || provInput == "1")
+        {
+            provider = "Ollama (Free Local)";
+            baseUrl = "http://localhost:11434/v1";
+            model = (args.size() >= 3) ? args[2] : "qwen2.5-coder:7b";
+            apiKey = "ollama";
+        }
+        else if (provInput == "lmstudio" || provInput == "lms" || provInput == "lm-studio" || provInput == "2")
+        {
+            provider = "LM Studio (Free Local)";
+            baseUrl = "http://localhost:1234/v1";
+            model = (args.size() >= 3) ? args[2] : "qwen2.5-coder-7b-instruct";
+            apiKey = "lmstudio";
+        }
+        else if (provInput == "qwen" || provInput == "qwencoder" || provInput == "qwen-coder")
+        {
+            provider = "Ollama (Free Local)";
+            baseUrl = "http://localhost:11434/v1";
+            model = "qwen2.5-coder:7b";
+            apiKey = "ollama";
+        }
+        else if (provInput == "deepseek" || provInput == "deepseek-coder" || provInput == "deepseek-r1")
+        {
+            provider = "Ollama (Free Local)";
+            baseUrl = "http://localhost:11434/v1";
+            model = "deepseek-coder-v2";
+            apiKey = "ollama";
+        }
+        else if (provInput == "llama" || provInput == "llama3" || provInput == "llama-3")
+        {
+            provider = "Ollama (Free Local)";
+            baseUrl = "http://localhost:11434/v1";
+            model = "llama3.1:8b";
+            apiKey = "ollama";
+        }
+        else if (provInput == "groq" || provInput == "3")
+        {
+            provider = "Groq Cloud (Free Tier)";
+            baseUrl = "https://api.groq.com/openai/v1";
+            model = (args.size() >= 4) ? args[3] : "llama-3.3-70b-versatile";
+            if (args.size() >= 3) apiKey = args[2];
+        }
+        else if (provInput == "openrouter" || provInput == "4")
+        {
+            provider = "OpenRouter (Free Tier)";
+            baseUrl = "https://openrouter.ai/api/v1";
+            model = (args.size() >= 4) ? args[3] : "qwen/qwen-2.5-coder-32b-instruct:free";
+            if (args.size() >= 3) apiKey = args[2];
+        }
+        else if (provInput == "openai" || provInput == "5" || provInput == "gpt")
         {
             provider = "OpenAI";
             baseUrl = "https://api.openai.com/v1";
             model = (args.size() >= 4) ? args[3] : "gpt-4o";
             if (args.size() >= 3) apiKey = args[2];
         }
-        else if (provInput == "anthropic" || provInput == "claude" || provInput == "2")
+        else if (provInput == "anthropic" || provInput == "claude" || provInput == "6")
         {
             provider = "Anthropic";
             baseUrl = "https://api.anthropic.com/v1";
             model = (args.size() >= 4) ? args[3] : "claude-3-5-sonnet";
             if (args.size() >= 3) apiKey = args[2];
         }
-        else if (provInput == "gemini" || provInput == "google" || provInput == "3")
+        else if (provInput == "gemini" || provInput == "google" || provInput == "7")
         {
             provider = "Google Gemini";
             baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/";
             model = (args.size() >= 4) ? args[3] : "gemini-1.5-pro";
             if (args.size() >= 3) apiKey = args[2];
         }
-        else if (provInput == "groq" || provInput == "4")
-        {
-            provider = "Groq";
-            baseUrl = "https://api.groq.com/openai/v1";
-            model = (args.size() >= 4) ? args[3] : "llama-3.3-70b-versatile";
-            if (args.size() >= 3) apiKey = args[2];
-        }
-        else if (provInput == "mistral" || provInput == "5")
+        else if (provInput == "mistral" || provInput == "8")
         {
             provider = "Mistral AI";
             baseUrl = "https://api.mistral.ai/v1";
-            model = (args.size() >= 4) ? args[3] : "mistral-large-latest";
+            model = (args.size() >= 4) ? args[3] : "codestral-latest";
             if (args.size() >= 3) apiKey = args[2];
-        }
-        else if (provInput == "openrouter" || provInput == "6")
-        {
-            provider = "OpenRouter";
-            baseUrl = "https://openrouter.ai/api/v1";
-            model = (args.size() >= 4) ? args[3] : "anthropic/claude-3.5-sonnet";
-            if (args.size() >= 3) apiKey = args[2];
-        }
-        else if (provInput == "ollama" || provInput == "local" || provInput == "7")
-        {
-            provider = "Ollama (Local)";
-            baseUrl = "http://localhost:11434/v1";
-            model = (args.size() >= 3) ? args[2] : "llama3";
-            apiKey = "ollama";
         }
         else
         {
             std::cout << "\033[1;31m[-] Unknown AI provider: " << args[1] << "\033[0m\n";
-            std::cout << "Available presets: openai, anthropic, gemini, groq, mistral, openrouter, ollama\n";
-            std::cout << "Or type 'ai-connect' without arguments for the interactive setup wizard.\n";
+            std::cout << "Available Free presets: ollama, lmstudio, qwen, deepseek, llama, groq, openrouter\n";
+            std::cout << "Available Cloud presets: openai, anthropic, gemini, mistral\n";
+            std::cout << "Or type '/connect' without arguments for the interactive setup wizard.\n";
             return;
         }
     }
     else
     {
-        // 2. Interactive Setup Wizard
+        // 2. Interactive Setup Wizard (FREE by Default)
         std::cout << "\n\033[1;36m=================================================================================\033[0m\n";
         std::cout << "\033[1;36m                  OPENREVERSE AI COPILOT - QUICK CONNECT WIZARD                  \033[0m\n";
         std::cout << "\033[1;36m=================================================================================\033[0m\n";
-        std::cout << "Select your AI provider:\n";
-        std::cout << "  \033[1;32m1)\033[0m OpenAI         (GPT-4o, GPT-4o-mini, o1, o3-mini)\n";
-        std::cout << "  \033[1;32m2)\033[0m Anthropic      (Claude 3.5 Sonnet, Claude 3 Opus)\n";
-        std::cout << "  \033[1;32m3)\033[0m Google Gemini  (Gemini 1.5 Pro, Gemini 1.5 Flash)\n";
-        std::cout << "  \033[1;32m4)\033[0m Groq           (Llama 3.3 70B - Ultra Fast & Free tier)\n";
-        std::cout << "  \033[1;32m5)\033[0m Mistral AI     (Mistral Large, Codestral)\n";
-        std::cout << "  \033[1;32m6)\033[0m OpenRouter     (All models via single API key)\n";
-        std::cout << "  \033[1;32m7)\033[0m Ollama         (Local offline models - No Key required)\n";
-        std::cout << "  \033[1;32m8)\033[0m Custom         (Any OpenAI-compatible API server)\n";
+        std::cout << "Select your AI provider (Free Local options selected by default):\n";
+        std::cout << "  \033[1;32m1)\033[0m Ollama        \033[1;32m[FREE/LOCAL]\033[0m (Qwen-2.5-Coder, DeepSeek-Coder, Llama 3.1)\n";
+        std::cout << "  \033[1;32m2)\033[0m LM Studio     \033[1;32m[FREE/LOCAL]\033[0m (Qwen, DeepSeek, Llama on localhost:1234)\n";
+        std::cout << "  \033[1;32m3)\033[0m Groq Cloud    \033[1;32m[FREE TIER]\033[0m  (Llama-3.3-70B, Qwen-2.5-Coder - Ultra Fast)\n";
+        std::cout << "  \033[1;32m4)\033[0m OpenRouter    \033[1;32m[FREE TIER]\033[0m  (Free DeepSeek-R1, Qwen-Coder-32B & all models)\n";
+        std::cout << "  \033[1;32m5)\033[0m OpenAI         (GPT-4o, GPT-4o-mini, o1, o3-mini)\n";
+        std::cout << "  \033[1;32m6)\033[0m Anthropic      (Claude 3.5 Sonnet, Claude 3 Opus)\n";
+        std::cout << "  \033[1;32m7)\033[0m Google Gemini  (Gemini 1.5 Pro, Gemini 1.5 Flash)\n";
+        std::cout << "  \033[1;32m8)\033[0m Mistral AI     (Codestral, Mistral Large)\n";
+        std::cout << "  \033[1;32m9)\033[0m Custom         (Any OpenAI-compatible API server)\n";
         std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
-        std::cout << "Enter provider [1-8] (default 1): ";
+        std::cout << "Enter provider [1-9] (default 1 - Ollama Free Local): ";
 
         std::string choiceLine;
         std::getline(std::cin, choiceLine);
         int choice = 1;
         if (!choiceLine.empty()) choice = atoi(choiceLine.c_str());
-        if (choice < 1 || choice > 8) choice = 1;
+        if (choice < 1 || choice > 9) choice = 1;
 
-        if (choice == 1)      { provider = "OpenAI";         baseUrl = "https://api.openai.com/v1";                              model = "gpt-4o"; }
-        else if (choice == 2) { provider = "Anthropic";      baseUrl = "https://api.anthropic.com/v1";                           model = "claude-3-5-sonnet"; }
-        else if (choice == 3) { provider = "Google Gemini";  baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/"; model = "gemini-1.5-pro"; }
-        else if (choice == 4) { provider = "Groq";           baseUrl = "https://api.groq.com/openai/v1";                         model = "llama-3.3-70b-versatile"; }
-        else if (choice == 5) { provider = "Mistral AI";     baseUrl = "https://api.mistral.ai/v1";                              model = "mistral-large-latest"; }
-        else if (choice == 6) { provider = "OpenRouter";     baseUrl = "https://openrouter.ai/api/v1";                           model = "anthropic/claude-3.5-sonnet"; }
-        else if (choice == 7) { provider = "Ollama (Local)"; baseUrl = "http://localhost:11434/v1";                              model = "llama3"; apiKey = "ollama"; }
-        else if (choice == 8) {
+        if (choice == 1)      { provider = "Ollama (Free Local)";    baseUrl = "http://localhost:11434/v1";                              model = "qwen2.5-coder:7b";               apiKey = "ollama"; }
+        else if (choice == 2) { provider = "LM Studio (Free Local)"; baseUrl = "http://localhost:1234/v1";                               model = "qwen2.5-coder-7b-instruct";      apiKey = "lmstudio"; }
+        else if (choice == 3) { provider = "Groq Cloud (Free Tier)"; baseUrl = "https://api.groq.com/openai/v1";                         model = "llama-3.3-70b-versatile"; }
+        else if (choice == 4) { provider = "OpenRouter (Free Tier)"; baseUrl = "https://openrouter.ai/api/v1";                           model = "qwen/qwen-2.5-coder-32b-instruct:free"; }
+        else if (choice == 5) { provider = "OpenAI";                 baseUrl = "https://api.openai.com/v1";                              model = "gpt-4o"; }
+        else if (choice == 6) { provider = "Anthropic";              baseUrl = "https://api.anthropic.com/v1";                           model = "claude-3-5-sonnet"; }
+        else if (choice == 7) { provider = "Google Gemini";          baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/"; model = "gemini-1.5-pro"; }
+        else if (choice == 8) { provider = "Mistral AI";             baseUrl = "https://api.mistral.ai/v1";                              model = "codestral-latest"; }
+        else if (choice == 9) {
             std::cout << "Enter Custom Provider Name [default Custom]: ";
             std::string provInput;
             std::getline(std::cin, provInput);
@@ -492,25 +523,40 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
             model = "gpt-4o";
         }
 
-        if (choice != 7)
+        if (choice == 1 || choice == 2)
+        {
+            std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
+            std::cout << "Select Local Free Model:\n";
+            std::cout << "  \033[1;32m1)\033[0m Qwen-2.5-Coder:7b   (Recommended default for x86/x64 Reverse Engineering)\n";
+            std::cout << "  \033[1;32m2)\033[0m DeepSeek-Coder-v2   (Strong reasoning & disassembly understanding)\n";
+            std::cout << "  \033[1;32m3)\033[0m Llama-3.1:8b        (General versatile coding & analysis)\n";
+            std::cout << "Enter model choice [1-3] (default 1): ";
+            std::string mChoice;
+            std::getline(std::cin, mChoice);
+            int mc = atoi(mChoice.c_str());
+            if (mc == 2) model = "deepseek-coder-v2";
+            else if (mc == 3) model = "llama3.1:8b";
+            else model = (choice == 1) ? "qwen2.5-coder:7b" : "qwen2.5-coder-7b-instruct";
+        }
+        else
         {
             std::cout << "Enter API Key (stored securely in Windows Credential Manager): ";
             std::getline(std::cin, apiKey);
-        }
 
-        std::cout << "Enter Model Name [default " << model << "]: ";
-        std::string modelInput;
-        std::getline(std::cin, modelInput);
-        if (!modelInput.empty())
-        {
-            modelInput.erase(0, modelInput.find_first_not_of(" \t\r\n"));
-            modelInput.erase(modelInput.find_last_not_of(" \t\r\n") + 1);
+            std::cout << "Enter Model Name [default " << model << "]: ";
+            std::string modelInput;
+            std::getline(std::cin, modelInput);
             if (!modelInput.empty())
-                model = modelInput;
+            {
+                modelInput.erase(0, modelInput.find_first_not_of(" \t\r\n"));
+                modelInput.erase(modelInput.find_last_not_of(" \t\r\n") + 1);
+                if (!modelInput.empty())
+                    model = modelInput;
+            }
         }
     }
 
-    if (!apiKey.empty() && apiKey != "ollama")
+    if (!apiKey.empty() && apiKey != "ollama" && apiKey != "lmstudio")
     {
         if (app.aiService.SaveApiKey(apiKey))
         {
@@ -521,9 +567,9 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
             std::cout << "\033[1;33m[!] Warning: Could not save API Key to Windows Credential Manager.\033[0m\n";
         }
     }
-    else if (apiKey == "ollama")
+    else if (apiKey == "ollama" || apiKey == "lmstudio")
     {
-        app.aiService.SaveApiKey("ollama");
+        app.aiService.SaveApiKey(apiKey);
     }
 
     app.aiService.Configure(provider, baseUrl, model);

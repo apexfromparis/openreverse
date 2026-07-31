@@ -50,9 +50,9 @@ private:
     std::string CredentialTarget() const;
 
     mutable std::mutex mutex_;
-    std::string provider_ = "OpenAI-compatible";
-    std::string baseUrl_ = "https://api.openai.com/v1";
-    std::string model_ = "gpt-4o-mini";
+    std::string provider_ = "Ollama (Free Local)";
+    std::string baseUrl_ = "http://localhost:11434/v1";
+    std::string model_ = "qwen2.5-coder:7b";
     std::vector<ChatMessage> conversation_;
     ChatState state_ = ChatState::Idle;
     std::string status_ = "AI service idle";

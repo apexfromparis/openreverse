@@ -55,9 +55,9 @@ AIService::~AIService()
 void AIService::Configure(const std::string& provider, const std::string& baseUrl, const std::string& model)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    provider_ = provider.empty() ? "OpenAI-compatible" : provider;
-    baseUrl_ = TrimSlash(baseUrl.empty() ? "https://api.openai.com/v1" : baseUrl);
-    model_ = model.empty() ? "gpt-4o-mini" : model;
+    provider_ = provider.empty() ? "Ollama (Free Local)" : provider;
+    baseUrl_ = TrimSlash(baseUrl.empty() ? "http://localhost:11434/v1" : baseUrl);
+    model_ = model.empty() ? "qwen2.5-coder:7b" : model;
 }
 
 std::string AIService::CredentialTarget() const
