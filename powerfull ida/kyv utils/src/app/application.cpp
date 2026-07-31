@@ -339,7 +339,7 @@ void Application::RenderStatusBar()
     ImGui::PopStyleVar();
 }
 
-std::string Application::GetAIContextSummary() const
+std::string Application::GetAIContextSummary()
 {
     if (!isAttached && attachedProcessName.empty())
     {
@@ -382,8 +382,39 @@ std::string Application::GetAIContextSummary() const
         }
         ss << "\n";
     }
+
+    // ── Live Memory Disassembly at Current Address ──
+    if (currentAddress != 0 && isAttached && processHandle != nullptr)
+    {
+        ss << "\n--- LIVE MEMORY DISASSEMBLY AT CURRENT ADDRESS (0x" << std::hex << currentAddress << std::dec << ") ---\n";
+        auto bytes = memoryReader.ReadBytes(processHandle, currentAddress, 128);
+        if (!bytes.empty())
+        {
+            auto insns = disassembler.Disassemble(bytes.data(), bytes.size(), currentAddress, 15);
+            for (const auto& ins : insns)
+            {
+                ss << "0x" << std::hex << ins.address << std::dec << ":  " << ins.mnemonic << " " << ins.operands << "\n";
+            }
+        }
+    }
+
+    // ── Selected IDA Studio Function & Pseudocode ──
+    if (idaProPanel.GetActiveFunction().startAddress != 0)
+    {
+        const auto& fn = idaProPanel.GetActiveFunction();
+        ss << "\n--- CURRENT ACTIVE FUNCTION IN IDA STUDIO ---\n";
+        ss << "Function: " << fn.name << " at 0x" << std::hex << fn.startAddress << " (Size: " << std::dec << fn.size << " bytes)\n";
+        if (!idaProPanel.GetActivePseudocode().empty())
+        {
+            ss << "Decompiled C Pseudocode:\n```c\n" << idaProPanel.GetActivePseudocode() << "\n```\n";
+        }
+    }
     ss << "=== END TARGET PROGRAM CONTEXT ===\n\n";
-    ss << "CRITICAL INSTRUCTION FOR AI COPILOT: You ARE attached to and analyzing the executable described above right now! Rely on this exact context. DO NOT ask the user for architecture, OS, or executable type because it is already provided above. Answer directly and specifically about this program.\n\n";
+    ss << "CRITICAL SYSTEM OVERRIDE FOR AI COPILOT:\n";
+    ss << "You are OpenReverse Studio AI Copilot, deeply embedded inside a live reverse engineering and dynamic debugging platform.\n";
+    ss << "- The disassembly, strings, and decompiled C pseudocode shown above ARE from the live running process / target binary right now!\n";
+    ss << "- NEVER claim that you cannot inspect running processes, real-time memory, or live code. You HAVE the live memory disassembly and active function code provided above!\n";
+    ss << "- When the user asks 'Explique-moi étape par étape ce que fait la fonction actuelle' or similar, directly explain the disassembly / decompiled C code shown above! Do NOT refuse!\n\n";
 
     return ss.str();
 }

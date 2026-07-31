@@ -24,6 +24,8 @@ public:
     void SelectFunction(Application& app, uint64_t funcAddress);
     void OpenXrefsForAddress(uint64_t address) { xrefTargetAddress_ = address; xrefModeTo_ = true; }
     const std::vector<FunctionInfo>& GetFunctions() const { return functions_; }
+    const FunctionInfo& GetActiveFunction() const { return activeFunction_; }
+    const std::string& GetActivePseudocode() const { return activePseudocode_; }
 
 private:
     std::vector<FunctionInfo> functions_;
