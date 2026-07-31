@@ -42,8 +42,11 @@ void CLIRepl::EnableAnsiColors()
 
 void CLIRepl::PrintBanner()
 {
-    std::cout << "\033[1;36m  OpenReverse\033[0m \033[38;5;242mv2.0.0 (agentic reverse engineering shell)\033[0m\n";
-    std::cout << "  \033[38;5;242mType \033[0m\033[1;37m/\033[0m\033[38;5;242m to open command palette (/open, /attach, /decompile...) or type to chat with AI Copilot.\033[0m\n\n";
+    std::cout << "█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▄ █▀▀▀ █  █ █▀▀▀ █▀▀▄ █▀▀▀ █▀▀▀\n";
+    std::cout << "█  █ █  █ █▀▀▀ █  █ █▀▀▄ █▀▀  ▀▄▄▀ █▀▀  █▀▀▄ ▀▀▀█ █▀▀ \n";
+    std::cout << "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀  ▀ ▀▀▀▀  ▀▀  ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀\n\n";
+    std::cout << "openreverse tui | agentic reverse engineering shell\n";
+    std::cout << "Type '/' for commands (/help, /open, /sessions...) or type directly to chat.\n\n";
 }
 
 void CLIRepl::PrintOpenCodeVersion()
@@ -905,18 +908,20 @@ std::string CLIRepl::ReadInteractiveLine(Application& app, const std::string& ta
                 std::string cmdPadded = sc.cmd;
                 while (cmdPadded.length() < 12) cmdPadded += " ";
                 std::string descPadded = sc.desc;
-                if (descPadded.length() > 59) descPadded = descPadded.substr(0, 59);
-                while (descPadded.length() < 59) descPadded += " ";
+                if (descPadded.length() > 58) descPadded = descPadded.substr(0, 58);
+                while (descPadded.length() < 58) descPadded += " ";
 
                 if (isSel) {
-                    std::cout << "\033[48;5;208;1;37m│ " << cmdPadded << " " << descPadded << " │\033[0m\n";
+                    std::cout << "\033[48;5;208;1;37m│  " << cmdPadded << " " << descPadded << "│\033[0m\n";
                 } else {
-                    std::cout << "│ \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << " │\n";
+                    std::cout << "│  \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << "│\n";
                 }
                 lastMenuLines++;
             }
             std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
-            lastMenuLines++;
+            std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;242mFree Local Ollama\033[0m\n";
+            std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m\n";
+            lastMenuLines += 3;
         }
 
         std::cout << promptPrefix << inputBuffer << std::flush;
@@ -1170,17 +1175,17 @@ void CLIRepl::ShowSlashMenuPopup(Application& app)
 {
     (void)app;
     std::cout << "\n\033[38;5;238m┌──────────────────────────────────────────────────────────────────────────┐\033[0m\n";
-    std::cout << "\033[38;5;238m│\033[0m \033[1;37mOpenReverse Command Palette — Use UP/DOWN arrows or type a command\033[0m       \033[38;5;238m│\033[0m\n";
-    std::cout << "\033[38;5;238m├──────────────────────────────────────────────────────────────────────────┤\033[0m\n";
     for (const auto& sc : g_interactiveCommands) {
         std::string cmdPadded = sc.cmd;
         while (cmdPadded.length() < 12) cmdPadded += " ";
         std::string descPadded = sc.desc;
-        if (descPadded.length() > 59) descPadded = descPadded.substr(0, 59);
-        while (descPadded.length() < 59) descPadded += " ";
-        std::cout << "\033[38;5;238m│\033[0m \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << " \033[38;5;238m│\033[0m\n";
+        if (descPadded.length() > 58) descPadded = descPadded.substr(0, 58);
+        while (descPadded.length() < 58) descPadded += " ";
+        std::cout << "│  \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << "│\n";
     }
     std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
+    std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;242mFree Local Ollama\033[0m\n";
+    std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m\n";
     std::cout << "\033[1;32m/\033[0m ";
 }
 
