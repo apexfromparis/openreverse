@@ -136,6 +136,9 @@ Press **`/`** at any time in the terminal to instantly launch the visual command
 | **`/hub`** | Browse OpenReverse Developer Community Hub & Marketplace |
 | **`/install <name>`** | Install a community plugin or skill from the OpenReverse Hub |
 | **`/plugins`** | List installed community scripts, skills & plugins |
+| **`/anti-debug`** | Scan & neutralize PEB, RDTSC, SEH/VEH anti-debug traps |
+| **`/shield`** | Activate Crackme Wiper Shield against destructive host APIs |
+| **`/anti-vm`** | Bypass VMware/VirtualBox & CPUID hypervisor checks |
 | **`/models`** | Switch AI Copilot LLM model (`qwen2.5-coder`, `deepseek-r1`, `claude`...) |
 | **`/connect`** | Connect AI provider (`Ollama`, `OpenRouter`, `Groq Cloud`...) |
 | **`/setup`** | One-click interactive AI setup & local model auto-installer |

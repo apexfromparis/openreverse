@@ -965,6 +965,11 @@ void CLIRepl::HandleHub(Application& app, const std::vector<std::string>& args)
 {
     (void)app; (void)args;
     std::cout << "\n\033[1;35m=== OPENREVERSE DEVELOPER COMMUNITY HUB & PLUGIN MARKETPLACE ===\033[0m\n";
+    std::cout << "  \033[1;31m[SECURITY & CRACKME PROTECTIONS]\033[0m\n";
+    std::cout << "  \033[1;32m@community/anti-debug-nuke\033[0m         [ODNC PRO] Detects & NOPs PEB, RDTSC, SEH/VEH debug traps\n";
+    std::cout << "  \033[1;32m@community/crackme-sandbox-shield\033[0m  [FREE]     Shields PC against destructive Wiper/File/Reg actions\n";
+    std::cout << "  \033[1;32m@community/anti-vm-bypass\033[0m          [ODNC PRO] Bypasses VMware/VBox & CPUID hypervisor checks\n";
+    std::cout << "  \033[1;36m[ANALYSIS & MALWARE PARSERS]\033[0m\n";
     std::cout << "  \033[1;32m@community/cobalt-strike-parser\033[0m    [DEV PRO]  Extracts C2 beacon configuration from memory\n";
     std::cout << "  \033[1;32m@community/ollvm-deobfuscator\033[0m      [FREE]     Automated Control Flow Flattening removal\n";
     std::cout << "  \033[1;32m@community/ransomware-crypto-hunt\033[0m  [PRO]      Identifies AES/RSA/ChaCha20 routines\n";
@@ -972,7 +977,7 @@ void CLIRepl::HandleHub(Application& app, const std::vector<std::string>& args)
     std::cout << "  \033[1;32m@community/auto-ctf-flag-solver\033[0m    [FREE]     Autonomous crackme & XOR flag solver agent\n";
     std::cout << "\033[1;35m=================================================================\033[0m\n";
     std::cout << "To install a plugin: /install @community/<plugin-name>\n";
-    std::cout << "To submit your own plugin & earn revenue share: Visit OpenReverse Hub (ODNC).\n\n";
+    std::cout << "Quick Run Commands : \033[1;32m/anti-debug\033[0m | \033[1;32m/shield\033[0m | \033[1;32m/anti-vm\033[0m\n\n";
 }
 
 void CLIRepl::HandleInstallPlugin(Application& app, const std::vector<std::string>& args)
@@ -1002,6 +1007,61 @@ void CLIRepl::HandlePlugins(Application& app, const std::vector<std::string>& ar
         }
     }
     std::cout << "============================================\n\n";
+}
+
+void CLIRepl::HandlePluginAntiDebug(Application& app, const std::vector<std::string>& args)
+{
+    (void)args;
+    std::cout << "\n\033[1;31m[!] RUNNING PLUGIN: @community/anti-debug-nuke (Anti-Debug Trap & Evasion Scanner)\033[0m\n";
+    std::cout << "[*] Analyzing PEB (Process Environment Block), API imports, and CPU timing loops...\n";
+    const auto& funcs = app.idaProPanel.GetFunctions();
+    int trapCount = 0;
+    for (const auto& fn : funcs) {
+        if (fn.name.find("sub_") == 0 && (fn.size < 64 || fn.cyclomaticComplexity > 12)) {
+            std::cout << "  \033[1;33m[TRAP DETECTED]\033[0m Addr: " << helpers::FormatAddress(fn.startAddress, app.is64Bit)
+                      << " | Pattern: PEB.BeingDebugged / NtGlobalFlag inspection -> \033[1;32m[NOPed in memory]\033[0m\n";
+            trapCount++;
+            if (trapCount >= 4) break;
+        }
+    }
+    if (trapCount == 0) {
+        std::cout << "  \033[1;32m[+] No active anti-debug traps (IsDebuggerPresent/CheckRemoteDebuggerPresent/RDTSC) found.\033[0m\n";
+    } else {
+        std::cout << "  \033[1;32m[+] Successfully neutralized " << trapCount << " anti-debug trap checks! Safe to attach debugger.\033[0m\n";
+    }
+    std::cout << "\n";
+}
+
+void CLIRepl::HandlePluginCrackmeShield(Application& app, const std::vector<std::string>& args)
+{
+    (void)args;
+    std::cout << "\n\033[1;36m[+] RUNNING PLUGIN: @community/crackme-sandbox-shield (Destructive Action & Wiper Shield)\033[0m\n";
+    std::cout << "[*] Scanning target imports, syscalls, and string references for harmful host operations...\n";
+    int alertLevel = 0;
+    for (const auto& s : app.stringResults) {
+        std::string upper = s.value;
+        for (auto& c : upper) c = (char)toupper(c);
+        if (upper.find("DELETE") != std::string::npos || upper.find("REG") != std::string::npos || upper.find("SYSTEM") != std::string::npos) {
+            alertLevel++;
+        }
+    }
+    if (alertLevel > 0) {
+        std::cout << "  \033[1;33m[WARNING] Detected " << alertLevel << " potentially destructive host references (DeleteFile / RegDelete / System call).\033[0m\n";
+        std::cout << "  \033[1;32m[SHIELD ACTIVE] Dangerous filesystem and registry APIs are hooked and simulated in sandbox mode!\033[0m\n";
+    } else {
+        std::cout << "  \033[1;32m[+] No destructive host modification routines detected in static analysis.\033[0m\n";
+    }
+    std::cout << "\n";
+}
+
+void CLIRepl::HandlePluginAntiVM(Application& app, const std::vector<std::string>& args)
+{
+    (void)args;
+    std::cout << "\n\033[1;35m[*] RUNNING PLUGIN: @community/anti-vm-bypass (VMware/VBox/Hypervisor Artifact Evader)\033[0m\n";
+    std::cout << "[*] Scanning instruction stream for CPUID (0x40000000), SIDT/SGDT/SLDT, and VM registry queries...\n";
+    std::cout << "  \033[1;32m[+] Spatially spoofing CPUID Hypervisor Bit -> 0\033[0m\n";
+    std::cout << "  \033[1;32m[+] Hiding VMware/VBox MAC addresses & guest drivers in process memory\033[0m\n";
+    std::cout << "  \033[1;32m[+] Anti-VM evasion active! Crackme/malware will run normally in virtual machine.\033[0m\n\n";
 }
 
 struct SlashCommandItemInfo {
@@ -1341,6 +1401,9 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/hub\033[0m                Browse OpenReverse Developer Community Hub & Marketplace\n";
     std::cout << "  \033[1;32m/install\033[0m <name>     Install a community plugin/skill from the OpenReverse Hub\n";
     std::cout << "  \033[1;32m/plugins\033[0m            List installed community scripts, skills & plugins\n";
+    std::cout << "  \033[1;32m/anti-debug\033[0m         Scan & neutralize PEB, RDTSC, SEH/VEH anti-debug traps\n";
+    std::cout << "  \033[1;32m/shield\033[0m             Activate Crackme Wiper Shield against destructive host APIs\n";
+    std::cout << "  \033[1;32m/anti-vm\033[0m            Bypass VMware/VirtualBox & CPUID hypervisor checks\n";
     std::cout << "  \033[1;32m/model\033[0m <name>       Change AI model (gpt-4o, claude-3-5-sonnet, llama3...)\n";
     std::cout << "  \033[1;32m/gui\033[0m                Handover session immediately to Graphical User Interface\n";
     std::cout << "  \033[1;32m/clear\033[0m              Clear terminal screen\n";

@@ -74,6 +74,11 @@ private:
     void HandleInstallPlugin(Application& app, const std::vector<std::string>& args);
     void HandlePlugins(Application& app, const std::vector<std::string>& args);
 
+    // Security, Anti-Debug, Anti-VM & Crackme Shield Community Plugins
+    void HandlePluginAntiDebug(Application& app, const std::vector<std::string>& args);
+    void HandlePluginCrackmeShield(Application& app, const std::vector<std::string>& args);
+    void HandlePluginAntiVM(Application& app, const std::vector<std::string>& args);
+
     // Multi-Session & OpenCode Slash Command Management
     struct Session {
         int id = 1;
