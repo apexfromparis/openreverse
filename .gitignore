@@ -29,6 +29,9 @@ decompiled_report.md
 **/node_modules/
 **/dist/
 
+# Private website source lives outside this repository
+web/
+
 # Local secrets and provider settings
 .env
 .env.*

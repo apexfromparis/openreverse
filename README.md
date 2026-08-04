@@ -15,7 +15,6 @@ change between releases.
 - `installer/`: Windows installer source and resources
 - `tests/fixtures/crackme/`: small local analysis fixture
 - `scripts/`: build and installation helpers
-- `web/app/`: official React/Vite website
 - `assets/`: project branding and static assets
 
 Build directories, binaries, reports, and local provider settings are ignored
@@ -54,18 +53,6 @@ on binaries and processes you are authorized to inspect.
 
 The shell supports opening PE files, attaching to processes, disassembly,
 function analysis, strings, XREFs, reports, and optional AI-assisted queries.
-
-## Website
-
-The official website lives in `web/app`.
-
-```powershell
-cd web\app
-npm.cmd ci
-npm.cmd run dev
-```
-
-Use `npm.cmd run build` to create the production bundle in `web/app/dist`.
 
 ## License
 
