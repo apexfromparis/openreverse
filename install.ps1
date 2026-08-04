@@ -21,19 +21,19 @@ Write-Host "   OPENREVERSE Studio CLI - Universal Windows Installer"
 Write-Host "================================================================================="
 
 # Try to find locally compiled binary first (for development / local installation)
-$localBin = Join-Path $PSScriptRoot "powerfull ida\kyv utils\build_ninja\bin\openreverse.exe"
+$localBin = Join-Path $PSScriptRoot "build_ninja\bin\OpenReverse.exe"
 if (-not (Test-Path -Path $localBin)) {
-    $localBin = Join-Path $PSScriptRoot "kyv utils\build_ninja\bin\openreverse.exe"
+    $localBin = Join-Path $PSScriptRoot "build\bin\Release\OpenReverse.exe"
 }
 
-$destBin = Join-Path $installDir "openreverse.exe"
+$destBin = Join-Path $installDir "OpenReverse.exe"
 
 if (Test-Path -Path $localBin) {
     Write-Host "[*] Installing local build from: $localBin"
     Copy-Item -Path $localBin -Destination $destBin -Force
 } else {
     Write-Host "[*] Downloading latest release from GitHub..."
-    $releaseUrl = "https://github.com/apexfromparis/powerfull-ida/releases/latest/download/openreverse.exe"
+    $releaseUrl = "https://github.com/apexfromparis/powerfull-ida/releases/latest/download/OpenReverse.exe"
     try {
         Invoke-WebRequest -Uri $releaseUrl -OutFile $destBin -UseBasicParsing
     } catch {
@@ -55,5 +55,5 @@ if ($userPath -notlike "*$installDir*") {
 
 Write-Host "---------------------------------------------------------------------------------"
 Write-Host " [SUCCESS] OPENREVERSE CLI installed to: $destBin"
-Write-Host " Open a new PowerShell/CMD window and type: openreverse"
+Write-Host " Open a new PowerShell/CMD window and type: OpenReverse"
 Write-Host "================================================================================="

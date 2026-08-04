@@ -8,7 +8,7 @@ Commands:
   - openreverse
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/apexfromparis/powerfull-ida/releases/download/v2.0.0/openreverse.exe
+    InstallerUrl: https://github.com/apexfromparis/powerfull-ida/releases/download/v2.0.0/OpenReverse.exe
     InstallerSha256: 7158F3ECC1461E3E044A30DCE381C4F908C49CBD1114CF1867B565289993A2B8
 ManifestType: installer
 ManifestVersion: 1.6.0

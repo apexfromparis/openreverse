@@ -7,14 +7,14 @@ This directory contains the official **Windows Package Manager (WinGet)** manife
 ## 📋 Package Details
 - **PackageIdentifier**: `apexfromparis.OpenReverse`
 - **Version**: `2.0.0`
-- **InstallerType**: `portable` (`openreverse.exe`)
+- **InstallerType**: `portable` (`OpenReverse.exe`)
 - **Commands**: `openreverse`
 
 ---
 
 ## 🚀 How to Submit to Microsoft WinGet (`microsoft/winget-pkgs`)
 
-Once you publish a GitHub Release (`v2.0.0`) with `openreverse.exe` attached, follow these steps to make your CLI officially installable via `winget install apexfromparis.OpenReverse`:
+Once you publish a GitHub Release (`v2.0.0`) with `OpenReverse.exe` attached, follow these steps to make your CLI officially installable via `winget install apexfromparis.OpenReverse`:
 
 ### Option A: Using GitHub Web Interface (Easiest - 2 minutes)
 1. Fork the official Microsoft repository: [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs).
@@ -37,7 +37,7 @@ Once you publish a GitHub Release (`v2.0.0`) with `openreverse.exe` attached, fo
 ### Option B: Using Microsoft's Official `wingetcreate` CLI Tool
 If you have `wingetcreate` installed:
 ```powershell
-wingetcreate update --urls https://github.com/apexfromparis/powerfull-ida/releases/download/v2.0.0/openreverse.exe --version 2.0.0 --submit
+wingetcreate update --urls https://github.com/apexfromparis/powerfull-ida/releases/download/v2.0.0/OpenReverse.exe --version 2.0.0 --submit
 ```
 
 ---

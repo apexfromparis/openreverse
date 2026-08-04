@@ -1,9 +1,0 @@
-{
-  "name": "powerfull-ida-discord-webhook",
-  "private": true,
-  "version": "1.0.0",
-  "type": "commonjs",
-  "scripts": {
-    "start": "node server.js"
-  }
-}

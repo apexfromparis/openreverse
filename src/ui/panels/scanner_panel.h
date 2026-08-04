@@ -1,0 +1,15 @@
+#pragma once
+#include <vector>
+#include <string>
+#include "core/pattern_scanner.h"
+namespace openreverse { class Application; namespace panels {
+class ScannerPanel {
+public:
+    void Render(Application& app);
+private:
+    char patternInput_[512] = {};
+    std::vector<ScanResult> results_;
+    bool scanning_ = false;
+    int selectedPreset_ = 0;
+};
+}} // namespace

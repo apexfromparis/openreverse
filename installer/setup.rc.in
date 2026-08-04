@@ -1,0 +1,3 @@
+#include <windows.h>
+1 ICON "@CMAKE_CURRENT_SOURCE_DIR@/installer/openreverse.ico"
+101 RCDATA "@CMAKE_BINARY_DIR@/bin/Release/OpenReverse.exe"

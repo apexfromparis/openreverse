@@ -2,6 +2,9 @@
 **/build/
 **/build-fresh/
 **/build_ninja/
+**/out/
+**/.vs/
+cmake-build-*/
 *.exe
 *.dll
 *.obj
@@ -16,9 +19,19 @@ imgui.ini
 *.log
 msbuild_errors*.txt
 build_log*.txt
+setup_trace.txt
+*_test_output.txt
+*_test_report.md
+report_test.md
+decompiled_report.md
+
+# Frontend dependencies and build output
+**/node_modules/
+**/dist/
 
 # Local secrets and provider settings
 .env
 .env.*
 *.key
 *.pem
+CMakeUserPresets.json
