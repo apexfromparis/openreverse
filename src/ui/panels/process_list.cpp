@@ -4,7 +4,6 @@
 
 #include "process_list.h"
 #include "app/application.h"
-#include "core/automator.h"
 #include "ui/ui_manager.h"
 #include "utils/helpers.h"
 
@@ -102,15 +101,8 @@ void ProcessListPanel::Render(Application& app)
                 selectedIdx_ = i;
                 if (ImGui::IsMouseDoubleClicked(0))
                 {
-                    app.AttachToProcess(proc.pid);
-                    openreverse::Automator automator;
-                    automator.AnalyzeProcess(app, proc.pid, proc.name);
-                    app.idaProPanel.AnalyzeCurrentModule(app);
-                    if (!app.idaProPanel.GetFunctions().empty())
-                    {
-                        app.currentAddress = app.idaProPanel.GetFunctions()[0].startAddress;
-                        app.idaProPanel.SelectFunction(app, app.currentAddress);
-                    }
+                    if (app.AttachToProcess(proc.pid))
+                        app.idaProPanel.StartAnalyzeCurrentModule(app);
                 }
             }
 
@@ -143,15 +135,8 @@ void ProcessListPanel::Render(Application& app)
     {
         if (ImGui::Button("Attach", ImVec2(80, 0)))
         {
-            app.AttachToProcess(cachedProcesses_[selectedIdx_].pid);
-            openreverse::Automator automator;
-            automator.AnalyzeProcess(app, cachedProcesses_[selectedIdx_].pid, cachedProcesses_[selectedIdx_].name);
-            app.idaProPanel.AnalyzeCurrentModule(app);
-            if (!app.idaProPanel.GetFunctions().empty())
-            {
-                app.currentAddress = app.idaProPanel.GetFunctions()[0].startAddress;
-                app.idaProPanel.SelectFunction(app, app.currentAddress);
-            }
+            if (app.AttachToProcess(cachedProcesses_[selectedIdx_].pid))
+                app.idaProPanel.StartAnalyzeCurrentModule(app);
         }
         ImGui::SameLine();
     }

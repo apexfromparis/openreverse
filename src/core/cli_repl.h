@@ -17,19 +17,19 @@ public:
     // Enable Windows Terminal ANSI escape codes (colors & formatting)
     static void EnableAnsiColors();
 
-    static void PrintOpenCodeHelp();
-    static void PrintOpenCodeVersion();
+    static void PrintCLIHelp();
+    static void PrintCLIVersion();
 
     // Start interactive command-line REPL loop
     // Returns true if user requested to switch to GUI mode ('gui' command)
     // Returns false if user requested to exit ('exit' command)
     bool Run(Application& app);
 
-    void HandleOpen(Application& app, const std::vector<std::string>& args);
+    bool HandleOpen(Application& app, const std::vector<std::string>& args);
     void HandleAttach(Application& app, const std::vector<std::string>& args);
     void HandleAIConnect(Application& app, const std::vector<std::string>& args);
     void HandleSessions(Application& app, const std::vector<std::string>& args);
-    void HandleChat(Application& app, const std::string& userMessage);
+    bool HandleChat(Application& app, const std::string& userMessage);
 
 private:
     void PrintBanner();
@@ -55,29 +55,6 @@ private:
     void HandleAITriage(Application& app, const std::vector<std::string>& args);
     void HandleAIAutoRename(Application& app, const std::vector<std::string>& args);
 
-    // Subscription Tiers & Developer Community Hub Commands
-    enum class SubscriptionTier {
-        COMMUNITY_FREE = 0,
-        PRO_ANALYST = 1,
-        DEV_CREATOR_PRO = 2,
-        ADMIN = 3
-    };
-    SubscriptionTier userTier_ = SubscriptionTier::COMMUNITY_FREE;
-    std::string licenseKey_;
-    std::vector<std::string> installedPlugins_;
-
-    void HandleAccount(Application& app, const std::vector<std::string>& args);
-    void HandleLogin(Application& app, const std::vector<std::string>& args);
-    void HandleHub(Application& app, const std::vector<std::string>& args);
-    void HandleInstallPlugin(Application& app, const std::vector<std::string>& args);
-    void HandlePlugins(Application& app, const std::vector<std::string>& args);
-
-    // Security, Anti-Debug, Anti-VM & Crackme Shield Community Plugins
-    void HandlePluginAntiDebug(Application& app, const std::vector<std::string>& args);
-    void HandlePluginCrackmeShield(Application& app, const std::vector<std::string>& args);
-    void HandlePluginAntiVM(Application& app, const std::vector<std::string>& args);
-
-    // Multi-Session & OpenCode Slash Command Management
     struct Session {
         int id = 1;
         std::string name;

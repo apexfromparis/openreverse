@@ -98,7 +98,7 @@ void MemoryMapPanel::Render(Application& app)
                     if (ImGui::MenuItem("Copy Module+Offset"))
                         ImGui::SetClipboardText(offStr.c_str());
                 }
-                if (ImGui::MenuItem("Add to Game Offsets"))
+                if (ImGui::MenuItem("Add to Offsets & Structures"))
                     app.AddOffsetFromAddress(region.baseAddress);
                 if (ImGui::MenuItem("Dump region to file..."))
                 {

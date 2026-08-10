@@ -24,6 +24,16 @@ void DisasmViewPanel::SetAddress(uint64_t address)
     needsRefresh_ = true;
 }
 
+void DisasmViewPanel::Reset()
+{
+    currentAddress_ = 0;
+    addressInput_[0] = '0';
+    addressInput_[1] = '\0';
+    instructions_.clear();
+    history_.clear();
+    needsRefresh_ = true;
+}
+
 void DisasmViewPanel::RefreshDisassembly(Application& app)
 {
     instructions_.clear();
@@ -169,14 +179,14 @@ void DisasmViewPanel::Render(Application& app)
                 if (ImGui::MenuItem("Find XREFs to this address (X)"))
                 {
                     app.idaProPanel.OpenXrefsForAddress(inst.address);
-                    ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+                    ImGui::SetWindowFocus("Analysis / Functions & CFG");
                 }
-                if (ImGui::MenuItem("Decompile function in IDA Studio"))
+                if (ImGui::MenuItem("Open function in Analysis"))
                 {
                     app.idaProPanel.SelectFunction(app, inst.address);
-                    ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+                    ImGui::SetWindowFocus("Analysis / Functions & CFG");
                 }
-                if (ImGui::MenuItem("Add to Game Offsets"))
+                if (ImGui::MenuItem("Add to Offsets & Structures"))
                     app.AddOffsetFromAddress(inst.address);
                 ImGui::EndPopup();
             }

@@ -1,8 +1,8 @@
 #pragma once
 // ============================================================================
 // OpenReverse - Core: Automator / Headless Engine
-// Runs full analysis on a target process (Strings, CFG, Decompilation, XREFs)
-// without GUI interaction and formats IDA Studio summary reports
+// Runs bounded analysis on a target process for headless reports.
+// without GUI interaction and formats OpenReverse summary reports
 // ============================================================================
 
 #include "app/application.h"
@@ -40,7 +40,7 @@ public:
     Automator() = default;
     ~Automator() = default;
 
-    // Run automated IDA Pro / Hex-Rays analysis on a running process
+    // Run automated OpenReverse analysis on a running process.
     AutoAnalysisResult AnalyzeProcess(Application& app, DWORD pid, const std::string& processName = "");
 
     // Format the result into a beautiful markdown report

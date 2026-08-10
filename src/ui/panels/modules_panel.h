@@ -6,6 +6,7 @@ namespace openreverse { class Application; namespace panels {
 class ModulesPanel {
 public:
     void Render(Application& app);
+    void Reset();
 private:
     int selectedModule_ = -1;
     char filterText_[128] = {};

@@ -10,6 +10,13 @@
 
 namespace openreverse { namespace panels {
 
+void ModulesPanel::Reset()
+{
+    selectedModule_ = -1;
+    cachedExports_.clear();
+    showExports_ = false;
+}
+
 void ModulesPanel::Render(Application& app)
 {
     ImGui::Begin("Modules", nullptr, ImGuiWindowFlags_None);
@@ -17,7 +24,7 @@ void ModulesPanel::Render(Application& app)
     UIManager::BeginToolbar();
     if (ImGui::Button("Refresh"))
     {
-        if (app.isAttached)
+        if (app.processHandle)
             app.moduleManager.RefreshModules(app.processHandle);
         cachedExports_.clear();
         selectedModule_ = -1;
@@ -106,7 +113,7 @@ void ModulesPanel::Render(Application& app)
             ImGui::Separator();
             if (ImGui::MenuItem("Go to Base"))
                 app.NavigateToAddress(mod.baseAddress);
-            if (ImGui::MenuItem("View Exports"))
+            if (ImGui::MenuItem("View Exports", nullptr, false, app.processHandle != nullptr))
             {
                 cachedExports_ = app.moduleManager.GetExports(app.processHandle, mod.baseAddress);
                 showExports_ = true;
@@ -118,7 +125,7 @@ void ModulesPanel::Render(Application& app)
     }
 
     // Exports sub-panel
-    if (showExports_ && selectedModule_ >= 0)
+    if (showExports_ && selectedModule_ >= 0 && selectedModule_ < static_cast<int>(modules.size()))
     {
         ImGui::Separator();
         ImGui::Text("Exports (%s) - %zu functions",

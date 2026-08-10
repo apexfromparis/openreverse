@@ -17,6 +17,7 @@ class DisasmViewPanel {
 public:
     void Render(Application& app);
     void SetAddress(uint64_t address);
+    void Reset();
 
 private:
     uint64_t currentAddress_ = 0;

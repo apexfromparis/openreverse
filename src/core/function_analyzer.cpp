@@ -1,19 +1,37 @@
 // ============================================================================
-// OpenReverse - Core: Function Analyzer & CFG / Decompiler Engine Implementation
+// OpenReverse - Core: Function Analyzer, CFG, and Pseudocode Implementation
 // ============================================================================
 
 #include "function_analyzer.h"
 #include "utils/helpers.h"
-#include "utils/logger.h"
 #include <sstream>
-#include <iomanip>
 #include <algorithm>
-#include <cmath>
+#include <deque>
+#include <limits>
+#include <tuple>
 
 namespace openreverse {
 
+const BasicBlock* ControlFlowGraph::FindBlock(uint64_t startAddress) const
+{
+    auto it = std::lower_bound(basicBlocks.begin(), basicBlocks.end(), startAddress,
+        [](const BasicBlock& block, uint64_t address) { return block.startAddress < address; });
+    return it != basicBlocks.end() && it->startAddress == startAddress ? &*it : nullptr;
+}
+
+const BasicBlock* ControlFlowGraph::FindContainingBlock(uint64_t address) const
+{
+    auto it = std::upper_bound(basicBlocks.begin(), basicBlocks.end(), address,
+        [](uint64_t value, const BasicBlock& block) { return value < block.startAddress; });
+    if (it == basicBlocks.begin())
+        return nullptr;
+    --it;
+    return address >= it->startAddress && address < it->endAddress ? &*it : nullptr;
+}
+
 bool FunctionAnalyzer::IsConditionalJump(const std::string& m)
 {
+    if (m == "loop" || m == "loope" || m == "loopne") return true;
     if (m.empty() || m[0] != 'j') return false;
     return m == "je" || m == "jne" || m == "jz" || m == "jnz" ||
            m == "jg" || m == "jge" || m == "jl" || m == "jle" ||
@@ -38,8 +56,9 @@ bool FunctionAnalyzer::IsCall(const std::string& m)
 }
 
 std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* data, size_t dataSize,
-                                                            uint64_t baseAddress, bool is64Bit,
-                                                            size_t maxFunctions)
+                                                             uint64_t baseAddress, bool is64Bit,
+                                                             size_t maxFunctions,
+                                                             size_t maxDiscoveryInstructions)
 {
     std::vector<FunctionInfo> functions;
     if (!data || dataSize < 16) return functions;
@@ -48,11 +67,10 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* dat
 
     auto addCandidate = [&](uint64_t addr) {
         if (discoveredAddrs.count(addr)) return;
-        if (addr < baseAddress || addr >= baseAddress + dataSize) return;
+        if (addr < baseAddress || addr - baseAddress >= dataSize) return;
         discoveredAddrs.insert(addr);
     };
 
-    // 1. Scan for x64 / x86 prologues, CET markers, and boundary transitions
     for (size_t i = 0; i + 4 < dataSize && discoveredAddrs.size() < maxFunctions; ++i)
     {
         bool isPrologue = false;
@@ -110,32 +128,32 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* dat
         }
     }
 
-    // 2. Structural discovery: scan for relative CALL instructions (0xE8) in executable code
-    for (size_t i = 0; i + 5 <= dataSize && discoveredAddrs.size() < maxFunctions; ++i)
+    // Bytewise scans cannot distinguish an opcode from 0xE8 inside an immediate.
+    Disassembler decoder;
+    if (maxDiscoveryInstructions != 0 && decoder.Init(is64Bit))
     {
-        if (data[i] == 0xE8) // CALL rel32
+        auto instructions = decoder.Disassemble(data, dataSize, baseAddress, maxDiscoveryInstructions);
+        for (const auto& instruction : instructions)
         {
-            int32_t rel32 = 0;
-            std::memcpy(&rel32, data + i + 1, sizeof(int32_t));
-            uint64_t target = baseAddress + i + 5 + rel32;
-            if (target >= baseAddress && target < baseAddress + dataSize)
-            {
-                // Ensure target does not land in padding bytes
-                size_t offset = (size_t)(target - baseAddress);
-                if (data[offset] != 0xCC && data[offset] != 0x90 && data[offset] != 0x00)
-                {
-                    addCandidate(target);
-                }
-            }
+            if (discoveredAddrs.size() >= maxFunctions)
+                break;
+            if (!instruction.isCall || instruction.targetKind != InstructionTargetKind::Immediate)
+                continue;
+            const uint64_t target = instruction.targetAddress;
+            if (target < baseAddress || target - baseAddress >= dataSize)
+                continue;
+            addCandidate(target);
         }
     }
 
-    // 3. Construct sorted function list with smart boundary estimation
     std::vector<uint64_t> sortedAddrs(discoveredAddrs.begin(), discoveredAddrs.end());
     for (size_t idx = 0; idx < sortedAddrs.size() && functions.size() < maxFunctions; ++idx)
     {
         uint64_t addr = sortedAddrs[idx];
-        uint64_t nextAddr = (idx + 1 < sortedAddrs.size()) ? sortedAddrs[idx + 1] : (baseAddress + dataSize);
+        const uint64_t bufferEnd = dataSize > (std::numeric_limits<uint64_t>::max)() - baseAddress
+            ? (std::numeric_limits<uint64_t>::max)()
+            : baseAddress + dataSize;
+        uint64_t nextAddr = (idx + 1 < sortedAddrs.size()) ? sortedAddrs[idx + 1] : bufferEnd;
 
         FunctionInfo fi;
         fi.startAddress = addr;
@@ -224,121 +242,251 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::v
 FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataSize,
                                                uint64_t funcAddress, uint64_t bufferBase,
                                                Disassembler& disasm, bool is64Bit,
-                                               size_t maxBytes)
+                                               size_t maxBytes, size_t maxInstructions)
 {
     FunctionInfo fi;
     fi.startAddress = funcAddress;
     fi.name = "sub_" + helpers::FormatAddress(funcAddress, is64Bit).substr(2);
     fi.callingConvention = is64Bit ? "x64 fastcall" : "stdcall / cdecl";
+    fi.cfg.entryAddress = funcAddress;
 
-    if (!data || funcAddress < bufferBase || (funcAddress - bufferBase) >= dataSize)
+    if (!data || maxBytes == 0 || maxInstructions == 0 || funcAddress < bufferBase ||
+        (funcAddress - bufferBase) >= dataSize)
         return fi;
 
-    size_t offset = (size_t)(funcAddress - bufferBase);
-    size_t remaining = dataSize - offset;
-    size_t scanLen = (remaining < maxBytes) ? remaining : maxBytes;
+    const size_t functionOffset = static_cast<size_t>(funcAddress - bufferBase);
+    const size_t scanLength = std::min(maxBytes, dataSize - functionOffset);
+    const auto inRange = [&](uint64_t address) {
+        return address >= funcAddress && address - funcAddress < scanLength;
+    };
 
-    auto insts = disasm.Disassemble(data + offset, scanLen, funcAddress, 512);
-    if (insts.empty()) return fi;
+    std::map<uint64_t, Instruction> decoded;
+    std::set<uint64_t> leaders{funcAddress};
+    std::set<uint64_t> visitedLeaders;
+    std::deque<uint64_t> pending{funcAddress};
 
-    // First pass: collect jump targets inside this function
-    std::set<uint64_t> jumpTargets;
-    jumpTargets.insert(funcAddress);
+    const auto queueLeader = [&](uint64_t address, std::deque<uint64_t>& queue) {
+        if (!inRange(address))
+            return;
+        leaders.insert(address);
+        if (visitedLeaders.count(address) == 0)
+            queue.push_back(address);
+    };
 
-    for (const auto& ins : insts)
+    while (!pending.empty() && decoded.size() < maxInstructions)
     {
-        if (ins.isCall && ins.targetAddress != 0)
+        const uint64_t leader = pending.front();
+        pending.pop_front();
+        if (!inRange(leader) || !visitedLeaders.insert(leader).second)
+            continue;
+
+        uint64_t address = leader;
+        while (inRange(address) && decoded.size() < maxInstructions)
         {
-            fi.callTargets.push_back(ins.targetAddress);
-        }
-        else if (ins.isJump && ins.targetAddress != 0)
-        {
-            if (ins.targetAddress >= funcAddress && ins.targetAddress < (funcAddress + scanLen))
-                jumpTargets.insert(ins.targetAddress);
-        }
-        if (IsReturn(ins.mnemonic))
-        {
-            fi.endAddress = ins.address + ins.size;
+            if (address != leader && leaders.count(address) != 0)
+                break;
+
+            auto existing = decoded.find(address);
+            if (existing != decoded.end())
+            {
+                leaders.insert(address);
+                break;
+            }
+
+            auto nextDecoded = decoded.lower_bound(address);
+            if (nextDecoded != decoded.begin())
+            {
+                const Instruction& previous = std::prev(nextDecoded)->second;
+                if (address > previous.address && address - previous.address < previous.size)
+                {
+                    fi.cfg.complete = false;
+                    break;
+                }
+            }
+
+            const size_t bufferOffset = static_cast<size_t>(address - bufferBase);
+            const size_t rangeRemaining = scanLength - static_cast<size_t>(address - funcAddress);
+            const size_t available = std::min(dataSize - bufferOffset, rangeRemaining);
+            Instruction instruction{};
+            if (!disasm.DecodeInstruction(data + bufferOffset, available, address, instruction) ||
+                instruction.address != address || instruction.size == 0 || instruction.size > available)
+            {
+                fi.cfg.complete = false;
+                break;
+            }
+            if (nextDecoded != decoded.end() && nextDecoded->first - address < instruction.size)
+            {
+                fi.cfg.complete = false;
+                break;
+            }
+
+            decoded.emplace(address, instruction);
+            const bool isConditional = IsConditionalJump(instruction.mnemonic);
+            const bool isUnconditional = IsUnconditionalJump(instruction.mnemonic);
+            const bool isReturn = IsReturn(instruction.mnemonic);
+
+            uint64_t nextAddress = 0;
+            const bool hasNext = instruction.size <= (std::numeric_limits<uint64_t>::max)() - address;
+            if (hasNext)
+                nextAddress = address + instruction.size;
+
+            if (isReturn)
+                break;
+            if (isConditional)
+            {
+                if (instruction.targetKind == InstructionTargetKind::Immediate)
+                    queueLeader(instruction.targetAddress, pending);
+                if (hasNext)
+                    queueLeader(nextAddress, pending);
+                break;
+            }
+            if (isUnconditional || instruction.isJump)
+            {
+                if (instruction.targetKind == InstructionTargetKind::Immediate)
+                    queueLeader(instruction.targetAddress, pending);
+                break;
+            }
+            if (!hasNext || !inRange(nextAddress))
+            {
+                fi.cfg.complete = false;
+                break;
+            }
+            if (decoded.size() >= maxInstructions)
+            {
+                fi.cfg.complete = false;
+                fi.cfg.instructionBudgetReached = true;
+                break;
+            }
+            address = nextAddress;
         }
     }
 
-    if (fi.endAddress == 0)
-        fi.endAddress = insts.back().address + insts.back().size;
-    fi.size = (size_t)(fi.endAddress - fi.startAddress);
-
-    // Second pass: build basic blocks
-    BasicBlock currentBlock;
-    currentBlock.startAddress = insts[0].address;
-    currentBlock.isTarget = true;
-
-    int edgeCount = 0;
-
-    for (size_t i = 0; i < insts.size(); ++i)
+    if (!pending.empty())
     {
-        const auto& ins = insts[i];
-        if (ins.address >= fi.endAddress)
-            break;
+        fi.cfg.complete = false;
+        fi.cfg.instructionBudgetReached = true;
+    }
+    fi.cfg.decodedInstructionCount = decoded.size();
+    if (decoded.empty())
+        return fi;
 
-        // If this address is a jump target and we already have instructions, close current block
-        if (jumpTargets.count(ins.address) && !currentBlock.instructions.empty())
+    std::set<std::tuple<uint64_t, uint64_t, CFGEdgeType>> uniqueEdges;
+    const auto addEdge = [&](uint64_t source, uint64_t target, CFGEdgeType type) {
+        if (uniqueEdges.emplace(source, target, type).second)
+            fi.cfg.edges.push_back({source, target, type});
+    };
+
+    for (uint64_t leader : leaders)
+    {
+        if (decoded.find(leader) == decoded.end())
+            continue;
+
+        BasicBlock block;
+        block.startAddress = leader;
+        uint64_t address = leader;
+        while (true)
         {
-            currentBlock.endAddress = ins.address;
-            currentBlock.fallthroughAddr = ins.address;
-            fi.basicBlocks.push_back(currentBlock);
+            auto instructionIt = decoded.find(address);
+            if (instructionIt == decoded.end())
+                break;
+            const Instruction& instruction = instructionIt->second;
+            block.instructions.push_back(instruction);
+            block.endAddress = instruction.address + instruction.size;
 
-            currentBlock = BasicBlock();
-            currentBlock.startAddress = ins.address;
-            currentBlock.isTarget = true;
-            edgeCount++;
+            if (IsReturn(instruction.mnemonic) || instruction.isJump)
+                break;
+            const uint64_t nextAddress = instruction.address + instruction.size;
+            if (leaders.count(nextAddress) != 0 || decoded.find(nextAddress) == decoded.end())
+                break;
+            address = nextAddress;
         }
 
-        currentBlock.instructions.push_back(ins);
+        if (block.instructions.empty())
+            continue;
+        fi.cfg.basicBlocks.push_back(std::move(block));
+    }
 
-        bool isCond = IsConditionalJump(ins.mnemonic);
-        bool isUncond = IsUnconditionalJump(ins.mnemonic);
-        bool isRet = IsReturn(ins.mnemonic);
+    std::sort(fi.cfg.basicBlocks.begin(), fi.cfg.basicBlocks.end(),
+        [](const BasicBlock& left, const BasicBlock& right) { return left.startAddress < right.startAddress; });
 
-        if (isCond || isUncond || isRet)
+    for (auto& block : fi.cfg.basicBlocks)
+    {
+        const Instruction& terminator = block.instructions.back();
+        const uint64_t nextAddress = terminator.address + terminator.size;
+        if (IsReturn(terminator.mnemonic))
         {
-            currentBlock.endAddress = ins.address + ins.size;
-            currentBlock.isTerminal = isRet;
-
-            if (isCond)
+            addEdge(block.startAddress, 0, CFGEdgeType::Return);
+        }
+        else if (IsConditionalJump(terminator.mnemonic))
+        {
+            if (terminator.targetKind == InstructionTargetKind::Immediate)
             {
-                currentBlock.branchAddr = ins.targetAddress;
-                if (i + 1 < insts.size())
-                    currentBlock.fallthroughAddr = insts[i + 1].address;
-                edgeCount += 2;
+                block.branchAddr = terminator.targetAddress;
+                addEdge(block.startAddress, terminator.targetAddress, CFGEdgeType::ConditionalTrue);
             }
-            else if (isUncond)
+            if (inRange(nextAddress))
             {
-                currentBlock.branchAddr = ins.targetAddress;
-                currentBlock.fallthroughAddr = 0;
-                edgeCount += 1;
+                block.fallthroughAddr = nextAddress;
+                addEdge(block.startAddress, nextAddress, CFGEdgeType::ConditionalFalse);
             }
-            else if (isRet)
+        }
+        else if (IsUnconditionalJump(terminator.mnemonic) || terminator.isJump)
+        {
+            if (terminator.targetKind == InstructionTargetKind::Immediate)
             {
-                currentBlock.fallthroughAddr = 0;
-                currentBlock.branchAddr = 0;
+                block.branchAddr = terminator.targetAddress;
+                addEdge(block.startAddress, terminator.targetAddress, CFGEdgeType::Unconditional);
             }
-
-            fi.basicBlocks.push_back(currentBlock);
-            currentBlock = BasicBlock();
-            if (i + 1 < insts.size())
-                currentBlock.startAddress = insts[i + 1].address;
+        }
+        else if (inRange(nextAddress) && leaders.count(nextAddress) != 0)
+        {
+            block.fallthroughAddr = nextAddress;
+            addEdge(block.startAddress, nextAddress, CFGEdgeType::Fallthrough);
         }
     }
 
-    if (!currentBlock.instructions.empty())
+    for (const auto& edge : fi.cfg.edges)
     {
-        currentBlock.endAddress = currentBlock.instructions.back().address + currentBlock.instructions.back().size;
-        fi.basicBlocks.push_back(currentBlock);
+        auto source = std::lower_bound(fi.cfg.basicBlocks.begin(), fi.cfg.basicBlocks.end(), edge.source,
+            [](const BasicBlock& block, uint64_t address) { return block.startAddress < address; });
+        if (source != fi.cfg.basicBlocks.end() && source->startAddress == edge.source && edge.target != 0)
+            source->successors.push_back(edge.target);
+
+        auto target = std::lower_bound(fi.cfg.basicBlocks.begin(), fi.cfg.basicBlocks.end(), edge.target,
+            [](const BasicBlock& block, uint64_t address) { return block.startAddress < address; });
+        if (edge.target != 0 && target != fi.cfg.basicBlocks.end() && target->startAddress == edge.target)
+            target->predecessors.push_back(edge.source);
     }
 
-    // V(G) = E - N + 2P
-    int numBlocks = (int)fi.basicBlocks.size();
-    int complexity = edgeCount - numBlocks + 2;
-    fi.cyclomaticComplexity = (complexity > 1) ? complexity : 1;
+    int conditionalCount = 0;
+    for (auto& block : fi.cfg.basicBlocks)
+    {
+        std::sort(block.successors.begin(), block.successors.end());
+        block.successors.erase(std::unique(block.successors.begin(), block.successors.end()), block.successors.end());
+        std::sort(block.predecessors.begin(), block.predecessors.end());
+        block.predecessors.erase(std::unique(block.predecessors.begin(), block.predecessors.end()), block.predecessors.end());
+        block.isTarget = block.startAddress == funcAddress || !block.predecessors.empty();
+
+        bool hasInternalSuccessor = false;
+        for (uint64_t successor : block.successors)
+            if (fi.cfg.FindBlock(successor)) hasInternalSuccessor = true;
+        block.isTerminal = !hasInternalSuccessor;
+
+        const Instruction& last = block.instructions.back();
+        if (IsConditionalJump(last.mnemonic))
+            ++conditionalCount;
+        fi.endAddress = std::max(fi.endAddress, block.endAddress);
+    }
+
+    for (const auto& pair : decoded)
+    {
+        const Instruction& instruction = pair.second;
+        if (instruction.isCall && instruction.targetKind == InstructionTargetKind::Immediate)
+            fi.callTargets.push_back(instruction.targetAddress);
+    }
+
+    fi.size = fi.endAddress >= fi.startAddress ? static_cast<size_t>(fi.endAddress - fi.startAddress) : 0;
+    fi.cyclomaticComplexity = 1 + conditionalCount;
 
     return fi;
 }
@@ -347,9 +495,10 @@ std::string FunctionAnalyzer::GeneratePseudocode(const FunctionInfo& func, bool 
 {
     std::ostringstream ss;
     ss << "// ============================================================================\n";
-    ss << "// OpenReverse HEX-RAYS PSEUDOCODE DECOMPILER\n";
+    ss << "// OpenReverse Experimental Pseudocode\n";
+    ss << "// Heuristic output: inferred names and types are not authoritative.\n";
     ss << "// Function: " << func.name << " | Address: " << helpers::FormatAddress(func.startAddress, is64Bit) << "\n";
-    ss << "// Size: " << func.size << " bytes | Basic Blocks: " << func.basicBlocks.size() << " | Complexity V(G): " << func.cyclomaticComplexity << "\n";
+    ss << "// Size: " << func.size << " bytes | Basic Blocks: " << func.cfg.basicBlocks.size() << " | Complexity V(G): " << func.cyclomaticComplexity << "\n";
     ss << "// Calling Convention: " << func.callingConvention << "\n";
     ss << "// ============================================================================\n\n";
 
@@ -368,16 +517,16 @@ std::string FunctionAnalyzer::GeneratePseudocode(const FunctionInfo& func, bool 
         ss << "    int32_t eax_result = 0;\n\n";
     }
 
-    if (func.basicBlocks.empty())
+    if (func.cfg.basicBlocks.empty())
     {
         ss << "    // [Unanalyzed or empty basic block]\n";
         ss << "    return " << (is64Bit ? "rax_result" : "eax_result") << ";\n}\n";
         return ss.str();
     }
 
-    for (size_t bidx = 0; bidx < func.basicBlocks.size(); ++bidx)
+    for (size_t bidx = 0; bidx < func.cfg.basicBlocks.size(); ++bidx)
     {
-        const auto& bb = func.basicBlocks[bidx];
+        const auto& bb = func.cfg.basicBlocks[bidx];
         ss << "loc_" << std::hex << std::uppercase << bb.startAddress << ":\n";
         ss << "    // --- Basic Block " << std::dec << bidx << " (" << helpers::FormatAddress(bb.startAddress, is64Bit) << " -> " << helpers::FormatAddress(bb.endAddress, is64Bit) << ") ---\n";
 

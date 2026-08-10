@@ -1,7 +1,7 @@
 #pragma once
 // ============================================================================
 // OpenReverse - Core: Cross-References (XREFs) Scanner & Indexer
-// IDA Pro style code/data XREFs discovery and navigation engine
+// Shared code/data Xref discovery and navigation engine
 // ============================================================================
 
 #include <string>
@@ -18,6 +18,7 @@ enum class XRefType {
     Jump,
     Read,
     Write,
+    ReadWrite,
     Lea
 };
 
@@ -37,9 +38,13 @@ public:
     // Scan a buffer (.text section) and build the entire XREF index
     void ScanBuffer(const uint8_t* data, size_t dataSize, uint64_t baseAddress,
                     const std::string& moduleName, Disassembler& disasm, bool is64Bit);
+    void ScanInstructions(const std::vector<Instruction>& instructions, const std::string& moduleName);
 
     // Clear all indexed XREFs
     void Clear();
+
+    // Replace the index from an immutable analysis result on the owning thread.
+    void ReplaceEntries(std::vector<XRefEntry> entries);
 
     // Query XREFs targeting a specific address (Who calls/references this?)
     std::vector<XRefEntry> FindXRefsTo(uint64_t targetAddress) const;

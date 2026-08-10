@@ -19,6 +19,18 @@ struct MemoryRegion {
     DWORD       type;        // MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE
 };
 
+struct MemoryBlock {
+    uint64_t baseAddress = 0;
+    std::vector<uint8_t> bytes;
+};
+
+struct MemoryReadReport {
+    std::vector<MemoryBlock> blocks;
+    size_t bytesRead = 0;
+    bool budgetExhausted = false;
+    bool sourceUnavailable = false;
+};
+
 class MemoryReader {
 public:
     // Refresh the memory region map
@@ -36,6 +48,10 @@ public:
     // Read as vector<uint8_t>
     std::vector<uint8_t> ReadBytes(HANDLE processHandle, uint64_t address, size_t size);
 
+    // Read only committed/readable portions and preserve their true addresses.
+    MemoryReadReport ReadReadableBlocks(HANDLE processHandle, uint64_t startAddress,
+                                        uint64_t size, size_t maxBytes);
+
     // Write bytes to process memory
     bool WriteMemory(HANDLE processHandle, uint64_t address, const void* buffer, size_t size);
 
@@ -51,12 +67,8 @@ public:
         return value;
     }
 
-    // Set an offline buffer for static PE / driver (.sys) analysis
-    void SetOfflineBuffer(const std::vector<uint8_t>* buffer, uint64_t imageBase)
-    {
-        offlineBuffer_ = buffer;
-        offlineImageBase_ = imageBase;
-    }
+    // Set a PE image mapped by RVA for static analysis.
+    void SetOfflineBuffer(const std::vector<uint8_t>* buffer, uint64_t imageBase);
 
 private:
     std::vector<MemoryRegion> regions_;

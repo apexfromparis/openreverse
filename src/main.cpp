@@ -6,6 +6,7 @@
 #include "ui/ui_manager.h"
 #include "core/automator.h"
 #include "core/cli_repl.h"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 
@@ -71,7 +72,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             AttachConsole(ATTACH_PARENT_PROCESS);
             freopen("CONOUT$", "w", stdout);
-            printf("[+] OpenReverse Headless Engine: Launching and decompiling '%s'...\n", exePath.c_str());
+            printf("[+] OpenReverse: launching and analyzing '%s'...\n", exePath.c_str());
 
             STARTUPINFOA si = { sizeof(si) };
             PROCESS_INFORMATION pi = {};
@@ -87,7 +88,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     std::ofstream ofs(outFile);
                     ofs << report;
                     ofs.close();
-                    printf("[+] SUCCESS! Report saved to: %s (%zu functions decompiled, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
+                    printf("[+] Report saved to: %s (%zu functions, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
                 }
                 else
                 {
@@ -192,7 +193,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             AttachConsole(ATTACH_PARENT_PROCESS);
             freopen("CONOUT$", "w", stdout);
-            printf("[+] OpenReverse Headless Engine: Starting IDA Pro automated decompilation on PID %lu...\n", targetPid);
+            printf("[+] OpenReverse Headless Engine: Starting automated analysis on PID %lu...\n", targetPid);
 
             openreverse::Automator automator;
             auto res = automator.AnalyzeProcess(app, targetPid);
@@ -202,7 +203,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 std::ofstream ofs(outFile);
                 ofs << report;
                 ofs.close();
-                printf("[+] SUCCESS! Report saved to: %s (%zu functions decompiled, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
+                printf("[+] Report saved to: %s (%zu functions, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
                 return 0;
             }
             else
@@ -219,10 +220,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string fullExePath = exePathBuf;
     std::string exeName = fullExePath.substr(fullExePath.find_last_of("/\\") + 1);
     for (auto& c : exeName) c = tolower(c);
-    bool isCliExe = (exeName.find("openreverse-gui") == std::string::npos &&
-                     exeName.find("openreverse") == std::string::npos &&
-                     exeName.find("setup") == std::string::npos &&
-                     (exeName.find("openreverse") != std::string::npos || exeName.find("cli") != std::string::npos));
+    const bool guiRequested = std::find(cmdArgs.begin() + 1, cmdArgs.end(), "--gui") != cmdArgs.end() ||
+                              std::find(cmdArgs.begin() + 1, cmdArgs.end(), "-g") != cmdArgs.end();
+    bool cliRequested = exeName.find("cli") != std::string::npos;
+    if (cmdArgs.size() > 1)
+    {
+        const std::string& firstArg = cmdArgs[1];
+        cliRequested = cliRequested || firstArg == "--cli" || firstArg == "-h" || firstArg == "--help" ||
+            firstArg == "help" || firstArg == "-v" || firstArg == "--version" || firstArg == "version" ||
+            firstArg == "models" || firstArg == "model" || firstArg == "providers" || firstArg == "auth" ||
+            firstArg == "setup" || firstArg == "init" || firstArg == "install-ai" || firstArg == "session" ||
+            firstArg == "sessions" || firstArg == "stats" || firstArg == "run" || firstArg == "open" ||
+            firstArg == "attach" || firstArg == "--uninstall" || firstArg == "uninstall" || firstArg == "/uninstall";
+    }
+    const bool isCliExe = !guiRequested && exeName.find("setup") == std::string::npos && cliRequested;
 
     if (isCliExe)
     {
@@ -246,32 +257,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             std::string arg = cmdArgs[i];
             if (arg == "-h" || arg == "--help" || arg == "help")
             {
-                openreverse::CLIRepl::PrintOpenCodeHelp();
+                openreverse::CLIRepl::PrintCLIHelp();
                 return 0;
             }
             else if (arg == "-v" || arg == "--version" || arg == "version")
             {
-                openreverse::CLIRepl::PrintOpenCodeVersion();
+                openreverse::CLIRepl::PrintCLIVersion();
                 return 0;
             }
             else if (arg == "models" || arg == "model")
             {
-                std::cout << "ollama/qwen2.5-coder:7b [FREE LOCAL - DEFAULT]\n"
-                          << "ollama/deepseek-coder-v2 [FREE LOCAL]\n"
-                          << "ollama/llama3.1:8b [FREE LOCAL]\n"
-                          << "lmstudio/qwen2.5-coder-7b-instruct [FREE LOCAL]\n"
-                          << "groq/llama-3.3-70b-versatile [FREE TIER]\n"
-                          << "openrouter/qwen-2.5-coder-32b-instruct:free [FREE TIER]\n"
-                          << "openai/gpt-4o\n"
-                          << "anthropic/claude-3-5-sonnet\n"
-                          << "gemini/gemini-1.5-pro\n"
-                          << "mistral/codestral-latest\n";
+                std::cout << "Configured provider: " << app.aiService.Provider() << "\n"
+                          << "Configured model   : " << app.aiService.Model() << "\n"
+                          << "Dynamic provider model discovery is not implemented yet.\n";
                 return 0;
             }
             else if (arg == "--uninstall" || arg == "uninstall" || arg == "/uninstall")
             {
                 int c = MessageBoxA(NULL,
-                    "Are you sure you want to completely uninstall OpenReverse Studio v2.0?",
+                    "Remove OpenReverse Studio shortcuts and uninstall registration?",
                     "OpenReverse Studio Uninstaller",
                     MB_YESNO | MB_ICONQUESTION);
                 if (c == IDYES)
@@ -284,7 +288,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         DeleteFileA((std::string(startMenuPath) + "\\OpenReverse Studio.lnk").c_str());
                     RegDeleteKeyA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverseStudio");
 
-                    MessageBoxA(NULL, "OpenReverse Studio v2.0 shortcuts and registry entries have been removed.\nYou may delete this directory if desired.",
+                    MessageBoxA(NULL, "Shortcuts and uninstall registration were removed. The application files were not deleted.",
                                 "Uninstall Complete", MB_ICONINFORMATION);
                 }
                 return 0;
@@ -304,9 +308,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             else if (arg == "stats")
             {
                 std::cout << "=== OPENREVERSE SESSION STATS ===\n"
-                          << "  Active AI Provider: Ollama (Free Local)\n"
-                          << "  Model             : qwen2.5-coder:7b\n"
-                          << "  Token Usage       : 0 prompt / 0 completion ($0.00 FREE)\n"
+                          << "  Active AI Provider: " << app.aiService.Provider() << "\n"
+                          << "  Model             : " << app.aiService.Model() << "\n"
+                          << "  Token/cost telemetry is not collected by this build.\n"
                           << "=================================\n";
                 return 0;
             }
@@ -315,18 +319,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 std::string prompt = cmdArgs[i + 1];
                 for (size_t j = i + 2; j < cmdArgs.size(); ++j) prompt += " " + cmdArgs[j];
                 openreverse::CLIRepl repl;
-                repl.HandleChat(app, prompt);
-                return 0;
+                return repl.HandleChat(app, prompt) ? 0 : 1;
             }
             else if (arg == "open" && i + 1 < cmdArgs.size())
             {
                 std::string targetPath = cmdArgs[i + 1];
                 std::vector<std::string> openArgs = { "open", targetPath };
                 openreverse::CLIRepl repl;
-                repl.HandleOpen(app, openArgs);
+                const bool opened = repl.HandleOpen(app, openArgs);
                 std::cout.flush();
                 fflush(stdout);
-                return 0;
+                return opened ? 0 : 1;
+            }
+            else if (arg == "attach" && i + 1 < cmdArgs.size())
+            {
+                openreverse::CLIRepl repl;
+                repl.HandleAttach(app, {"attach", cmdArgs[i + 1]});
+                return app.isAttached ? 0 : 1;
             }
         }
 
@@ -448,6 +457,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // Cleanup
+    app.Shutdown();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();

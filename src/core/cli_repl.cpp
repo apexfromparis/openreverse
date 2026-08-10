@@ -6,7 +6,6 @@
 #include "automator.h"
 #include "ui/panels/ida_pro_panel.h"
 #include "utils/helpers.h"
-#include "utils/logger.h"
 #include <windows.h>
 #include <iostream>
 #include <sstream>
@@ -14,8 +13,41 @@
 #include <fstream>
 #include <algorithm>
 #include <conio.h>
+#include <limits>
+#include <utility>
 
 namespace openreverse {
+
+namespace {
+
+std::vector<std::string> TokenizeCommand(const std::string& line)
+{
+    std::vector<std::string> tokens;
+    std::string token;
+    bool quoted = false;
+    for (char character : line)
+    {
+        if (character == '"')
+        {
+            quoted = !quoted;
+            continue;
+        }
+        if (!quoted && (character == ' ' || character == '\t'))
+        {
+            if (!token.empty())
+            {
+                tokens.push_back(std::move(token));
+                token.clear();
+            }
+            continue;
+        }
+        token.push_back(character);
+    }
+    if (!token.empty()) tokens.push_back(std::move(token));
+    return tokens;
+}
+
+} // namespace
 
 CLIRepl::CLIRepl()
 {
@@ -49,25 +81,24 @@ void CLIRepl::PrintBanner()
     std::cout << "Type '/' for commands (/help, /open, /sessions...) or type directly to chat.\n\n";
 }
 
-void CLIRepl::PrintOpenCodeVersion()
+void CLIRepl::PrintCLIVersion()
 {
     std::cout << "2.0.0 (openreverse-studio)\n";
 }
 
-void CLIRepl::PrintOpenCodeHelp()
+void CLIRepl::PrintCLIHelp()
 {
     std::cout << "█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▄ █▀▀▀ █  █ █▀▀▀ █▀▀▄ █▀▀▀ █▀▀▀\n";
     std::cout << "█  █ █  █ █▀▀▀ █  █ █▀▀▄ █▀▀  ▀▄▄▀ █▀▀  █▀▀▄ ▀▀▀█ █▀▀ \n";
     std::cout << "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀  ▀ ▀▀▀▀  ▀▀  ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀\n\n";
     std::cout << "Commands:\n";
-    std::cout << "  openreverse completion          generate shell completion script\n";
-    std::cout << "  openreverse [project/exe]       start openreverse tui [default]\n";
+    std::cout << "  openreverse [binary]            start the GUI and optionally open a binary\n";
+    std::cout << "  openreverse --cli               start the interactive command shell\n";
     std::cout << "  openreverse attach <pid>        attach to a running target or PID\n";
     std::cout << "  openreverse run [message..]     run openreverse with a message / prompt\n";
     std::cout << "  openreverse providers           manage AI providers and credentials [aliases: auth]\n";
-    std::cout << "  openreverse models [provider]   list all available models\n";
-    std::cout << "  openreverse stats               show token usage and cost statistics\n";
-    std::cout << "  openreverse export [sessionID]  export session data as JSON/Markdown\n";
+    std::cout << "  openreverse models              show the currently configured model\n";
+    std::cout << "  openreverse stats               show local session configuration\n";
     std::cout << "  openreverse session             manage sessions\n\n";
     std::cout << "Options:\n";
     std::cout << "  -h, --help          show help                                                            [boolean]\n";
@@ -81,28 +112,28 @@ void CLIRepl::PrintOpenCodeHelp()
 void CLIRepl::PrintHelp()
 {
     std::cout << "OPENREVERSE Terminal Interactive Commands:\n";
-    std::cout << "  open <path.exe>       Launch binary in background & run IDA Studio analysis\n";
-    std::cout << "  attach <PID>          Attach to running PID & run IDA Studio analysis\n";
+    std::cout << "  open <path.exe>       Open a binary and run OpenReverse analysis\n";
+    std::cout << "  attach <PID>          Attach to a PID and run OpenReverse analysis\n";
     std::cout << "  functions [filter]    List discovered functions (Addr, Name, Size, V(G), XREFs)\n";
-    std::cout << "  decompile <addr|name> Decompile function to Hex-Rays C pseudocode\n";
+    std::cout << "  decompile <addr|name> Generate experimental C-like pseudocode\n";
     std::cout << "  cfg <addr|name>       Display basic block control flow graph & branching\n";
     std::cout << "  xrefs <addr|name>     Show Cross-References (CALL, JUMP, READ, WRITE) to/from addr\n";
     std::cout << "  strings [filter]      Display strings (highlights URL/C2 and Registry paths)\n";
     std::cout << "  disasm <addr> [cnt]   Disassemble hex instructions at memory address\n";
     std::cout << "  modules               List loaded PE modules and base addresses\n";
-    std::cout << "  report [file.md]      Export full markdown decompilation report to disk\n";
+    std::cout << "  report [file.md]      Export an analysis report to disk\n";
     std::cout << "---------------------------------------------------------------------------------\n";
     std::cout << "AI Copilot & Model Commands:\n";
-    std::cout << "  ai-connect [prov] [key]  Quick Connect / Interactive Setup (openai, anthropic, gemini, groq, ollama)\n";
+    std::cout << "  ai-connect [prov] [key]  Configure a compatible provider (openai, gemini, groq, ollama)\n";
     std::cout << "  ai-setup / connect       Alias for interactive AI setup wizard\n";
     std::cout << "  ai-config <prov> <url> <mod> Configure AI manually (e.g. OpenAI-compatible https://api.openai.com/v1 gpt-4o)\n";
     std::cout << "  ai-key <api_key>      Set and securely store AI API Key\n";
-    std::cout << "  ai-model <model_name> Change active AI model (e.g. gpt-4o, claude-3-5-sonnet, ollama-llama3)\n";
+    std::cout << "  ai-model <model_name> Change active AI model (e.g. gpt-4o, qwen2.5-coder:7b)\n";
     std::cout << "  ai-status             Display current AI connection status and configuration\n";
     std::cout << "  ai-ask <question>     Ask AI Copilot any reverse engineering question\n";
-    std::cout << "  ai-explain <func>     Ask AI to analyze and explain a decompiled function\n";
+    std::cout << "  ai-explain <func>     Ask AI to analyze experimental function pseudocode\n";
     std::cout << "  ai-rename <func>      Ask AI to suggest meaningful variable & function names\n";
-    std::cout << "  ai-vuln <func>        Ask AI to audit decompiled function for security vulnerabilities\n";
+    std::cout << "  ai-vuln <func>        Ask AI to audit experimental function pseudocode\n";
     std::cout << "---------------------------------------------------------------------------------\n";
     std::cout << "  gui                   Switch immediately to Graphical User Interface\n";
     std::cout << "  exit / quit           Exit OPENREVERSE Studio\n\n";
@@ -111,12 +142,7 @@ void CLIRepl::PrintHelp()
 uint64_t CLIRepl::ParseAddressOrName(Application& app, const std::string& token)
 {
     if (token.empty()) return 0;
-    // Check if hex address
-    if (token.size() > 2 && (token[0] == '0' && (token[1] == 'x' || token[1] == 'X')))
-    {
-        return std::stoull(token, nullptr, 16);
-    }
-    // Search by function name
+    if (token.front() == '-' || token.front() == '+') return 0;
     for (const auto& fn : app.idaProPanel.GetFunctions())
     {
         if (helpers::ToLower(fn.name) == helpers::ToLower(token) ||
@@ -125,10 +151,14 @@ uint64_t CLIRepl::ParseAddressOrName(Application& app, const std::string& token)
             return fn.startAddress;
         }
     }
-    // Try parse raw hex
-    try {
-        return std::stoull(token, nullptr, 16);
-    } catch (...) {
+    try
+    {
+        size_t parsed = 0;
+        const uint64_t address = std::stoull(token, &parsed, 16);
+        return parsed == token.size() ? address : 0;
+    }
+    catch (...)
+    {
         return 0;
     }
 }
@@ -140,84 +170,70 @@ void CLIRepl::HandleAttach(Application& app, const std::vector<std::string>& arg
         std::cout << "\033[1;31mUsage: attach <PID>\033[0m\n";
         return;
     }
-    DWORD pid = (DWORD)std::stoul(args[1]);
-    std::cout << "[*] Attaching to PID " << pid << " and starting IDA Studio scan...\n";
-    Automator automator;
-    auto res = automator.AnalyzeProcess(app, pid);
-    if (res.success)
+    DWORD pid = 0;
+    try
     {
-        // Populate GUI panel state so 'gui' command has it ready
-        app.idaProPanel.AnalyzeCurrentModule(app);
-        std::cout << "\033[1;32m[+] Successfully attached to " << res.targetProcessName << " (0x" << std::hex << res.baseAddress << ")\033[0m\n";
-        std::cout << "[+] Functions discovered: \033[1;36m" << std::dec << res.functionsDiscovered << "\033[0m | XREFs: \033[1;36m" << res.totalXrefs << "\033[0m | Strings: \033[1;36m" << res.stringsFound << "\033[0m\n\n";
+        if (args[1].empty() || args[1].front() == '-' || args[1].front() == '+')
+            throw std::invalid_argument("PID");
+        size_t parsed = 0;
+        const unsigned long value = std::stoul(args[1], &parsed, 10);
+        if (parsed != args[1].size() || value == 0 || value > (std::numeric_limits<DWORD>::max)())
+            throw std::out_of_range("PID");
+        pid = static_cast<DWORD>(value);
     }
-    else
+    catch (...)
     {
-        std::cout << "\033[1;31m[-] Failed to attach or scan process PID " << pid << "\033[0m\n";
+        std::cout << "\033[1;31mInvalid PID: " << args[1] << "\033[0m\n";
+        return;
     }
+    std::cout << "[*] Attaching to PID " << pid << " and starting analysis...\n";
+    if (!app.AttachToProcess(pid))
+    {
+        std::cout << "\033[1;31m[-] Failed to attach to PID " << pid << "\033[0m\n";
+        return;
+    }
+    app.idaProPanel.AnalyzeCurrentModule(app);
+    if (app.analysisDatabase.GetModules().empty())
+    {
+        std::cout << "\033[1;31m[-] Failed to analyze PID " << pid << "\033[0m\n";
+        app.DetachFromProcess();
+        return;
+    }
+    const auto& analysis = app.analysisDatabase.GetModules().begin()->second;
+    std::cout << "\033[1;32m[+] Attached to " << app.attachedProcessName << " (0x" << std::hex
+              << analysis.module.baseAddress << ")\033[0m\n";
+    std::cout << "[+] Functions: \033[1;36m" << std::dec << analysis.functions.size()
+              << "\033[0m | XREFs: \033[1;36m" << analysis.xrefs.size()
+              << "\033[0m | Strings: \033[1;36m" << analysis.strings.size() << "\033[0m\n\n";
 }
 
-void CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
+bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
 {
     if (args.size() < 2)
     {
         std::cout << "\033[1;31mUsage: open <executable_path>\033[0m\n";
-        return;
+        return false;
     }
     std::string exePath = args[1];
 
-    bool isOfflineFile = false;
-    std::string lowerPath = helpers::ToLower(exePath);
-    if (lowerPath.find(".sys") != std::string::npos || lowerPath.find(".dll") != std::string::npos || lowerPath.find(".bin") != std::string::npos || lowerPath.find(".efi") != std::string::npos)
+    if (GetFileAttributesA(exePath.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
-        isOfflineFile = true;
+        std::cout << "\033[1;31m[-] File does not exist: '" << exePath << "'\033[0m\n";
+        return false;
     }
 
-    if (isOfflineFile || GetFileAttributesA(exePath.c_str()) != INVALID_FILE_ATTRIBUTES)
+    std::cout << "[*] Analyzing PE binary offline: '" << exePath << "'...\n";
+    if (app.OpenBinaryFile(exePath))
     {
-        std::cout << "[*] Analyzing kernel driver / PE binary offline: '" << exePath << "'...\n";
-        if (app.OpenBinaryFile(exePath))
-        {
-            uint64_t baseAddr = app.moduleManager.GetModules().empty() ? 0 : app.moduleManager.GetModules()[0].baseAddress;
-            std::cout << "\033[1;32m[+] Successfully parsed offline target: " << app.attachedProcessName << " (" << (app.is64Bit ? "x64" : "x86") << ")\033[0m\n";
-            std::cout << "[+] Base Address: \033[1;36m0x" << std::hex << baseAddr << "\033[0m\n";
-            std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec << app.idaProPanel.GetFunctions().size() << "\033[0m | Strings: \033[1;36m" << app.stringResults.size() << "\033[0m\n\n";
-            return;
-        }
-        else if (isOfflineFile)
-        {
-            std::cout << "\033[1;31m[-] Failed to parse offline driver/PE binary: '" << exePath << "'\033[0m\n";
-            return;
-        }
+        uint64_t baseAddr = app.moduleManager.GetModules().empty() ? 0 : app.moduleManager.GetModules()[0].baseAddress;
+        std::cout << "\033[1;32m[+] Successfully parsed offline target: " << app.attachedProcessName << " (" << (app.is64Bit ? "x64" : "x86") << ")\033[0m\n";
+        std::cout << "[+] Base Address: \033[1;36m0x" << std::hex << baseAddr << "\033[0m\n";
+        std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec << app.idaProPanel.GetFunctions().size() << "\033[0m | Strings: \033[1;36m" << app.stringResults.size() << "\033[0m\n\n";
+        return true;
     }
 
-    std::cout << "[*] Launching '" << exePath << "' in background daemon mode...\n";
-    STARTUPINFOA si = { sizeof(si) };
-    PROCESS_INFORMATION pi = {};
-    std::string cmd = "\"" + exePath + "\" --daemon";
-    if (CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-    {
-        Sleep(1000);
-        Automator automator;
-        auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
-        if (res.success)
-        {
-            app.idaProPanel.AnalyzeCurrentModule(app);
-            std::cout << "\033[1;32m[+] Target loaded! PID: " << pi.dwProcessId << " | Base: 0x" << std::hex << res.baseAddress << "\033[0m\n";
-            std::cout << "[+] Functions: \033[1;36m" << std::dec << res.functionsDiscovered << "\033[0m | XREFs: \033[1;36m" << res.totalXrefs << "\033[0m | Strings: \033[1;36m" << res.stringsFound << "\033[0m\n\n";
-        }
-        else
-        {
-            std::cout << "\033[1;31m[-] Failed to scan process memory.\033[0m\n";
-            TerminateProcess(pi.hProcess, 0);
-        }
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-    else
-    {
-        std::cout << "\033[1;31m[-] CreateProcess failed for: " << exePath << "\033[0m\n";
-    }
+    std::cout << "\033[1;31m[-] Failed to parse PE binary: '" << exePath << "'. The file was not executed.\033[0m\n";
+    return false;
 }
 
 void CLIRepl::HandleFunctions(Application& app, const std::vector<std::string>& args)
@@ -241,7 +257,7 @@ void CLIRepl::HandleFunctions(Application& app, const std::vector<std::string>& 
         std::cout << "\033[1;36m" << addrStr << "\033[0m  "
                   << std::left << std::setw(28) << fn.name
                   << std::right << std::setw(5) << std::dec << fn.size << " B  "
-                  << std::setw(6) << fn.basicBlocks.size() << "  ";
+                  << std::setw(6) << fn.cfg.basicBlocks.size() << "  ";
 
         if (fn.cyclomaticComplexity >= 10)
             std::cout << "\033[1;31m" << std::setw(4) << fn.cyclomaticComplexity << "\033[0m  ";
@@ -271,8 +287,6 @@ void CLIRepl::HandleDecompile(Application& app, const std::vector<std::string>& 
         std::cout << "\033[1;31m[-] Could not find function: " << args[1] << "\033[0m\n";
         return;
     }
-    auto* mod = app.moduleManager.FindModuleByAddress(addr);
-    uint64_t baseAddr = mod ? mod->baseAddress : 0x7FF700000000;
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, 4096);
     if (bytes.empty())
     {
@@ -280,11 +294,11 @@ void CLIRepl::HandleDecompile(Application& app, const std::vector<std::string>& 
         return;
     }
 
-    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, baseAddr, app.disassembler, app.is64Bit, 4096);
+    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
     std::string pseudo = app.functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
 
     std::cout << "\n\033[1;32m// ============================================================================\n";
-    std::cout << "// OpenReverse HEX-RAYS PSEUDOCODE DECOMPILER | Address: " << helpers::FormatAddress(addr, app.is64Bit) << "\n";
+    std::cout << "// OpenReverse Experimental Pseudocode | Address: " << helpers::FormatAddress(addr, app.is64Bit) << "\n";
     std::cout << "// Function: " << fi.name << " | Size: " << fi.size << " B | V(G): " << fi.cyclomaticComplexity << "\n";
     std::cout << "// ============================================================================\033[0m\n\n";
     std::cout << "\033[1;36m" << pseudo << "\033[0m\n";
@@ -300,15 +314,13 @@ void CLIRepl::HandleCFG(Application& app, const std::vector<std::string>& args)
     uint64_t addr = ParseAddressOrName(app, args[1]);
     if (addr == 0) return;
 
-    auto* mod = app.moduleManager.FindModuleByAddress(addr);
-    uint64_t baseAddr = mod ? mod->baseAddress : 0;
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, 4096);
-    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, baseAddr, app.disassembler, app.is64Bit, 4096);
+    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
 
     std::cout << "\n\033[1;33m[CFG] Control Flow Graph Basic Blocks for " << fi.name << " (V(G)=" << fi.cyclomaticComplexity << "):\033[0m\n";
-    for (size_t i = 0; i < fi.basicBlocks.size(); ++i)
+    for (size_t i = 0; i < fi.cfg.basicBlocks.size(); ++i)
     {
-        const auto& bb = fi.basicBlocks[i];
+        const auto& bb = fi.cfg.basicBlocks[i];
         std::cout << "  Block " << i << ": [" << helpers::FormatAddress(bb.startAddress, app.is64Bit)
                   << " -> " << helpers::FormatAddress(bb.endAddress, app.is64Bit) << "] ("
                   << bb.instructions.size() << " instructions)\n";
@@ -334,7 +346,16 @@ void CLIRepl::HandleXRefs(Application& app, const std::vector<std::string>& args
     std::cout << "\n\033[1;32m[XREFs UP (To)] References calling/targeting " << helpers::FormatAddress(addr, app.is64Bit) << ": (" << xrefsTo.size() << ")\033[0m\n";
     for (const auto& xr : xrefsTo)
     {
-        const char* typeStr = (xr.type == XRefType::Call) ? "CALL" : (xr.type == XRefType::Jump) ? "JUMP" : "LEA ";
+        const char* typeStr = "READ";
+        switch (xr.type)
+        {
+        case XRefType::Call: typeStr = "CALL"; break;
+        case XRefType::Jump: typeStr = "JUMP"; break;
+        case XRefType::Write: typeStr = "WRITE"; break;
+        case XRefType::ReadWrite: typeStr = "R/W"; break;
+        case XRefType::Lea: typeStr = "LEA"; break;
+        default: break;
+        }
         std::cout << "  [" << typeStr << "] From: \033[1;36m" << helpers::FormatAddress(xr.fromAddress, app.is64Bit) << "\033[0m -> " << xr.instructionText << "\n";
     }
     std::cout << "\n";
@@ -348,7 +369,12 @@ void CLIRepl::HandleStrings(Application& app, const std::vector<std::string>& ar
         mod = const_cast<ModuleInfo*>(&app.moduleManager.GetModules()[0]);
     if (!mod) return;
 
-    auto res = app.stringScanner.Scan(app.processHandle, mod->baseAddress, mod->baseAddress + std::min((size_t)mod->size, (size_t)8192000), 4, true, true, 2000);
+    std::vector<StringResult> res;
+    if (app.attachedPID == 0)
+        res = app.stringResults;
+    else
+        res = app.stringScanner.Scan(app.processHandle, mod->baseAddress,
+            mod->baseAddress + std::min((size_t)mod->size, (size_t)8192000), 4, true, true, 2000);
     std::cout << "\n\033[1;37mAddress            Category       Value\033[0m\n";
     std::cout << "----------------------------------------------------------------------------\n";
     int count = 0;
@@ -381,8 +407,25 @@ void CLIRepl::HandleDisasm(Application& app, const std::vector<std::string>& arg
 {
     if (args.size() < 2) return;
     uint64_t addr = ParseAddressOrName(app, args[1]);
-    int lines = (args.size() > 2) ? std::stoi(args[2]) : 15;
     if (addr == 0) return;
+    size_t lines = 15;
+    if (args.size() > 2)
+    {
+        try
+        {
+            if (args[2].empty() || args[2].front() == '-' || args[2].front() == '+')
+                throw std::invalid_argument("instruction count");
+            size_t parsed = 0;
+            lines = std::stoull(args[2], &parsed, 10);
+            if (parsed != args[2].size() || lines == 0 || lines > 4096)
+                throw std::out_of_range("line count");
+        }
+        catch (...)
+        {
+            std::cout << "\033[1;31mInvalid instruction count: " << args[2] << "\033[0m\n";
+            return;
+        }
+    }
 
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, lines * 15);
     auto insts = app.disassembler.Disassemble(bytes.data(), bytes.size(), addr, lines);
@@ -414,8 +457,49 @@ void CLIRepl::HandleModules(Application& app, const std::vector<std::string>& ar
 void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& args)
 {
     std::string outFile = (args.size() > 1) ? args[1] : "openreverse_interactive_report.md";
-    Automator automator;
-    auto res = automator.AnalyzeProcess(app, app.attachedPID, app.attachedProcessName);
+    if (!app.isAttached)
+    {
+        std::cout << "\033[1;31m[-] Could not generate report. Open a binary or attach to a process first.\033[0m\n";
+        return;
+    }
+    AutoAnalysisResult res;
+    if (app.isAttached && app.attachedPID == 0)
+    {
+        res.success = true;
+        res.targetProcessName = app.attachedProcessName;
+        res.targetPid = 0;
+        if (!app.moduleManager.GetModules().empty())
+            res.baseAddress = app.moduleManager.GetModules()[0].baseAddress;
+        res.functionsDiscovered = app.idaProPanel.GetFunctions().size();
+        res.totalXrefs = app.xrefScanner.GetTotalXRefsCount();
+        res.stringsFound = app.stringResults.size();
+        for (const auto& string : app.stringResults)
+        {
+            if (string.category == "URL / C2") res.c2Urls.push_back(string.value);
+            if (string.category == "Registry") res.registryKeys.push_back(string.value);
+        }
+        for (const auto& function : app.idaProPanel.GetFunctions())
+        {
+            if (res.keyFunctions.size() >= 15) break;
+            auto bytes = app.memoryReader.ReadBytes(nullptr, function.startAddress, 4096);
+            auto analyzed = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(),
+                function.startAddress, function.startAddress, app.disassembler, app.is64Bit, 4096);
+            if (!function.name.empty()) analyzed.name = function.name;
+            AutoAnalysisResult::FunctionSummary summary;
+            summary.address = analyzed.startAddress;
+            summary.name = analyzed.name;
+            summary.size = analyzed.size;
+            summary.complexity = analyzed.cyclomaticComplexity;
+            summary.xrefCount = static_cast<int>(app.xrefScanner.FindXRefsTo(analyzed.startAddress).size());
+            summary.pseudocode = app.functionAnalyzer.GeneratePseudocode(analyzed, app.is64Bit);
+            res.keyFunctions.push_back(std::move(summary));
+        }
+    }
+    else
+    {
+        Automator automator;
+        res = automator.AnalyzeProcess(app, app.attachedPID, app.attachedProcessName);
+    }
     if (res.success)
     {
         std::string rep = Automator::FormatReport(res);
@@ -432,62 +516,56 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
 
 void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& args)
 {
-    std::string provider = "Ollama (Free Local)";
+    std::string provider = "Ollama";
     std::string baseUrl = "http://localhost:11434/v1";
     std::string model = "qwen2.5-coder:7b";
-    std::string apiKey = "ollama";
+    std::string apiKey;
 
-    // 1. One-command preset mode: /connect <provider> [api_key] [model]
     if (args.size() >= 2)
     {
         std::string provInput = helpers::ToLower(args[1]);
         if (provInput == "ollama" || provInput == "local" || provInput == "1")
         {
-            provider = "Ollama (Free Local)";
+            provider = "Ollama";
             baseUrl = "http://localhost:11434/v1";
             model = (args.size() >= 3) ? args[2] : "qwen2.5-coder:7b";
-            apiKey = "ollama";
         }
         else if (provInput == "lmstudio" || provInput == "lms" || provInput == "lm-studio" || provInput == "2")
         {
-            provider = "LM Studio (Free Local)";
+            provider = "LM Studio";
             baseUrl = "http://localhost:1234/v1";
             model = (args.size() >= 3) ? args[2] : "qwen2.5-coder-7b-instruct";
-            apiKey = "lmstudio";
         }
         else if (provInput == "qwen" || provInput == "qwencoder" || provInput == "qwen-coder")
         {
-            provider = "Ollama (Free Local)";
+            provider = "Ollama";
             baseUrl = "http://localhost:11434/v1";
             model = "qwen2.5-coder:7b";
-            apiKey = "ollama";
         }
         else if (provInput == "deepseek" || provInput == "deepseek-coder" || provInput == "deepseek-r1")
         {
-            provider = "Ollama (Free Local)";
+            provider = "Ollama";
             baseUrl = "http://localhost:11434/v1";
             model = "deepseek-coder-v2";
-            apiKey = "ollama";
         }
         else if (provInput == "llama" || provInput == "llama3" || provInput == "llama-3")
         {
-            provider = "Ollama (Free Local)";
+            provider = "Ollama";
             baseUrl = "http://localhost:11434/v1";
             model = "llama3.1:8b";
-            apiKey = "ollama";
         }
         else if (provInput == "groq" || provInput == "3")
         {
-            provider = "Groq Cloud (Free Tier)";
+            provider = "Groq Cloud";
             baseUrl = "https://api.groq.com/openai/v1";
             model = (args.size() >= 4) ? args[3] : "llama-3.3-70b-versatile";
             if (args.size() >= 3) apiKey = args[2];
         }
         else if (provInput == "openrouter" || provInput == "4")
         {
-            provider = "OpenRouter (Free Tier)";
+            provider = "OpenRouter";
             baseUrl = "https://openrouter.ai/api/v1";
-            model = (args.size() >= 4) ? args[3] : "qwen/qwen-2.5-coder-32b-instruct:free";
+            model = (args.size() >= 4) ? args[3] : "qwen/qwen-2.5-coder-32b-instruct";
             if (args.size() >= 3) apiKey = args[2];
         }
         else if (provInput == "openai" || provInput == "5" || provInput == "gpt")
@@ -497,21 +575,14 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
             model = (args.size() >= 4) ? args[3] : "gpt-4o";
             if (args.size() >= 3) apiKey = args[2];
         }
-        else if (provInput == "anthropic" || provInput == "claude" || provInput == "6")
-        {
-            provider = "Anthropic";
-            baseUrl = "https://api.anthropic.com/v1";
-            model = (args.size() >= 4) ? args[3] : "claude-3-5-sonnet";
-            if (args.size() >= 3) apiKey = args[2];
-        }
-        else if (provInput == "gemini" || provInput == "google" || provInput == "7")
+        else if (provInput == "gemini" || provInput == "google" || provInput == "6")
         {
             provider = "Google Gemini";
             baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/";
-            model = (args.size() >= 4) ? args[3] : "gemini-1.5-pro";
+            model = (args.size() >= 4) ? args[3] : "gemini-2.0-flash";
             if (args.size() >= 3) apiKey = args[2];
         }
-        else if (provInput == "mistral" || provInput == "8")
+        else if (provInput == "mistral" || provInput == "7")
         {
             provider = "Mistral AI";
             baseUrl = "https://api.mistral.ai/v1";
@@ -521,46 +592,42 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
         else
         {
             std::cout << "\033[1;31m[-] Unknown AI provider: " << args[1] << "\033[0m\n";
-            std::cout << "Available Free presets: ollama, lmstudio, qwen, deepseek, llama, groq, openrouter\n";
-            std::cout << "Available Cloud presets: openai, anthropic, gemini, mistral\n";
+            std::cout << "Available presets: ollama, lmstudio, qwen, deepseek, llama, groq, openrouter, openai, gemini, mistral\n";
             std::cout << "Or type '/connect' without arguments for the interactive setup wizard.\n";
             return;
         }
     }
     else
     {
-        // 2. Interactive Setup Wizard (FREE by Default)
         std::cout << "\n\033[1;36m=================================================================================\033[0m\n";
         std::cout << "\033[1;36m                  OPENREVERSE AI COPILOT - QUICK CONNECT WIZARD                  \033[0m\n";
         std::cout << "\033[1;36m=================================================================================\033[0m\n";
-        std::cout << "Select your AI provider (Free Local options selected by default):\n";
-        std::cout << "  \033[1;32m1)\033[0m Ollama        \033[1;32m[FREE/LOCAL]\033[0m (Qwen-2.5-Coder, DeepSeek-Coder, Llama 3.1)\n";
-        std::cout << "  \033[1;32m2)\033[0m LM Studio     \033[1;32m[FREE/LOCAL]\033[0m (Qwen, DeepSeek, Llama on localhost:1234)\n";
-        std::cout << "  \033[1;32m3)\033[0m Groq Cloud    \033[1;32m[FREE TIER]\033[0m  (Llama-3.3-70B, Qwen-2.5-Coder - Ultra Fast)\n";
-        std::cout << "  \033[1;32m4)\033[0m OpenRouter    \033[1;32m[FREE TIER]\033[0m  (Free DeepSeek-R1, Qwen-Coder-32B & all models)\n";
+        std::cout << "Select your AI provider:\n";
+        std::cout << "  \033[1;32m1)\033[0m Ollama         (local OpenAI-compatible endpoint)\n";
+        std::cout << "  \033[1;32m2)\033[0m LM Studio      (local OpenAI-compatible endpoint)\n";
+        std::cout << "  \033[1;32m3)\033[0m Groq Cloud\n";
+        std::cout << "  \033[1;32m4)\033[0m OpenRouter\n";
         std::cout << "  \033[1;32m5)\033[0m OpenAI         (GPT-4o, GPT-4o-mini, o1, o3-mini)\n";
-        std::cout << "  \033[1;32m6)\033[0m Anthropic      (Claude 3.5 Sonnet, Claude 3 Opus)\n";
-        std::cout << "  \033[1;32m7)\033[0m Google Gemini  (Gemini 1.5 Pro, Gemini 1.5 Flash)\n";
-        std::cout << "  \033[1;32m8)\033[0m Mistral AI     (Codestral, Mistral Large)\n";
-        std::cout << "  \033[1;32m9)\033[0m Custom         (Any OpenAI-compatible API server)\n";
+        std::cout << "  \033[1;32m6)\033[0m Google Gemini  (OpenAI-compatible endpoint)\n";
+        std::cout << "  \033[1;32m7)\033[0m Mistral AI\n";
+        std::cout << "  \033[1;32m8)\033[0m Custom         (OpenAI-compatible API server)\n";
         std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
-        std::cout << "Enter provider [1-9] (default 1 - Ollama Free Local): ";
+        std::cout << "Enter provider [1-8] (default 1 - Ollama): ";
 
         std::string choiceLine;
         std::getline(std::cin, choiceLine);
         int choice = 1;
         if (!choiceLine.empty()) choice = atoi(choiceLine.c_str());
-        if (choice < 1 || choice > 9) choice = 1;
+        if (choice < 1 || choice > 8) choice = 1;
 
-        if (choice == 1)      { provider = "Ollama (Free Local)";    baseUrl = "http://localhost:11434/v1";                              model = "qwen2.5-coder:7b";               apiKey = "ollama"; }
-        else if (choice == 2) { provider = "LM Studio (Free Local)"; baseUrl = "http://localhost:1234/v1";                               model = "qwen2.5-coder-7b-instruct";      apiKey = "lmstudio"; }
-        else if (choice == 3) { provider = "Groq Cloud (Free Tier)"; baseUrl = "https://api.groq.com/openai/v1";                         model = "llama-3.3-70b-versatile"; }
-        else if (choice == 4) { provider = "OpenRouter (Free Tier)"; baseUrl = "https://openrouter.ai/api/v1";                           model = "qwen/qwen-2.5-coder-32b-instruct:free"; }
+        if (choice == 1)      { provider = "Ollama";                 baseUrl = "http://localhost:11434/v1";                              model = "qwen2.5-coder:7b"; }
+        else if (choice == 2) { provider = "LM Studio";              baseUrl = "http://localhost:1234/v1";                               model = "qwen2.5-coder-7b-instruct"; }
+        else if (choice == 3) { provider = "Groq Cloud";             baseUrl = "https://api.groq.com/openai/v1";                         model = "llama-3.3-70b-versatile"; }
+        else if (choice == 4) { provider = "OpenRouter";             baseUrl = "https://openrouter.ai/api/v1";                           model = "qwen/qwen-2.5-coder-32b-instruct"; }
         else if (choice == 5) { provider = "OpenAI";                 baseUrl = "https://api.openai.com/v1";                              model = "gpt-4o"; }
-        else if (choice == 6) { provider = "Anthropic";              baseUrl = "https://api.anthropic.com/v1";                           model = "claude-3-5-sonnet"; }
-        else if (choice == 7) { provider = "Google Gemini";          baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/"; model = "gemini-1.5-pro"; }
-        else if (choice == 8) { provider = "Mistral AI";             baseUrl = "https://api.mistral.ai/v1";                              model = "codestral-latest"; }
-        else if (choice == 9) {
+        else if (choice == 6) { provider = "Google Gemini";          baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/"; model = "gemini-2.0-flash"; }
+        else if (choice == 7) { provider = "Mistral AI";             baseUrl = "https://api.mistral.ai/v1";                              model = "codestral-latest"; }
+        else if (choice == 8) {
             std::cout << "Enter Custom Provider Name [default Custom]: ";
             std::string provInput;
             std::getline(std::cin, provInput);
@@ -577,7 +644,7 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
         if (choice == 1 || choice == 2)
         {
             std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
-            std::cout << "Select Local Free Model:\n";
+            std::cout << "Select local model:\n";
             std::cout << "  \033[1;32m1)\033[0m Qwen-2.5-Coder:7b   (Recommended default for x86/x64 Reverse Engineering)\n";
             std::cout << "  \033[1;32m2)\033[0m DeepSeek-Coder-v2   (Strong reasoning & disassembly understanding)\n";
             std::cout << "  \033[1;32m3)\033[0m Llama-3.1:8b        (General versatile coding & analysis)\n";
@@ -589,37 +656,6 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
             else if (mc == 3) model = "llama3.1:8b";
             else model = (choice == 1) ? "qwen2.5-coder:7b" : "qwen2.5-coder-7b-instruct";
 
-            if (choice == 1)
-            {
-                std::string ollamaExe = "ollama";
-                char localAppData[1024] = {};
-                if (GetEnvironmentVariableA("LOCALAPPDATA", localAppData, sizeof(localAppData)) > 0)
-                {
-                    std::string fullPath = std::string(localAppData) + "\\Programs\\Ollama\\ollama.exe";
-                    if (GetFileAttributesA(fullPath.c_str()) != INVALID_FILE_ATTRIBUTES)
-                    {
-                        ollamaExe = "\"" + fullPath + "\"";
-                    }
-                }
-
-                std::cout << "\n\033[1;36m[*] Verification du moteur IA local Ollama et du modele '" << model << "'...\033[0m\n";
-                int probe = system((ollamaExe + " list >nul 2>&1").c_str());
-                if (probe != 0)
-                {
-                    std::cout << "\033[1;33m[*] Ollama ne semble pas installe ou lance sur ce PC.\033[0m\n";
-                    std::cout << "[?] Voulez-vous installer Ollama automatiquement via WinGet maintenant ? [O/n] : ";
-                    std::string ans;
-                    std::getline(std::cin, ans);
-                    if (ans.empty() || ans == "O" || ans == "o" || ans == "Y" || ans == "y")
-                    {
-                        std::cout << "\033[1;32m[*] Installation automatique d'Ollama via WinGet... Veuillez patienter...\033[0m\n";
-                        system("winget install --id Ollama.Ollama -e --silent");
-                    }
-                }
-                std::cout << "\033[1;32m[*] Telechargement / Activation du modele gratuit '" << model << "'...\033[0m\n";
-                std::string pullCmd = ollamaExe + " pull " + model;
-                system(pullCmd.c_str());
-            }
         }
         else
         {
@@ -639,7 +675,9 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
         }
     }
 
-    if (!apiKey.empty() && apiKey != "ollama" && apiKey != "lmstudio")
+    app.aiService.Configure(provider, baseUrl, model);
+
+    if (!apiKey.empty())
     {
         if (app.aiService.SaveApiKey(apiKey))
         {
@@ -650,19 +688,15 @@ void CLIRepl::HandleAIConnect(Application& app, const std::vector<std::string>& 
             std::cout << "\033[1;33m[!] Warning: Could not save API Key to Windows Credential Manager.\033[0m\n";
         }
     }
-    else if (apiKey == "ollama" || apiKey == "lmstudio")
-    {
-        app.aiService.SaveApiKey(apiKey);
-    }
-
-    app.aiService.Configure(provider, baseUrl, model);
-
     std::cout << "\n\033[1;32m=================================================================================\033[0m\n";
-    std::cout << "\033[1;32m[+] AI Copilot Successfully Connected!\033[0m\n";
+    std::cout << "\033[1;32m[+] AI provider configured\033[0m\n";
     std::cout << "    Provider   : \033[1;36m" << app.aiService.Provider() << "\033[0m\n";
     std::cout << "    Base URL   : \033[1;36m" << app.aiService.BaseUrl() << "\033[0m\n";
     std::cout << "    Model      : \033[1;36m" << app.aiService.Model() << "\033[0m\n";
-    std::cout << "    Key Status : \033[1;36m" << (app.aiService.HasSavedApiKey() ? "Ready (Secured in Credential Manager)" : "Not Saved (using environment or memory)") << "\033[0m\n";
+    std::cout << "    Key Status : \033[1;36m"
+              << (!app.aiService.RequiresApiKey() ? "Not required for loopback" :
+                  (app.aiService.HasSavedApiKey() ? "Saved in Credential Manager" : "Not saved"))
+              << "\033[0m\n";
     std::cout << "\033[1;32m=================================================================================\033[0m\n";
     std::cout << "Tip: Type \033[1;33mai-ask What is this binary doing?\033[0m or \033[1;33mai-explain <func_addr>\033[0m\n\n";
 }
@@ -768,7 +802,7 @@ void CLIRepl::HandleAIExplain(Application& app, const std::vector<std::string>& 
         return;
     }
     std::string pseudo = DecompileHelper(app, addr);
-    std::string prompt = "Analyze this decompiled C/C++ function from an x64 binary and explain what it does in detail:\n```c\n" + pseudo + "\n```";
+    std::string prompt = "Analyze this experimental C-like pseudocode from an x64 binary and explain what it does:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Explaining function 0x" << std::hex << addr << std::dec << " via AI Copilot...\n";
     app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
@@ -805,7 +839,7 @@ void CLIRepl::HandleAIRename(Application& app, const std::vector<std::string>& a
         return;
     }
     std::string pseudo = DecompileHelper(app, addr);
-    std::string prompt = "Analyze this decompiled C function and suggest clean, descriptive function names and variable names formatted as a markdown table:\n```c\n" + pseudo + "\n```";
+    std::string prompt = "Analyze this experimental C-like pseudocode and suggest descriptive names as a markdown table:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Asking AI Copilot for renaming suggestions for 0x" << std::hex << addr << std::dec << "...\n";
     app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
@@ -923,7 +957,7 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
         return;
     }
     std::string pseudo = DecompileHelper(app, addr);
-    std::string prompt = "Audit this decompiled C function for security vulnerabilities (buffer overflows, format strings, logic flaws, integer overflows) and report severity:\n```c\n" + pseudo + "\n```";
+    std::string prompt = "Audit this experimental C-like pseudocode for security vulnerabilities and report severity:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Auditing function 0x" << std::hex << addr << std::dec << " for vulnerabilities via AI Copilot...\n";
     app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
@@ -946,151 +980,6 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
     }
 }
 
-void CLIRepl::HandleAccount(Application& app, const std::vector<std::string>& args)
-{
-    (void)app; (void)args;
-    std::cout << "\n\033[1;36m=== OPENREVERSE / OpenReverse Cloud ACCOUNT & SUBSCRIPTION STATUS ===\033[0m\n";
-    std::cout << "  \033[1;37mLicense Token :\033[0m  " << licenseKey_ << "\n";
-    std::cout << "  \033[1;37mSubscription  :\033[0m  ";
-    if (userTier_ == SubscriptionTier::ADMIN) {
-        std::cout << "\033[1;31m[!] Administrator account\033[0m\n";
-    } else if (userTier_ == SubscriptionTier::DEV_CREATOR_PRO) {
-        std::cout << "\033[1;35mDEV CREATOR TIER (OpenReverse Cloud + Marketplace SDK)\033[0m\n";
-    } else if (userTier_ == SubscriptionTier::PRO_ANALYST) {
-        std::cout << "\033[1;33mPRO ANALYST TIER\033[0m\n";
-    } else {
-        std::cout << "\033[38;5;242mCOMMUNITY FREE TIER (Local Ollama / Basic Static Analysis)\033[0m\n";
-    }
-    std::cout << "  \033[1;37mCloud AI Quota:\033[0m  Provider dependent\n";
-    std::cout << "  \033[1;37mPlugins Active:\033[0m  " << installedPlugins_.size() << " installed community plugins\n";
-    std::cout << "\033[1;36m==========================================================\033[0m\n";
-    std::cout << "Tip: Use '/login <key>' to authenticate with your OpenReverse Cloud server token.\n\n";
-}
-
-void CLIRepl::HandleLogin(Application& app, const std::vector<std::string>& args)
-{
-    (void)app;
-    if (args.size() < 2)
-    {
-        std::cout << "Usage: /login <provider-token>\n";
-        return;
-    }
-    std::string token = args[1];
-    licenseKey_ = token;
-    userTier_ = SubscriptionTier::COMMUNITY_FREE;
-    std::cout << "[*] Token stored for this local session. Remote entitlements are unavailable in this build.\n\n";
-}
-
-void CLIRepl::HandleHub(Application& app, const std::vector<std::string>& args)
-{
-    (void)app; (void)args;
-    std::cout << "\n\033[1;35m=== OPENREVERSE DEVELOPER COMMUNITY HUB & PLUGIN MARKETPLACE ===\033[0m\n";
-    std::cout << "  \033[1;31m[SECURITY & CRACKME PROTECTIONS]\033[0m\n";
-    std::cout << "  \033[1;32m@community/anti-debug-nuke\033[0m         [OpenReverse Cloud PRO] Detects & NOPs PEB, RDTSC, SEH/VEH debug traps\n";
-    std::cout << "  \033[1;32m@community/crackme-sandbox-shield\033[0m  [OpenReverse Cloud PRO] Shields PC against destructive Wiper/File/Reg actions\n";
-    std::cout << "  \033[1;32m@community/anti-vm-bypass\033[0m          [OpenReverse Cloud PRO] Bypasses VMware/VBox & CPUID hypervisor checks\n";
-    std::cout << "  \033[1;36m[ANALYSIS & MALWARE PARSERS]\033[0m\n";
-    std::cout << "  \033[1;32m@community/cobalt-strike-parser\033[0m    [DEV PRO]  Extracts C2 beacon configuration from memory\n";
-    std::cout << "  \033[1;32m@community/ollvm-deobfuscator\033[0m      [OpenReverse Cloud PRO] Automated Control Flow Flattening removal\n";
-    std::cout << "  \033[1;32m@community/ransomware-crypto-hunt\033[0m  [OpenReverse Cloud PRO] Identifies AES/RSA/ChaCha20 routines\n";
-    std::cout << "  \033[1;32m@community/kernel-driver-byovd\033[0m     [DEV PRO]  Audits Windows .sys drivers for BYOVD exploits\n";
-    std::cout << "  \033[1;32m@community/auto-ctf-flag-solver\033[0m    [OpenReverse Cloud PRO] Autonomous crackme & XOR flag solver agent\n";
-    std::cout << "\033[1;35m=================================================================\033[0m\n";
-    std::cout << "To install a plugin: /install @community/<plugin-name>\n";
-    std::cout << "\033[1;33m[*] Note: Plugin installation requires a Pro Analyst ($29/mo) or Dev Creator Pro subscription.\033[0m\n";
-    std::cout << "Quick Run Commands : \033[1;32m/anti-debug\033[0m | \033[1;32m/shield\033[0m | \033[1;32m/anti-vm\033[0m\n\n";
-}
-
-void CLIRepl::HandleInstallPlugin(Application& app, const std::vector<std::string>& args)
-{
-    (void)app;
-    if (args.size() < 2) {
-        std::cout << "Usage: /install @community/<plugin-name>\n";
-        return;
-    }
-    if (userTier_ == SubscriptionTier::COMMUNITY_FREE) {
-        std::cout << "\033[1;31m[!] OpenReverse Cloud Access Denied: Community Hub plugins require a PRO ANALYST ($29/mo) or DEV CREATOR ($79/mo) subscription.\033[0m\n";
-        std::cout << "[*] Type /login <your-cloud-license-token> to unlock plugins in your IDE.\n";
-        std::cout << "[*] Upgrade online at: https://openreverse.ai/pricing\n\n";
-        return;
-    }
-    std::string pName = args[1];
-    std::cout << "[*] Connecting to OpenReverse Cloud Community Hub and verifying plugin signature for " << pName << "...\n";
-    Sleep(500);
-    installedPlugins_.push_back(pName);
-    std::cout << "\033[1;32m[+] Successfully installed plugin: " << pName << " into local workspace!\033[0m\n";
-    std::cout << "[*] Available immediately in your RE sessions.\n\n";
-}
-
-void CLIRepl::HandlePlugins(Application& app, const std::vector<std::string>& args)
-{
-    (void)app; (void)args;
-    std::cout << "\n=== INSTALLED COMMUNITY PLUGINS & SKILLS ===\n";
-    if (installedPlugins_.empty()) {
-        std::cout << "  No community plugins installed yet. Type '/hub' to browse the marketplace.\n";
-    } else {
-        for (size_t i = 0; i < installedPlugins_.size(); ++i) {
-            std::cout << "  [" << (i + 1) << "] \033[1;32m" << installedPlugins_[i] << "\033[0m (Active)\n";
-        }
-    }
-    std::cout << "============================================\n\n";
-}
-
-void CLIRepl::HandlePluginAntiDebug(Application& app, const std::vector<std::string>& args)
-{
-    (void)args;
-    std::cout << "\n\033[1;31m[!] RUNNING PLUGIN: @community/anti-debug-nuke (Anti-Debug Trap & Evasion Scanner)\033[0m\n";
-    std::cout << "[*] Analyzing PEB (Process Environment Block), API imports, and CPU timing loops...\n";
-    const auto& funcs = app.idaProPanel.GetFunctions();
-    int trapCount = 0;
-    for (const auto& fn : funcs) {
-        if (fn.name.find("sub_") == 0 && (fn.size < 64 || fn.cyclomaticComplexity > 12)) {
-            std::cout << "  \033[1;33m[TRAP DETECTED]\033[0m Addr: " << helpers::FormatAddress(fn.startAddress, app.is64Bit)
-                      << " | Pattern: PEB.BeingDebugged / NtGlobalFlag inspection -> \033[1;32m[NOPed in memory]\033[0m\n";
-            trapCount++;
-            if (trapCount >= 4) break;
-        }
-    }
-    if (trapCount == 0) {
-        std::cout << "  \033[1;32m[+] No active anti-debug traps (IsDebuggerPresent/CheckRemoteDebuggerPresent/RDTSC) found.\033[0m\n";
-    } else {
-        std::cout << "  \033[1;32m[+] Successfully neutralized " << trapCount << " anti-debug trap checks! Safe to attach debugger.\033[0m\n";
-    }
-    std::cout << "\n";
-}
-
-void CLIRepl::HandlePluginCrackmeShield(Application& app, const std::vector<std::string>& args)
-{
-    (void)args;
-    std::cout << "\n\033[1;36m[+] RUNNING PLUGIN: @community/crackme-sandbox-shield (Destructive Action & Wiper Shield)\033[0m\n";
-    std::cout << "[*] Scanning target imports, syscalls, and string references for harmful host operations...\n";
-    int alertLevel = 0;
-    for (const auto& s : app.stringResults) {
-        std::string upper = s.value;
-        for (auto& c : upper) c = (char)toupper(c);
-        if (upper.find("DELETE") != std::string::npos || upper.find("REG") != std::string::npos || upper.find("SYSTEM") != std::string::npos) {
-            alertLevel++;
-        }
-    }
-    if (alertLevel > 0) {
-        std::cout << "  \033[1;33m[WARNING] Detected " << alertLevel << " potentially destructive host references (DeleteFile / RegDelete / System call).\033[0m\n";
-        std::cout << "  \033[1;32m[SHIELD ACTIVE] Dangerous filesystem and registry APIs are hooked and simulated in sandbox mode!\033[0m\n";
-    } else {
-        std::cout << "  \033[1;32m[+] No destructive host modification routines detected in static analysis.\033[0m\n";
-    }
-    std::cout << "\n";
-}
-
-void CLIRepl::HandlePluginAntiVM(Application& app, const std::vector<std::string>& args)
-{
-    (void)args;
-    std::cout << "\n\033[1;35m[*] RUNNING PLUGIN: @community/anti-vm-bypass (VMware/VBox/Hypervisor Artifact Evader)\033[0m\n";
-    std::cout << "[*] Scanning instruction stream for CPUID (0x40000000), SIDT/SGDT/SLDT, and VM registry queries...\n";
-    std::cout << "  \033[1;32m[+] Spatially spoofing CPUID Hypervisor Bit -> 0\033[0m\n";
-    std::cout << "  \033[1;32m[+] Hiding VMware/VBox MAC addresses & guest drivers in process memory\033[0m\n";
-    std::cout << "  \033[1;32m[+] Anti-VM evasion active! Crackme/malware will run normally in virtual machine.\033[0m\n\n";
-}
-
 struct SlashCommandItemInfo {
     std::string cmd;
     std::string desc;
@@ -1099,24 +988,19 @@ struct SlashCommandItemInfo {
 static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
     {"/triage",    "Threat report and automatic MITRE ATT&CK mapping"},
     {"/auto-rename","Global AI name & type inference across all functions"},
-    {"/open",      "Open binary file & launch automated Hex-Rays analysis"},
+    {"/open",      "Open binary file and launch OpenReverse analysis"},
     {"/attach",    "Attach to running Windows process PID for dynamic analysis"},
     {"/functions", "List discovered functions & entry points in target binary"},
-    {"/decompile", "Decompile x64 assembly into readable Hex-Rays C pseudocode"},
+    {"/decompile", "Generate experimental C-like pseudocode from assembly"},
     {"/explain",   "Ask AI Copilot to explain current function logic in detail"},
     {"/rename",    "Ask AI to suggest descriptive variable & function names"},
-    {"/vuln",      "Audit decompiled C code for vulnerabilities / license check"},
+    {"/vuln",      "Audit experimental pseudocode for vulnerabilities"},
     {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
     {"/strings",   "List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys)"},
-    {"/account",   "Check subscription tier, OpenReverse Cloud license & Dev SDK access"},
-    {"/login",     "Login with OpenReverse Cloud server license key to unlock Pro/Dev tiers"},
-    {"/hub",       "Browse OpenReverse Developer Community Hub & Marketplace"},
-    {"/install",   "Install a community plugin/skill from the OpenReverse Hub"},
-    {"/plugins",   "List installed community scripts, skills & plugins"},
     {"/sessions",  "Manage OpenReverse interactive RE & multi-session workspaces"},
     {"/new",       "Create a new clean session workspace"},
     {"/switch",    "Switch active reverse engineering session ID"},
-    {"/models",    "Switch AI Copilot LLM model (Qwen, DeepSeek, Claude...)"},
+    {"/models",    "Switch the configured provider model"},
     {"/connect",   "Connect AI provider (Ollama, OpenRouter, Groq Cloud...)"},
     {"/setup",     "One-click interactive AI setup & local model auto-installer"},
     {"/gui",       "Handover session to OpenReverse Graphical Studio UI"},
@@ -1178,7 +1062,7 @@ std::string CLIRepl::ReadInteractiveLine(Application& app, const std::string& ta
                 lastMenuLines++;
             }
             std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
-            std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;242mFree Local Ollama\033[0m\n";
+            std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;242mLocal Ollama\033[0m\n";
             std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m\n";
             lastMenuLines += 3;
         }
@@ -1267,7 +1151,6 @@ bool CLIRepl::Run(Application& app)
     std::string line;
     while (true)
     {
-        // OpenCode style prompt showing current session & loaded target
         std::string targetLabel = "no target";
         for (const auto& s : sessions_) {
             if (s.id == currentSessionId_ && !s.targetExe.empty()) {
@@ -1283,13 +1166,9 @@ bool CLIRepl::Run(Application& app)
 
         if (line.empty()) continue;
 
-        std::vector<std::string> args;
-        std::istringstream iss(line);
-        std::string token;
-        while (iss >> token) args.push_back(token);
+        std::vector<std::string> args = TokenizeCommand(line);
 
         std::string cmd = args[0];
-        // 1. If command starts with '/' OR is '/' -> Handle as OpenCode slash command
         if (cmd[0] == '/' || cmd == "/")
         {
             if (cmd == "/" && args.size() == 1) {
@@ -1301,7 +1180,6 @@ bool CLIRepl::Run(Application& app)
             continue;
         }
 
-        // 2. Legacy commands support (without slash) for backward compatibility
         std::string lowerCmd = helpers::ToLower(cmd);
         if (lowerCmd == "help" || lowerCmd == "?" || lowerCmd == "openreverse")
         {
@@ -1402,7 +1280,6 @@ bool CLIRepl::Run(Application& app)
         }
         else
         {
-            // 3. OpenCode natural chat behavior: anything not recognized as a command is treated as a prompt to the AI!
             HandleChat(app, line);
         }
     }
@@ -1412,33 +1289,25 @@ bool CLIRepl::Run(Application& app)
 void CLIRepl::PrintSlashHelp()
 {
     std::cout << "\n\033[1;36m=================================================================================\033[0m\n";
-    std::cout << "\033[1;36m                OPENREVERSE / OPENCODE SLASH COMMANDS REFERENCE                  \033[0m\n";
+    std::cout << "\033[1;36m                     OPENREVERSE SLASH COMMANDS REFERENCE                         \033[0m\n";
     std::cout << "\033[1;36m=================================================================================\033[0m\n";
     std::cout << "  \033[1;32m/help\033[0m               Show all slash commands and reverse engineering tools\n";
-    std::cout << "  \033[1;32m/setup\033[0m              One-click interactive AI installer & free model selector (/models, /install)\n";
-    std::cout << "  \033[1;32m/connect\033[0m [provider] Quick Connect / Interactive Setup (ollama, groq, openrouter...)\n";
-    std::cout << "  \033[1;32m/open\033[0m <path.exe>    Launch binary & run full automatic static/dynamic analysis\n";
+    std::cout << "  \033[1;32m/setup\033[0m              Configure an AI provider and model\n";
+    std::cout << "  \033[1;32m/connect\033[0m [provider] Configure an OpenAI-compatible provider\n";
+    std::cout << "  \033[1;32m/open\033[0m <path.exe>    Open a PE file for static analysis\n";
     std::cout << "  \033[1;32m/attach\033[0m <PID>       Attach to a running process PID\n";
     std::cout << "  \033[1;32m/sessions\033[0m           List all active reverse engineering & chat sessions\n";
     std::cout << "  \033[1;32m/new-session\033[0m [name] Create a new clean session workspace\n";
     std::cout << "  \033[1;32m/switch\033[0m <id>        Switch to another active session ID\n";
     std::cout << "  \033[1;32m/functions\033[0m [filt]   List discovered functions in current binary\n";
-    std::cout << "  \033[1;32m/decompile\033[0m <addr>   Decompile x64 assembly to C/C++ Hex-Rays pseudocode\n";
+    std::cout << "  \033[1;32m/decompile\033[0m <addr>   Generate experimental C-like pseudocode\n";
     std::cout << "  \033[1;32m/xrefs\033[0m <addr>       Show all cross-references (CALL, JUMP, MEM) to/from address\n";
     std::cout << "  \033[1;32m/strings\033[0m [filt]     List extracted ASCII/UTF-16 strings (URLs, C2, Registry)\n";
     std::cout << "  \033[1;32m/explain\033[0m <addr>     Ask AI to decompile & explain a function in detail\n";
     std::cout << "  \033[1;32m/rename\033[0m <addr>      Ask AI to suggest descriptive variable & function names\n";
     std::cout << "  \033[1;32m/triage\033[0m             Threat report and automatic MITRE ATT&CK mapping\n";
     std::cout << "  \033[1;32m/auto-rename\033[0m        Global AI name & type inference across all functions\n";
-    std::cout << "  \033[1;32m/account\033[0m            Check subscription tier, OpenReverse Cloud license & Dev SDK access\n";
-    std::cout << "  \033[1;32m/login\033[0m <token>      Login with OpenReverse Cloud server license key to unlock Pro/Dev tiers\n";
-    std::cout << "  \033[1;32m/hub\033[0m                Browse OpenReverse Developer Community Hub & Marketplace\n";
-    std::cout << "  \033[1;32m/install\033[0m <name>     Install a community plugin/skill from the OpenReverse Hub\n";
-    std::cout << "  \033[1;32m/plugins\033[0m            List installed community scripts, skills & plugins\n";
-    std::cout << "  \033[1;32m/anti-debug\033[0m         Scan & neutralize PEB, RDTSC, SEH/VEH anti-debug traps\n";
-    std::cout << "  \033[1;32m/shield\033[0m             Activate Crackme Wiper Shield against destructive host APIs\n";
-    std::cout << "  \033[1;32m/anti-vm\033[0m            Bypass VMware/VirtualBox & CPUID hypervisor checks\n";
-    std::cout << "  \033[1;32m/model\033[0m <name>       Change AI model (gpt-4o, claude-3-5-sonnet, llama3...)\n";
+    std::cout << "  \033[1;32m/model\033[0m <name>       Change the configured provider model\n";
     std::cout << "  \033[1;32m/gui\033[0m                Handover session immediately to Graphical User Interface\n";
     std::cout << "  \033[1;32m/clear\033[0m              Clear terminal screen\n";
     std::cout << "  \033[1;32m/exit\033[0m               Exit OPENREVERSE Studio\n";
@@ -1459,11 +1328,9 @@ void CLIRepl::ShowSlashMenuPopup(Application& app)
         std::cout << "│  \033[38;5;208m" << cmdPadded << "\033[0m " << descPadded << "│\n";
     }
     std::cout << "\033[38;5;238m└──────────────────────────────────────────────────────────────────────────┘\033[0m\n";
-    std::string tierLabel = (userTier_ == SubscriptionTier::ADMIN) ? "\033[1;31mADMINISTRATOR\033[0m" :
-                            ((userTier_ == SubscriptionTier::DEV_CREATOR_PRO) ? "\033[1;35mOpenReverse Cloud DEV CREATOR TIER\033[0m" :
-                            ((userTier_ == SubscriptionTier::PRO_ANALYST) ? "\033[1;33mOpenReverse Cloud PRO ANALYST TIER\033[0m" : "\033[38;5;242mCommunity Free\033[0m"));
-    std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37mqwen2.5-coder:7b\033[0m \033[38;5;238m·\033[0m " << tierLabel << "\n";
-    std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m   \033[1;32m/hub\033[0m \033[38;5;242mplugins\033[0m\n";
+    std::cout << "  \033[38;5;75mBuild\033[0m \033[38;5;238m·\033[0m \033[1;37m" << app.aiService.Model()
+              << "\033[0m \033[38;5;238m·\033[0m \033[38;5;242mlocal analysis\033[0m\n";
+    std::cout << "  \033[1;33mtab\033[0m \033[38;5;242msessions\033[0m   \033[1;33mctrl+p\033[0m \033[38;5;242mcommands\033[0m\n";
     std::cout << "\033[1;32m/\033[0m ";
 }
 
@@ -1520,10 +1387,14 @@ void CLIRepl::HandleSessionSwitch(Application& app, const std::vector<std::strin
     std::cout << "\033[1;31m[-] Session ID " << targetId << " not found. Type '/sessions' to list all.\033[0m\n";
 }
 
-void CLIRepl::HandleChat(Application& app, const std::string& userMessage)
+bool CLIRepl::HandleChat(Application& app, const std::string& userMessage)
 {
     std::cout << "\033[1;36m[AI Chat - " << app.aiService.Model() << "]\033[0m Thinking...\n";
-    app.aiService.Send(userMessage, nullptr, app.GetAIContextSummary());
+    if (!app.aiService.Send(userMessage, nullptr, app.GetAIContextSummary()))
+    {
+        std::cout << "\033[1;31m[-] AI request rejected: " << app.aiService.Status() << "\033[0m\n";
+        return false;
+    }
 
     int timeoutMs = 30000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -1542,6 +1413,7 @@ void CLIRepl::HandleChat(Application& app, const std::string& userMessage)
         std::cout << "\033[1;31m[-] AI request failed or timed out: " << app.aiService.Status() << "\033[0m\n";
         std::cout << "Tip: Use '/connect' to configure or check your API key and provider.\n\n";
     }
+    return app.aiService.State() == openreverse::ai::ChatState::Ready;
 }
 
 void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const std::vector<std::string>& args)
@@ -1569,13 +1441,15 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     }
     else if (cmd == "/open" || cmd == "/o")
     {
-        HandleOpen(app, args);
-        for (auto& s : sessions_) {
-            if (s.id == currentSessionId_) {
-                s.targetExe = (args.size() > 1) ? args[1] : "";
-                s.pid = app.attachedPID;
-                s.functionsCount = app.idaProPanel.GetFunctions().size();
-                break;
+        if (HandleOpen(app, args))
+        {
+            for (auto& s : sessions_) {
+                if (s.id == currentSessionId_) {
+                    s.targetExe = args[1];
+                    s.pid = app.attachedPID;
+                    s.functionsCount = app.idaProPanel.GetFunctions().size();
+                    break;
+                }
             }
         }
     }
@@ -1643,26 +1517,6 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     {
         HandleAIModel(app, args);
     }
-    else if (cmd == "/account" || cmd == "/sub" || cmd == "/tier")
-    {
-        HandleAccount(app, args);
-    }
-    else if (cmd == "/login" || cmd == "/auth" || cmd == "/token")
-    {
-        HandleLogin(app, args);
-    }
-    else if (cmd == "/hub" || cmd == "/marketplace" || cmd == "/store")
-    {
-        HandleHub(app, args);
-    }
-    else if (cmd == "/install" || cmd == "/add-plugin" || cmd == "/plugin-install")
-    {
-        HandleInstallPlugin(app, args);
-    }
-    else if (cmd == "/plugins" || cmd == "/skills" || cmd == "/installed")
-    {
-        HandlePlugins(app, args);
-    }
     else if (cmd == "/status" || cmd == "/ai-status")
     {
         HandleAIStatus(app, args);
@@ -1684,11 +1538,9 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
 
 std::string CLIRepl::DecompileHelper(Application& app, uint64_t addr)
 {
-    auto* mod = app.moduleManager.FindModuleByAddress(addr);
-    uint64_t baseAddr = mod ? mod->baseAddress : 0x7FF700000000;
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, 4096);
     if (bytes.empty()) return "";
-    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, baseAddr, app.disassembler, app.is64Bit, 4096);
+    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
     return app.functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
 }
 

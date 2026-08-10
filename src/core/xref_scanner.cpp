@@ -4,9 +4,8 @@
 
 #include "xref_scanner.h"
 #include "utils/helpers.h"
-#include "utils/logger.h"
 #include <algorithm>
-#include <sstream>
+#include <utility>
 
 namespace openreverse {
 
@@ -17,12 +16,34 @@ void XRefScanner::Clear()
     fromIndex_.clear();
 }
 
+void XRefScanner::ReplaceEntries(std::vector<XRefEntry> entries)
+{
+    Clear();
+    entries_ = std::move(entries);
+    for (size_t index = 0; index < entries_.size(); ++index)
+    {
+        toIndex_[entries_[index].toAddress].push_back(index);
+        fromIndex_[entries_[index].fromAddress].push_back(index);
+    }
+}
+
 void XRefScanner::ScanBuffer(const uint8_t* data, size_t dataSize, uint64_t baseAddress,
-                             const std::string& moduleName, Disassembler& disasm, bool is64Bit)
+                             const std::string& moduleName, Disassembler& disasm, bool)
 {
     if (!data || dataSize == 0) return;
 
-    auto insts = disasm.Disassemble(data, dataSize, baseAddress, (size_t)-1);
+    constexpr size_t kMaxIndexedXRefs = 500000;
+    constexpr size_t kMaxInstructionsPerScan = 250000;
+    if (entries_.size() >= kMaxIndexedXRefs)
+        return;
+    const size_t instructionLimit = std::min(kMaxInstructionsPerScan, kMaxIndexedXRefs - entries_.size());
+    auto insts = disasm.Disassemble(data, dataSize, baseAddress, instructionLimit);
+    ScanInstructions(insts, moduleName);
+}
+
+void XRefScanner::ScanInstructions(const std::vector<Instruction>& insts, const std::string& moduleName)
+{
+    constexpr size_t kMaxIndexedXRefs = 500000;
 
     for (const auto& ins : insts)
     {
@@ -39,22 +60,22 @@ void XRefScanner::ScanBuffer(const uint8_t* data, size_t dataSize, uint64_t base
             targetAddr = ins.targetAddress;
             type = XRefType::Jump;
         }
-        else if (ins.mnemonic == "lea" && ins.targetAddress != 0)
+        else if (ins.mnemonic == "lea" && ins.targetKind == InstructionTargetKind::Memory)
         {
             targetAddr = ins.targetAddress;
-            type = XRefType::Read; // LEA loads address of data/string
+            type = XRefType::Lea;
         }
-        else if (ins.targetAddress != 0)
+        else if (ins.targetKind == InstructionTargetKind::Memory && ins.targetAddress != 0)
         {
             targetAddr = ins.targetAddress;
-            if (ins.mnemonic == "mov" || ins.mnemonic == "push")
-                type = XRefType::Read;
-            else
-                type = XRefType::Write;
+            type = ins.memoryRead && ins.memoryWrite ? XRefType::ReadWrite :
+                (ins.memoryWrite ? XRefType::Write : XRefType::Read);
         }
 
         if (targetAddr != 0)
         {
+            if (entries_.size() >= kMaxIndexedXRefs)
+                break;
             size_t idx = entries_.size();
             XRefEntry entry;
             entry.fromAddress = ins.address;
@@ -68,9 +89,6 @@ void XRefScanner::ScanBuffer(const uint8_t* data, size_t dataSize, uint64_t base
             fromIndex_[ins.address].push_back(idx);
         }
     }
-
-    Logger::Get().Log(LogLevel::Info, "XRefScanner indexed %zu references in %s",
-                      entries_.size(), moduleName.empty() ? "module" : moduleName.c_str());
 }
 
 std::vector<XRefEntry> XRefScanner::FindXRefsTo(uint64_t targetAddress) const

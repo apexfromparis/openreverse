@@ -16,9 +16,23 @@ void PEViewerPanel::Render(Application& app)
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Attach to a process to view PE headers and sections.");
+        UIManager::EmptyState("Open a binary or attach to a process to view PE headers and sections.");
         ImGui::End();
         return;
+    }
+
+    if (targetGeneration_ != app.targetGeneration)
+    {
+        targetGeneration_ = app.targetGeneration;
+        peInfo_ = PEInfo{};
+        loaded_ = false;
+        loadedBase_ = 0;
+        if (app.attachedPID == 0 && app.offlinePEInfo.valid)
+        {
+            peInfo_ = app.offlinePEInfo;
+            loaded_ = true;
+            loadedBase_ = peInfo_.imageBase;
+        }
     }
 
     // Module selector
@@ -31,9 +45,12 @@ void PEViewerPanel::Render(Application& app)
             snprintf(label, sizeof(label), "%s (0x%llX)", mod.name.c_str(), (unsigned long long)mod.baseAddress);
             if (ImGui::Selectable(label))
             {
-                peInfo_ = app.peParser.Parse(app.processHandle, mod.baseAddress);
+                peInfo_ = app.processHandle
+                    ? app.peParser.Parse(app.processHandle, mod.baseAddress, mod.size)
+                    : app.offlinePEInfo;
                 loaded_ = peInfo_.valid;
                 loadedBase_ = mod.baseAddress;
+                targetGeneration_ = app.targetGeneration;
             }
         }
         ImGui::EndCombo();
@@ -141,13 +158,16 @@ void PEViewerPanel::Render(Application& app)
                 ImGui::Text("#%u", exp.ordinal);
 
                 ImGui::TableSetColumnIndex(1);
-                if (ImGui::Selectable(exp.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
+                if (ImGui::Selectable(exp.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns) && !exp.isForwarder)
                 {
                     app.NavigateToAddress(loadedBase_ + exp.rva);
                 }
 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Text("0x%08X (0x%llX)", exp.rva, (unsigned long long)(loadedBase_ + exp.rva));
+                if (exp.isForwarder)
+                    ImGui::Text("Forwarder: %s", exp.forwarder.c_str());
+                else
+                    ImGui::Text("0x%08X (0x%llX)", exp.rva, (unsigned long long)(loadedBase_ + exp.rva));
             }
             ImGui::EndTable();
         }

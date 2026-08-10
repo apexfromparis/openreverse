@@ -6,12 +6,13 @@
 #include "core/process_manager.h"
 #include "core/memory_reader.h"
 #include "core/disassembler.h"
-#include "core/pattern_scanner.h"
 #include "core/module_manager.h"
 #include "core/string_scanner.h"
 #include "core/pe_parser.h"
 #include "core/function_analyzer.h"
 #include "core/xref_scanner.h"
+#include "core/analysis_scheduler.h"
+#include "core/analysis_database.h"
 
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
@@ -38,6 +39,7 @@ class Application {
 public:
     Application();
     ~Application();
+    void Shutdown();
 
     void Render();
 
@@ -45,12 +47,13 @@ public:
     ProcessManager   processManager;
     MemoryReader     memoryReader;
     Disassembler     disassembler;
-    PatternScanner   patternScanner;
     ModuleManager    moduleManager;
     StringScanner    stringScanner;
     PEParser         peParser;
     FunctionAnalyzer functionAnalyzer;
     XRefScanner      xrefScanner;
+    AnalysisScheduler analysisScheduler;
+    AnalysisDatabase analysisDatabase;
     ai::AIService    aiService;
     panels::IDAProPanel idaProPanel;
     OpenReverseEditorPanel openReverseEditorPanel;
@@ -59,30 +62,13 @@ public:
     bool isEditorFloating = false;
     void SwitchToDevMode(bool enable);
 
-    // Optional provider account state.
-    bool             showAccountModal = false;
-    char             cloudTokenInput[128] = {};
-    int              cloudTier = 0;
-    char             cloudUsername[64] = {};
-    char             cloudEmail[64] = {};
-    bool             cloudConnected = false;
-    int              cloudTokenQuota = 0;
-    int              maxTokenQuota = 0;
-    int              cloudDecompJobs = 0;
-    int              maxDecompJobs = 0;
-    std::string      lastLoginMessage = "No provider account configured.";
-    void             ShowAccountModal(bool show = true) { showAccountModal = show; }
-    void             ValidateAndLoginToken();
-    void             OpenOAuthBrowser(const std::string& provider);
-    const char*      GetTierName() const;
-    void             RenderAccountModal();
-
     // ── State ──
     bool             isAttached = false;
     DWORD            attachedPID = 0;
     HANDLE           processHandle = nullptr;
     std::string      attachedProcessName;
     bool             is64Bit = false;
+    uint64_t         targetGeneration = 0;
 
     // ── Actions ──
     bool AttachToProcess(DWORD pid);
@@ -93,6 +79,8 @@ public:
 
     std::string      loadedFilePath;
     std::vector<uint8_t> offlineFileBuffer;
+    std::vector<uint8_t> offlineImageBuffer;
+    PEInfo            offlinePEInfo;
 
     // ── Shared state for panels ──
     uint64_t         currentAddress = 0;
@@ -123,6 +111,7 @@ private:
     bool             showGotoModal_ = false;
     char             gotoAddressBuf_[32] = "0";
     bool             layoutInitialized_ = false;
+    bool             shutdown_ = false;
 
     void RenderMenuBar();
     void RenderStatusBar();

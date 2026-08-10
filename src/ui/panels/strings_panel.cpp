@@ -13,6 +13,21 @@ void StringsPanel::Render(Application& app)
 {
     ImGui::Begin("Strings", nullptr, ImGuiWindowFlags_None);
 
+    if (targetGeneration_ != app.targetGeneration)
+    {
+        targetGeneration_ = app.targetGeneration;
+        analysisRevision_ = 0;
+        results_.clear();
+    }
+    const ModuleAnalysisState* analysis = app.analysisDatabase.FindModuleContaining(app.currentAddress);
+    if (!analysis && !app.analysisDatabase.GetModules().empty())
+        analysis = &app.analysisDatabase.GetModules().begin()->second;
+    if (analysis && analysis->revision != analysisRevision_)
+    {
+        analysisRevision_ = analysis->revision;
+        results_ = analysis->strings;
+    }
+
     UIManager::BeginToolbar();
     ImGui::Text("Min length");
     ImGui::SameLine();
@@ -28,17 +43,25 @@ void StringsPanel::Render(Application& app)
     if (!canScan) ImGui::BeginDisabled();
     if (ImGui::Button("Scan"))
     {
-        auto regions = app.memoryReader.GetCommittedRegions();
         results_.clear();
-        for (const auto& r : regions)
+        if (app.attachedPID == 0 && !app.offlineImageBuffer.empty())
         {
-            if (r.state != MEM_COMMIT || (r.protect & PAGE_GUARD) || r.protect == PAGE_NOACCESS)
-                continue;
-            auto partial = app.stringScanner.Scan(app.processHandle,
-                r.baseAddress, r.baseAddress + r.size,
-                minLength_, scanAscii_, scanUnicode_, 5000 - (int)results_.size());
-            results_.insert(results_.end(), partial.begin(), partial.end());
-            if (results_.size() >= 5000) break;
+            results_ = app.stringScanner.ScanBuffer(app.offlineImageBuffer.data(), app.offlineImageBuffer.size(),
+                app.offlinePEInfo.imageBase, minLength_, scanAscii_, scanUnicode_, 5000);
+        }
+        else
+        {
+            auto regions = app.memoryReader.GetCommittedRegions();
+            for (const auto& r : regions)
+            {
+                if (r.state != MEM_COMMIT || (r.protect & PAGE_GUARD) || r.protect == PAGE_NOACCESS)
+                    continue;
+                auto partial = app.stringScanner.Scan(app.processHandle,
+                    r.baseAddress, r.baseAddress + r.size,
+                    minLength_, scanAscii_, scanUnicode_, 5000 - (int)results_.size());
+                results_.insert(results_.end(), partial.begin(), partial.end());
+                if (results_.size() >= 5000) break;
+            }
         }
         app.stringResults = results_;
     }
@@ -54,7 +77,7 @@ void StringsPanel::Render(Application& app)
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Attach to a process to scan for ASCII/Unicode strings.");
+        UIManager::EmptyState("Open a binary or attach to a process to scan strings.");
         ImGui::End();
         return;
     }
@@ -92,11 +115,11 @@ void StringsPanel::Render(Application& app)
                 if (ImGui::MenuItem("Find XREFs to this string (X)"))
                 {
                     app.idaProPanel.OpenXrefsForAddress(sr.address);
-                    ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+                    ImGui::SetWindowFocus("Analysis / Functions & CFG");
                 }
                 if (ImGui::MenuItem("Copy string value"))
                     ImGui::SetClipboardText(sr.value.c_str());
-                if (ImGui::MenuItem("Add to Game Offsets"))
+                if (ImGui::MenuItem("Add to Offsets & Structures"))
                     app.AddOffsetFromAddress(sr.address, sr.value.substr(0, 32));
                 ImGui::EndPopup();
             }

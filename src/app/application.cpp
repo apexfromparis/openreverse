@@ -3,21 +3,22 @@
 // ============================================================================
 
 #include "application.h"
-#include "ui/ui_manager.h"
 #include "utils/logger.h"
 #include "utils/helpers.h"
 #include "ui/panels/ida_pro_panel.h"
 #include "core/disassembler.h"
 
 #include <windows.h>
-#include <shellapi.h>
 #include <commdlg.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <algorithm>
 #include <sstream>
 #include <cstdlib>
 #include <iostream>
 #include <exception>
+#include <set>
+#include <utility>
 
 namespace openreverse {
 
@@ -28,6 +29,15 @@ Application::Application()
 
 Application::~Application()
 {
+    Shutdown();
+}
+
+void Application::Shutdown()
+{
+    if (shutdown_)
+        return;
+    shutdown_ = true;
+    analysisScheduler.Shutdown();
     DetachFromProcess();
 }
 
@@ -73,6 +83,18 @@ bool Application::AttachToProcess(DWORD pid)
 
 void Application::DetachFromProcess()
 {
+    analysisScheduler.CancelAllAndWait();
+    analysisDatabase.Clear();
+    idaProPanel.ResetAnalysis();
+    xrefScanner.Clear();
+    stringResults.clear();
+    selectedBytes.clear();
+    moduleManager.Clear();
+    aiService.ClearConversation();
+    hexEditorPanel.Reset();
+    disasmViewPanel.Reset();
+    modulesPanel.Reset();
+    ++targetGeneration;
     if (isAttached && processHandle)
     {
         processManager.CloseProcess(processHandle);
@@ -83,7 +105,10 @@ void Application::DetachFromProcess()
     processHandle = nullptr;
     attachedProcessName.clear();
     loadedFilePath.clear();
+    memoryReader.SetOfflineBuffer(nullptr, 0);
     offlineFileBuffer.clear();
+    offlineImageBuffer.clear();
+    offlinePEInfo = PEInfo{};
     is64Bit = false;
     currentAddress = 0;
 }
@@ -112,13 +137,23 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         DetachFromProcess();
         std::cout << "[*] Reading and parsing PE headers from disk..." << std::endl;
 
-        PEInfo info = peParser.ParseFile(filePath, offlineFileBuffer);
-        if (!info.valid || offlineFileBuffer.empty())
+        std::vector<uint8_t> rawFile;
+        std::vector<uint8_t> mappedImage;
+        PEInfo info = peParser.ParseFile(filePath, rawFile);
+        if (!info.valid || rawFile.empty())
         {
             std::cout << "\033[1;31m[-] Failed to parse PE binary or driver file: " << filePath << "\033[0m" << std::endl;
             Logger::Get().Log(LogLevel::Error, "Failed to parse PE binary or driver file: %s", filePath.c_str());
             return false;
         }
+        if (!PEParser::BuildMappedImage(rawFile, info, mappedImage))
+        {
+            Logger::Get().Log(LogLevel::Error, "Failed to map PE sections for offline analysis: %s", filePath.c_str());
+            return false;
+        }
+        offlineFileBuffer = std::move(rawFile);
+        offlineImageBuffer = std::move(mappedImage);
+        offlinePEInfo = info;
 
         loadedFilePath = filePath;
         is64Bit = info.is64bit;
@@ -127,77 +162,171 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         attachedPID = 0; // 0 indicates offline PE / kernel driver file analysis
         currentAddress = info.imageBase + info.entryPoint;
 
-        memoryReader.SetOfflineBuffer(&offlineFileBuffer, info.imageBase);
+        memoryReader.SetOfflineBuffer(&offlineImageBuffer, info.imageBase);
         disassembler.Init(is64Bit);
 
         moduleManager.Clear();
         moduleManager.AddModule(attachedProcessName, info.imageBase, info.sizeOfImage, loadedFilePath);
 
-        std::cout << "[*] Discovering kernel DriverEntry & exported functions..." << std::endl;
+        std::cout << "[*] Discovering PE entry point and exported functions..." << std::endl;
         std::vector<FunctionInfo> discoveredFuncs;
+        const auto isExecutableRva = [&](uint32_t rva) {
+            for (const auto& section : info.sections)
+            {
+                const uint64_t span = std::max<uint64_t>(section.virtualSize, section.rawDataSize);
+                if ((section.characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 && rva >= section.virtualAddress &&
+                    static_cast<uint64_t>(rva) - section.virtualAddress < span)
+                    return true;
+            }
+            return false;
+        };
 
-        if (info.entryPoint != 0)
+        if (info.entryPoint != 0 && isExecutableRva(static_cast<uint32_t>(info.entryPoint)))
         {
             FunctionInfo entryFn;
-            entryFn.name = "DriverEntry (Kernel Entry Point)";
+            entryFn.name = "entry_point";
             entryFn.startAddress = info.imageBase + info.entryPoint;
             entryFn.size = 128;
-            entryFn.cyclomaticComplexity = 4;
+            entryFn.endAddress = entryFn.startAddress + entryFn.size;
             discoveredFuncs.push_back(entryFn);
         }
 
         for (const auto& exp : info.exports)
         {
+            if (exp.isForwarder || !isExecutableRva(exp.rva))
+                continue;
             FunctionInfo fn;
             fn.name = exp.name.empty() ? ("sub_" + helpers::FormatAddress(info.imageBase + exp.rva, false)) : exp.name;
             fn.startAddress = info.imageBase + exp.rva;
             fn.size = 64;
-            fn.cyclomaticComplexity = 3;
+            fn.endAddress = fn.startAddress + fn.size;
+            fn.isExported = true;
             discoveredFuncs.push_back(fn);
         }
 
-        std::cout << "[*] Performing heuristic CALL prologue scan across .text section..." << std::endl;
-        auto scanFuncs = functionAnalyzer.DiscoverFunctions(offlineFileBuffer.data(), offlineFileBuffer.size(), info.imageBase, is64Bit);
-        for (const auto& fn : scanFuncs)
+        std::cout << "[*] Decoding executable sections for function and Xref discovery..." << std::endl;
+        constexpr size_t kAutomaticCodeAnalysisLimit = 16ULL * 1024ULL * 1024ULL;
+        constexpr size_t kAutomaticInstructionLimit = 250000;
+        constexpr size_t kAutomaticFunctionLimit = 10000;
+        size_t remainingCodeBudget = kAutomaticCodeAnalysisLimit;
+        size_t remainingInstructionBudget = kAutomaticInstructionLimit;
+        std::vector<std::pair<uint64_t, uint64_t>> analyzedCodeRanges;
+        std::vector<FieldAccessCandidate> fieldAccesses;
+        std::set<uint64_t> discoveredFunctionAddresses;
+        for (const auto& function : discoveredFuncs)
+            discoveredFunctionAddresses.insert(function.startAddress);
+        xrefScanner.Clear();
+        for (const auto& section : info.sections)
         {
-            bool duplicate = false;
-            for (const auto& existing : discoveredFuncs)
+            if (remainingCodeBudget == 0 || remainingInstructionBudget == 0)
+                break;
+            if ((section.characteristics & IMAGE_SCN_MEM_EXECUTE) == 0 ||
+                section.virtualAddress >= offlineImageBuffer.size())
+                continue;
+
+            const size_t sectionSize = std::min<size_t>({section.rawDataSize,
+                offlineImageBuffer.size() - section.virtualAddress, remainingCodeBudget});
+            if (sectionSize == 0)
+                continue;
+
+            const uint8_t* sectionData = offlineImageBuffer.data() + section.virtualAddress;
+            const uint64_t sectionBase = info.imageBase + section.virtualAddress;
+            analyzedCodeRanges.push_back({sectionBase, sectionBase + sectionSize});
+            remainingCodeBudget -= sectionSize;
+            if (discoveredFuncs.size() < kAutomaticFunctionLimit)
             {
-                if (existing.startAddress == fn.startAddress)
+                auto scanFuncs = functionAnalyzer.DiscoverFunctions(sectionData, sectionSize, sectionBase, is64Bit,
+                    kAutomaticFunctionLimit - discoveredFuncs.size(), 0);
+                for (const auto& fn : scanFuncs)
                 {
-                    duplicate = true;
-                    break;
+                    if (discoveredFunctionAddresses.insert(fn.startAddress).second)
+                        discoveredFuncs.push_back(fn);
                 }
             }
-            if (!duplicate)
-                discoveredFuncs.push_back(fn);
+
+            const auto instructions = disassembler.Disassemble(sectionData, sectionSize, sectionBase,
+                std::min(remainingInstructionBudget, sectionSize));
+            remainingInstructionBudget -= std::min(remainingInstructionBudget, instructions.size());
+            xrefScanner.ScanInstructions(instructions, attachedProcessName);
+            auto sectionFields = FindFieldAccesses(
+                instructions, 100000 - std::min<size_t>(fieldAccesses.size(), 100000));
+            fieldAccesses.insert(fieldAccesses.end(), sectionFields.begin(), sectionFields.end());
         }
+
+        std::vector<uint64_t> decodedCallTargets;
+        for (const auto& xref : xrefScanner.GetAllEntries())
+            if (xref.type == XRefType::Call)
+                decodedCallTargets.push_back(xref.toAddress);
+        for (const auto& range : analyzedCodeRanges)
+        {
+            discoveredFuncs = functionAnalyzer.DiscoverFunctionsFromXRefs(
+                discoveredFuncs, decodedCallTargets, range.first, range.second, is64Bit,
+                kAutomaticFunctionLimit);
+        }
+        if (discoveredFuncs.size() > kAutomaticFunctionLimit)
+            discoveredFuncs.resize(kAutomaticFunctionLimit);
+        if (remainingCodeBudget == 0)
+            Logger::Get().Log(LogLevel::Warning, "Automatic code analysis reached the 16 MB safety limit.");
+        if (remainingInstructionBudget == 0)
+            Logger::Get().Log(LogLevel::Warning, "Automatic code analysis reached the instruction limit.");
+        if (discoveredFuncs.size() >= kAutomaticFunctionLimit)
+            Logger::Get().Log(LogLevel::Warning, "Automatic code analysis reached the function limit.");
 
         std::sort(discoveredFuncs.begin(), discoveredFuncs.end(), [](const FunctionInfo& a, const FunctionInfo& b) {
             return a.startAddress < b.startAddress;
         });
+        AssignFieldFunctions(fieldAccesses, discoveredFuncs);
+        const auto structures = InferStructures(fieldAccesses);
 
         std::cout << "[*] Scanning offline binary strings..." << std::endl;
-        stringResults = stringScanner.ScanBuffer(offlineFileBuffer.data(), offlineFileBuffer.size(), info.imageBase, 5, true, true, 5000);
+        constexpr size_t kAutomaticStringScanLimit = 64ULL * 1024ULL * 1024ULL;
+        size_t remainingStringBudget = kAutomaticStringScanLimit;
+        stringResults.clear();
+        for (const auto& section : info.sections)
+        {
+            if (stringResults.size() >= 5000 || remainingStringBudget == 0)
+                break;
+            if (section.rawDataSize == 0 || section.virtualAddress >= offlineImageBuffer.size())
+                continue;
+            const size_t sectionSize = std::min<size_t>({section.rawDataSize,
+                offlineImageBuffer.size() - section.virtualAddress, remainingStringBudget});
+            remainingStringBudget -= sectionSize;
+            auto sectionStrings = stringScanner.ScanBuffer(
+                offlineImageBuffer.data() + section.virtualAddress, sectionSize,
+                info.imageBase + section.virtualAddress, 5, true, true, 5000 - stringResults.size());
+            stringResults.insert(stringResults.end(), sectionStrings.begin(), sectionStrings.end());
+        }
 
         std::cout << "[*] Disassembling entry point instructions..." << std::endl;
         std::vector<Instruction> insns;
-        size_t entryOffset = 0;
-        for (const auto& sec : info.sections)
+        size_t entrySize = 0;
+        if (info.entryPoint < offlineImageBuffer.size())
         {
-            if (info.entryPoint >= sec.virtualAddress && info.entryPoint < sec.virtualAddress + sec.virtualSize)
+            for (const auto& section : info.sections)
             {
-                entryOffset = sec.rawDataOffset + (info.entryPoint - sec.virtualAddress);
-                break;
+                if (info.entryPoint < section.virtualAddress)
+                    continue;
+                const uint64_t delta = info.entryPoint - section.virtualAddress;
+                if (delta < section.rawDataSize)
+                {
+                    entrySize = std::min<size_t>(section.rawDataSize - static_cast<size_t>(delta),
+                                                 offlineImageBuffer.size() - static_cast<size_t>(info.entryPoint));
+                    break;
+                }
             }
         }
 
-        if (entryOffset < offlineFileBuffer.size())
+        if (entrySize != 0)
         {
-            insns = disassembler.Disassemble(offlineFileBuffer.data() + entryOffset, offlineFileBuffer.size() - entryOffset, currentAddress, 500);
+            insns = disassembler.Disassemble(offlineImageBuffer.data() + info.entryPoint, entrySize, currentAddress, 500);
         }
 
-        std::cout << "[*] Updating IDA Studio Analysis panels..." << std::endl;
+        std::cout << "[*] Updating OpenReverse analysis panels..." << std::endl;
+        ModuleInfo analyzedModule{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage};
+        const auto globals = FindGlobalCandidates(analyzedModule, info, xrefScanner.GetAllEntries());
+        analysisDatabase.ReplaceModuleAnalysis(analyzedModule, is64Bit, info, discoveredFuncs,
+                                               xrefScanner.GetAllEntries(), stringResults, globals, fieldAccesses,
+                                               structures);
         idaProPanel.SetPEAnalysisResult(insns, info.sections, info.imports, info.exports, is64Bit, discoveredFuncs);
         if (!discoveredFuncs.empty())
         {
@@ -212,11 +341,13 @@ bool Application::OpenBinaryFile(const std::string& filePath)
     }
     catch (const std::exception& e)
     {
+        DetachFromProcess();
         std::cout << "\033[1;31m[-] Exception during OpenBinaryFile: " << e.what() << "\033[0m" << std::endl;
         return false;
     }
     catch (...)
     {
+        DetachFromProcess();
         std::cout << "\033[1;31m[-] Unknown exception/crash during OpenBinaryFile\033[0m" << std::endl;
         return false;
     }
@@ -231,14 +362,15 @@ void Application::NavigateToAddress(uint64_t address)
 
 void Application::Render()
 {
+    analysisScheduler.DrainCompletions();
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_G) && ImGui::GetIO().KeyCtrl)
         showGotoModal_ = true;
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_I) && ImGui::GetIO().KeyCtrl)
-        ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+        ImGui::SetWindowFocus("Analysis / Functions & CFG");
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_X) && !ImGui::GetIO().WantCaptureKeyboard)
     {
         idaProPanel.OpenXrefsForAddress(currentAddress);
-        ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+        ImGui::SetWindowFocus("Analysis / Functions & CFG");
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F5))
         processListPanel.ForceRefresh();
@@ -261,8 +393,6 @@ void Application::Render()
     offsetsPanel.Render(*this);
     consolePanel.Render(*this);
     aiCopilotPanel.Render(*this);
-
-    RenderAccountModal();
 
     RenderStatusBar();
 }
@@ -320,7 +450,7 @@ void Application::RenderDockspace()
             ImGui::DockBuilderDockWindow("Console", bottom);
 
             // Stack reverse engineering tools in right sidebar tabs
-            ImGui::DockBuilderDockWindow("IDA Studio / Functions & CFG", right);
+            ImGui::DockBuilderDockWindow("Analysis / Functions & CFG", right);
             ImGui::DockBuilderDockWindow("Hex Editor", right);
             ImGui::DockBuilderDockWindow("Disassembly", right);
             ImGui::DockBuilderDockWindow("AI Copilot", right);
@@ -328,11 +458,11 @@ void Application::RenderDockspace()
             ImGui::DockBuilderDockWindow("Data Inspector", right);
             ImGui::DockBuilderDockWindow("Pattern Scanner", right);
             ImGui::DockBuilderDockWindow("Strings", right);
-            ImGui::DockBuilderDockWindow("Game Offsets", right);
+            ImGui::DockBuilderDockWindow("Offsets & Structures", right);
         }
         else
         {
-            // ─── REVERSE ENGINEERING LAYOUT (Simultaneous IDA Studio + Hex View) ───
+            // ─── REVERSE ENGINEERING LAYOUT ───
             ImGuiID mainTop = main;
             ImGuiID mainBottom = ImGui::DockBuilderSplitNode(mainTop, ImGuiDir_Down, 0.38f, nullptr, &mainTop);
 
@@ -342,8 +472,8 @@ void Application::RenderDockspace()
             ImGui::DockBuilderDockWindow("Memory Map", left);
             ImGui::DockBuilderDockWindow("Bookmarks", left);
 
-            // Main Top (62% of center): IDA Studio (Functions, CFG & Pseudocode) + Disasm
-            ImGui::DockBuilderDockWindow("IDA Studio / Functions & CFG", mainTop);
+            // Main Top (62% of center): functions, CFG, pseudocode, and disassembly
+            ImGui::DockBuilderDockWindow("Analysis / Functions & CFG", mainTop);
             ImGui::DockBuilderDockWindow("Disassembly", mainTop);
 
             // Main Bottom (38% of center): Hex Editor & Live Memory View
@@ -354,7 +484,7 @@ void Application::RenderDockspace()
             ImGui::DockBuilderDockWindow("PE Header", right);
             ImGui::DockBuilderDockWindow("Strings", right);
             ImGui::DockBuilderDockWindow("Pattern Scanner", right);
-            ImGui::DockBuilderDockWindow("Game Offsets", right);
+            ImGui::DockBuilderDockWindow("Offsets & Structures", right);
             ImGui::DockBuilderDockWindow("AI Copilot", right);
             ImGui::DockBuilderDockWindow("OpenReverse Editor", right);
 
@@ -434,7 +564,7 @@ void Application::RenderMenuBar()
     {
         if (ImGui::BeginMenu("Workspace Layout"))
         {
-            if (ImGui::MenuItem("1. Reverse Engineering Layout (IDA Studio)", "Ctrl+1", !isDevMode))
+            if (ImGui::MenuItem("1. Reverse Engineering Layout", "Ctrl+1", !isDevMode))
             {
                 SwitchToDevMode(false);
             }
@@ -450,8 +580,8 @@ void Application::RenderMenuBar()
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("IDA Studio (Functions, CFG & XREFs)", "Ctrl+I"))
-            ImGui::SetWindowFocus("IDA Studio / Functions & CFG");
+        if (ImGui::MenuItem("Analysis (Functions, CFG & XREFs)", "Ctrl+I"))
+            ImGui::SetWindowFocus("Analysis / Functions & CFG");
         if (ImGui::MenuItem("OpenReverse Editor Panel", "Ctrl+E"))
             ImGui::SetWindowFocus("OpenReverse Editor");
         if (ImGui::MenuItem("Goto Address...", "Ctrl+G", false, isAttached))
@@ -460,17 +590,6 @@ void Application::RenderMenuBar()
             ResetLayout();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Dock all windows back to default arrangement");
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Account"))
-    {
-        ImGui::TextDisabled("%s  •  %s", cloudUsername, GetTierName());
-        ImGui::Separator();
-        if (ImGui::MenuItem("Account & Cloud Settings...", "Ctrl+Shift+A"))
-        {
-            ShowAccountModal(true);
-        }
         ImGui::EndMenu();
     }
 
@@ -513,9 +632,9 @@ void Application::RenderMenuBar()
     if (ImGui::BeginPopupModal("About OpenReverse Studio", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::Text("OpenReverse Studio - Memory Analysis & Reverse Engineering");
-        ImGui::Text("Version 2.0 (OpenCode Style CLI & Studio GUI)");
+        ImGui::Text("Version 2.0");
         ImGui::Separator();
-        ImGui::Text("Read and analyze process memory, Hex-Rays pseudo-C decompilation, and AI security audit.");
+        ImGui::Text("Read and analyze process memory, experimental pseudocode, and optional AI context.");
         ImGui::Text("Type '/gui' in the shell or use the menu to switch views.");
         if (ImGui::Button("OK", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
@@ -586,15 +705,10 @@ void Application::RenderStatusBar()
         ImGui::TextDisabled("No target attached");
     }
 
-    // Right-aligned minimal indicators
-    ImGui::SameLine(ImGui::GetWindowWidth() - 280.0f);
-    ImGui::TextColored(ImVec4(0.30f, 0.80f, 0.50f, 1.0f), "●");
-    ImGui::SameLine(0, 4);
-    ImGui::TextDisabled("Cloud");
-    ImGui::SameLine(0, 12);
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 12);
-    ImGui::TextColored(cloudTier == 2 ? ImVec4(0.75f, 0.50f, 0.95f, 1.0f) : (cloudTier == 1 ? ImVec4(0.90f, 0.60f, 0.25f, 1.0f) : ImVec4(0.55f, 0.70f, 0.55f, 1.0f)), "%s", GetTierName());
+    // Right-aligned local configuration indicators
+    ImGui::SameLine(ImGui::GetWindowWidth() - 330.0f);
+    const std::string aiProvider = aiService.Provider();
+    ImGui::TextDisabled("AI: %s", aiProvider.c_str());
     ImGui::SameLine(0, 12);
     ImGui::TextDisabled("|");
     ImGui::SameLine(0, 12);
@@ -623,7 +737,10 @@ std::string Application::GetAIContextSummary()
         ss << "Current Memory Address / Entry Point: 0x" << std::hex << currentAddress << std::dec << "\n";
     }
 
-    const auto& funcs = idaProPanel.GetFunctions();
+    const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
+    if (!analysis && !analysisDatabase.GetModules().empty())
+        analysis = &analysisDatabase.GetModules().begin()->second;
+    const auto& funcs = analysis ? analysis->functions : idaProPanel.GetFunctions();
     if (!funcs.empty())
     {
         ss << "Analyzed Functions (" << funcs.size() << " detected): ";
@@ -636,7 +753,7 @@ std::string Application::GetAIContextSummary()
         ss << "\n";
     }
 
-    const auto& strings = stringResults;
+    const auto& strings = analysis ? analysis->strings : stringResults;
     if (!strings.empty())
     {
         ss << "Notable Strings in Target Memory (" << strings.size() << " total): ";
@@ -664,15 +781,15 @@ std::string Application::GetAIContextSummary()
         }
     }
 
-    // ── Selected IDA Studio Function & Pseudocode ──
+    // ── Selected OpenReverse Function & Pseudocode ──
     if (idaProPanel.GetActiveFunction().startAddress != 0)
     {
         const auto& fn = idaProPanel.GetActiveFunction();
-        ss << "\n--- CURRENT ACTIVE FUNCTION IN IDA STUDIO ---\n";
+        ss << "\n--- CURRENT ACTIVE FUNCTION IN OPENREVERSE ---\n";
         ss << "Function: " << fn.name << " at 0x" << std::hex << fn.startAddress << " (Size: " << std::dec << fn.size << " bytes)\n";
         if (!idaProPanel.GetActivePseudocode().empty())
         {
-            ss << "Decompiled C Pseudocode:\n```c\n" << idaProPanel.GetActivePseudocode() << "\n```\n";
+            ss << "Experimental C Pseudocode:\n```c\n" << idaProPanel.GetActivePseudocode() << "\n```\n";
         }
     }
     ss << "=== END TARGET PROGRAM CONTEXT ===\n\n";
@@ -686,160 +803,7 @@ void Application::SwitchToDevMode(bool enable)
     isDevMode = enable;
     showOpenReverseEditor = true;
     layoutInitialized_ = false;
-    Logger::Get().Log(LogLevel::Info, "%s", enable ? "[Mode Switch] Switched to DEV MODE (Full Screen Code Editor Layout)." : "[Mode Switch] Switched to REVERSE ENGINEERING MODE (IDA Studio Layout).");
-}
-
-const char* Application::GetTierName() const
-{
-    if (cloudTier == 2)
-        return "DEV CREATOR PRO ($79/mo)";
-    if (cloudTier == 1)
-        return "PRO ANALYST ($29/mo)";
-    return "COMMUNITY FREE ($0/mo)";
-}
-
-void Application::ValidateAndLoginToken()
-{
-    std::string token = cloudTokenInput;
-    if (token.empty())
-    {
-        cloudConnected = false;
-        cloudTier = 0;
-        lastLoginMessage = "No provider token configured.";
-        return;
-    }
-
-    cloudConnected = true;
-    cloudTier = 0;
-    cloudTokenQuota = 0;
-    cloudDecompJobs = 0;
-    lastLoginMessage = "Provider token stored for the current session.";
-    Logger::Get().Log(LogLevel::Info, "[Account] Provider token configured for the current session.");
-}
-
-void Application::OpenOAuthBrowser(const std::string& provider)
-{
-    std::string url = "http://localhost:5173/#pricing";
-    ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    lastLoginMessage = "✔ Opened default browser for " + provider + " OAuth sign-in! Token auto-synced.";
-    Logger::Get().Log(LogLevel::Info, "[Account] Launched OAuth flow for provider: %s", provider.c_str());
-}
-
-void Application::RenderAccountModal()
-{
-    if (!showAccountModal)
-        return;
-
-    ImGui::OpenPopup("OpenReverse Studio — Cloud Account & SSO Gateway");
-
-    ImGui::SetNextWindowSize(ImVec2(520, 490), ImGuiCond_FirstUseEver);
-    ImGuiWindowFlags popupFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
-    if (ImGui::BeginPopupModal("OpenReverse Studio — Cloud Account & SSO Gateway", &showAccountModal, popupFlags))
-    {
-        // ── Card 1: User Identity & Active Tier ──
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.10f, 0.14f, 1.0f));
-        ImGui::BeginChild("##ProfileCard", ImVec2(0, 92), true);
-        {
-            ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.55f, 1.0f), "● CLOUD PROVIDER CONNECTED");
-            ImGui::SameLine(ImGui::GetWindowWidth() - 175);
-            ImGui::TextDisabled("EU-West (Paris • 14ms)");
-
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.95f, 0.95f, 1.0f, 1.0f), "User Profile : %s (%s)", cloudUsername, cloudEmail);
-
-            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.0f), "Active Plan  : ");
-            ImGui::SameLine();
-            if (cloudTier == 2)
-                ImGui::TextColored(ImVec4(0.85f, 0.55f, 1.0f, 1.0f), "[ DEV CREATOR PRO ($79/mo) — FULL UNLIMITED ACCESS ]");
-            else if (cloudTier == 1)
-                ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.30f, 1.0f), "[ PRO ANALYST ($29/mo) — PLUGINS & AI ENABLED ]");
-            else
-                ImGui::TextColored(ImVec4(0.60f, 0.80f, 0.60f, 1.0f), "[ COMMUNITY FREE ($0/mo) — BASIC RE ONLY ]");
-
-            ImGui::TextDisabled("Security     : TLS 1.3 End-to-End Encrypted • SOC2 Type II Verified");
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-
-        ImGui::Spacing();
-
-        // ── Card 2: Decompiler Quotas & Cloud AST Usage ──
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.09f, 0.09f, 0.12f, 1.0f));
-        ImGui::BeginChild("##QuotaCard", ImVec2(0, 105), true);
-        {
-            ImGui::TextColored(ImVec4(0.80f, 0.80f, 0.85f, 1.0f), "AI Decompiler Cloud Tokens:");
-            float tokenRatio = (float)cloudTokenQuota / (float)maxTokenQuota;
-            ImGui::ProgressBar(tokenRatio, ImVec2(-1, 8), "");
-            ImGui::TextDisabled("Used: %d / %d tokens (84%% remaining this billing cycle)", cloudTokenQuota, maxTokenQuota);
-
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.80f, 0.80f, 0.85f, 1.0f), "Hex-Rays AST & Heuristic Jobs:");
-            float jobRatio = (float)cloudDecompJobs / (float)maxDecompJobs;
-            ImGui::ProgressBar(jobRatio, ImVec2(-1, 8), "");
-            ImGui::TextDisabled("Completed: %d / %d decompiles (Resets in 18 days)", cloudDecompJobs, maxDecompJobs);
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-
-        ImGui::Spacing();
-
-        // ── Card 3: Direct GUI SSO & Token Authentication ──
-        ImGui::TextColored(ImVec4(0.90f, 0.90f, 0.95f, 1.0f), "GUI Authentication & SSO Switcher");
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        ImGui::TextDisabled("License Key or Token:");
-        ImGui::SetNextItemWidth(350);
-        ImGui::InputText("##LicenseToken", cloudTokenInput, sizeof(cloudTokenInput));
-        ImGui::SameLine();
-        if (ImGui::Button("Authenticate", ImVec2(120, 0)))
-        {
-            ValidateAndLoginToken();
-        }
-
-        ImGui::Spacing();
-        if (ImGui::Button("Sign in with GitHub (OAuth)", ImVec2(235, 28)))
-        {
-            OpenOAuthBrowser("GitHub");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Sign in with Google (OAuth)", ImVec2(235, 28)))
-        {
-            OpenOAuthBrowser("Google");
-        }
-
-        if (!lastLoginMessage.empty())
-        {
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.55f, 1.0f), "%s", lastLoginMessage.c_str());
-        }
-
-        ImGui::Spacing();
-        ImGui::TextDisabled("Simulate Tier Plan in GUI:");
-        ImGui::SameLine();
-        if (ImGui::Button("Free ($0)", ImVec2(80, 22))) { cloudTier = 0; ValidateAndLoginToken(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Pro Analyst ($29)", ImVec2(130, 22))) { cloudTier = 1; ValidateAndLoginToken(); }
-        ImGui::SameLine();
-        if (ImGui::Button("Dev Creator Pro ($79)", ImVec2(150, 22))) { cloudTier = 2; ValidateAndLoginToken(); }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if (ImGui::Button("Manage on Web Portal", ImVec2(170, 28)))
-        {
-            OpenOAuthBrowser("Web Portal");
-        }
-        ImGui::SameLine(ImGui::GetWindowWidth() - 110);
-        if (ImGui::Button("Close", ImVec2(90, 28)))
-        {
-            showAccountModal = false;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
-    }
+    Logger::Get().Log(LogLevel::Info, "%s", enable ? "[Mode Switch] Switched to DEV MODE (Full Screen Code Editor Layout)." : "[Mode Switch] Switched to REVERSE ENGINEERING MODE (Analysis Layout).");
 }
 
 } // namespace openreverse

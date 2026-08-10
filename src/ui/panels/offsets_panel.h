@@ -1,9 +1,4 @@
 #pragma once
-// ============================================================================
-// OpenReverse - Offsets Panel (for pasters / game cheats)
-// Save and export module+offset (e.g. Game.exe+0x1A2B3C)
-// ============================================================================
-
 #include <string>
 #include <vector>
 #include <cstdint>

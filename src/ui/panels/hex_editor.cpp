@@ -23,6 +23,19 @@ void HexEditorPanel::SetAddress(uint64_t address)
     needsRefresh_ = true;
 }
 
+void HexEditorPanel::Reset()
+{
+    currentAddress_ = 0;
+    addressInput_[0] = '0';
+    addressInput_[1] = '\0';
+    buffer_.clear();
+    selectionStart_ = -1;
+    selectionEnd_ = -1;
+    searchMatches_.clear();
+    searchMatchIndex_ = -1;
+    needsRefresh_ = true;
+}
+
 bool HexEditorPanel::HasSelection() const
 {
     return selectionStart_ >= 0 && selectionEnd_ >= 0 && selectionStart_ < (int)buffer_.size() && selectionEnd_ < (int)buffer_.size();

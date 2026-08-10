@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(OpenReverse VERSION 1.0.0 LANGUAGES C CXX)
+project(OpenReverse VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,8 +13,7 @@ include(FetchContent)
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        docking
-    GIT_SHALLOW    TRUE
+    GIT_TAG        83f668625ad45364de71d385aeb6a5dd04bee02e
 )
 FetchContent_MakeAvailable(imgui)
 
@@ -114,3 +113,36 @@ target_compile_definitions(OpenReverse_Setup PRIVATE
 set_target_properties(OpenReverse_Setup PROPERTIES
     OUTPUT_NAME "OpenReverse_Studio_Setup_v2.0"
 )
+
+# ─── Core regression tests ────────────────────────────────────────────────────
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(OpenReverseCoreTests
+        tests/core_tests.cpp
+        src/core/analysis_database.cpp
+        src/core/analysis_scheduler.cpp
+        src/core/data_analyzer.cpp
+        src/core/disassembler.cpp
+        src/core/function_analyzer.cpp
+        src/core/memory_reader.cpp
+        src/core/module_analyzer.cpp
+        src/core/pattern_scanner.cpp
+        src/core/pe_parser.cpp
+        src/core/string_scanner.cpp
+        src/core/xref_scanner.cpp
+        src/utils/helpers.cpp
+        src/utils/logger.cpp
+    )
+    target_include_directories(OpenReverseCoreTests PRIVATE
+        src
+        ${capstone_SOURCE_DIR}/include
+    )
+    target_link_libraries(OpenReverseCoreTests PRIVATE capstone psapi)
+    target_compile_definitions(OpenReverseCoreTests PRIVATE
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
+endif()

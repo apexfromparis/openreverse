@@ -1,0 +1,48 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-x64
+
+      - name: Build
+        run: cmake --build --preset windows-x64-release --parallel
+
+      - name: Test
+        run: ctest --test-dir build/windows-x64 -C Release --output-on-failure
+
+      - name: CLI smoke tests
+        shell: pwsh
+        run: |
+          $app = "build/windows-x64/bin/Release/OpenReverse.exe"
+          $fixture = "build/windows-x64/bin/Release/OpenReverseCoreTests.exe"
+
+          $help = Start-Process $app -ArgumentList "--help" -NoNewWindow -Wait -PassThru
+          if ($help.ExitCode -ne 0) { throw "--help failed with exit code $($help.ExitCode)" }
+
+          $open = Start-Process $app -ArgumentList @("open", $fixture) -NoNewWindow -Wait -PassThru
+          if ($open.ExitCode -ne 0) { throw "static PE open failed with exit code $($open.ExitCode)" }
+
+          $missing = Start-Process $app -ArgumentList @("open", "missing-file.exe") -NoNewWindow -Wait -PassThru
+          if ($missing.ExitCode -eq 0) { throw "missing-file open unexpectedly succeeded" }
+
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          if (!(Test-Path "build/windows-x64/bin/Release/OpenReverse_Studio_Setup_v2.0.exe")) {
+            throw "installer was not built"
+          }

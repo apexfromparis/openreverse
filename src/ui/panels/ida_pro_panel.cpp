@@ -1,5 +1,5 @@
 // ============================================================================
-// OpenReverse - UI Panel: IDA Pro Studio Implementation
+// OpenReverse - UI Panel: Analysis Workspace Implementation
 // ============================================================================
 
 #include "ida_pro_panel.h"
@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <map>
 
 namespace openreverse { namespace panels {
 
@@ -26,16 +27,36 @@ IDAProPanel::~IDAProPanel()
     }
 }
 
+void IDAProPanel::ResetAnalysis()
+{
+    functions_.clear();
+    activeFunction_ = FunctionInfo{};
+    activePseudocode_.clear();
+    currentXrefs_.clear();
+    hasAnalyzed_ = false;
+    analysisJobId_ = 0;
+    xrefTargetAddress_ = 0;
+    xrefAddressInput_[0] = '0';
+    xrefAddressInput_[1] = '\0';
+    devAiResponse_ = "Ask the configured AI provider for help drafting analysis heuristics.";
+    scriptLog_ = "[*] Editor preview initialized. Script execution and publishing are unavailable.\n";
+}
+
 void IDAProPanel::AnalyzeCurrentModule(Application& app)
 {
+    if (!app.isAttached)
+        return;
+    if (!app.processHandle)
+    {
+        Logger::Get().Log(LogLevel::Info, "Offline PE analysis is already available from the loaded image.");
+        return;
+    }
+
     functions_.clear();
     activeFunction_ = FunctionInfo();
     activePseudocode_.clear();
     app.xrefScanner.Clear();
     hasAnalyzed_ = false;
-
-    if (!app.isAttached || !app.processHandle)
-        return;
 
     auto* mod = app.moduleManager.FindModuleByAddress(app.currentAddress);
     if (!mod && !app.moduleManager.GetModules().empty())
@@ -43,69 +64,84 @@ void IDAProPanel::AnalyzeCurrentModule(Application& app)
 
     if (!mod)
     {
-        Logger::Get().Log(LogLevel::Warning, "No module found to analyze in IDA Studio.");
+        Logger::Get().Log(LogLevel::Warning, "No module found to analyze.");
         return;
     }
+    ModuleAnalyzer analyzer;
+    ApplyModuleAnalysis(app, analyzer.AnalyzeLive(app.processHandle, *mod, app.is64Bit));
+}
 
-    Logger::Get().Log(LogLevel::Info, "IDA Studio scanning module %s (Base: 0x%llX, Size: %u)...",
-                      mod->name.c_str(), (unsigned long long)mod->baseAddress, mod->size);
+void IDAProPanel::StartAnalyzeCurrentModule(Application& app)
+{
+    if (!app.isAttached || !app.processHandle)
+        return;
+    auto* module = app.moduleManager.FindModuleByAddress(app.currentAddress);
+    if (!module && !app.moduleManager.GetModules().empty())
+        module = const_cast<ModuleInfo*>(&app.moduleManager.GetModules()[0]);
+    if (!module)
+        return;
 
-    // Limit scan size to 8 MB for immediate responsiveness
-    size_t scanSize = mod->size;
-    if (scanSize > 8ULL * 1024 * 1024)
-        scanSize = 8ULL * 1024 * 1024;
+    if (analysisJobId_ != 0)
+        app.analysisScheduler.Cancel(analysisJobId_);
 
-    auto bytes = app.memoryReader.ReadBytes(app.processHandle, mod->baseAddress, scanSize);
-    if (bytes.empty())
+    HANDLE duplicated = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), app.processHandle, GetCurrentProcess(), &duplicated,
+                         PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, 0))
     {
-        Logger::Get().Log(LogLevel::Error, "IDA Studio failed to read memory of %s", mod->name.c_str());
+        Logger::Get().Log(LogLevel::Error, "Could not duplicate the process handle for background analysis.");
         return;
     }
+    auto ownedHandle = std::shared_ptr<void>(duplicated, [](void* handle) {
+        if (handle) CloseHandle(static_cast<HANDLE>(handle));
+    });
+    const ModuleInfo moduleCopy = *module;
+    const bool is64Bit = app.is64Bit;
+    Application* application = &app;
+    hasAnalyzed_ = false;
 
-    // 1. Discover functions via prologues and CALL rel32 scanning
-    functions_ = app.functionAnalyzer.DiscoverFunctions(bytes.data(), bytes.size(), mod->baseAddress, app.is64Bit, 10000);
+    analysisJobId_ = app.analysisScheduler.Submit("Live module analysis",
+        [this, application, ownedHandle, moduleCopy, is64Bit](
+            const CancellationToken& cancellation,
+            const AnalysisScheduler::ProgressCallback& progress) {
+            ModuleAnalyzer analyzer;
+            auto result = analyzer.AnalyzeLive(static_cast<HANDLE>(ownedHandle.get()), moduleCopy,
+                                               is64Bit, {}, &cancellation, progress);
+            return [this, application, result = std::move(result)]() mutable {
+                analysisJobId_ = 0;
+                ApplyModuleAnalysis(*application, std::move(result));
+            };
+        });
+}
 
-    // 2. Discover additional functions from PE EntryPoint & Exports
-    PEInfo pe = app.peParser.Parse(app.processHandle, mod->baseAddress);
-    if (pe.valid)
+void IDAProPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result)
+{
+    if (!result.success)
     {
-        uint64_t entryAddr = (pe.entryPoint != 0) ? (mod->baseAddress + pe.entryPoint) : 0;
-        std::vector<uint64_t> exportAddrs;
-        for (const auto& exp : pe.exports)
-            if (exp.rva != 0)
-                exportAddrs.push_back(mod->baseAddress + exp.rva);
-
-        functions_ = app.functionAnalyzer.DiscoverFunctionsFromPE(functions_, entryAddr, exportAddrs, app.is64Bit);
+        if (!result.cancelled)
+            Logger::Get().Log(LogLevel::Error, "Live module analysis failed: %s", result.error.c_str());
+        return;
     }
-
-    // 3. Scan XREFs across module
-    app.xrefScanner.ScanBuffer(bytes.data(), bytes.size(), mod->baseAddress, mod->name, app.disassembler, app.is64Bit);
-
-    // 4. Discover additional functions from XREF CALL targets (reaches functions without signatures/symbols)
-    std::vector<uint64_t> callTargets;
-    for (const auto& entry : app.xrefScanner.GetAllEntries())
-    {
-        if (entry.type == XRefType::Call && entry.toAddress >= mod->baseAddress && entry.toAddress < (mod->baseAddress + scanSize))
-        {
-            callTargets.push_back(entry.toAddress);
-        }
-    }
-    functions_ = app.functionAnalyzer.DiscoverFunctionsFromXRefs(functions_, callTargets, mod->baseAddress, mod->baseAddress + scanSize, app.is64Bit, 10000);
-
-    // 5. Scan ASCII & Unicode strings across module for smart XREF lookup
-    app.stringResults = app.stringScanner.Scan(app.processHandle, mod->baseAddress, mod->baseAddress + scanSize, 4, true, true, 5000);
-
-    // 6. Populate XREF counts for discovered functions
-    for (auto& fn : functions_)
-    {
-        auto xrefs = app.xrefScanner.FindXRefsTo(fn.startAddress);
-        fn.xrefCount = (int)xrefs.size();
-    }
-
+    app.analysisDatabase.ReplaceModuleAnalysis(result.module, app.is64Bit, result.pe,
+                                               result.functions, result.xrefs, result.strings,
+                                               result.globals, result.fieldAccesses, result.structures);
+    functions_ = std::move(result.functions);
+    app.xrefScanner.ReplaceEntries(std::move(result.xrefs));
+    app.stringResults = std::move(result.strings);
+    activeFunction_ = FunctionInfo{};
+    activePseudocode_.clear();
     hasAnalyzed_ = true;
-    Logger::Get().Log(LogLevel::Info, "IDA Studio analysis complete: %zu functions, %zu total XREFs, %zu strings.",
-                      functions_.size(), app.xrefScanner.GetTotalXRefsCount(), app.stringResults.size());
-
+    Logger::Get().Log(LogLevel::Info,
+        "Module analysis: %zu functions, %zu Xrefs, %zu strings, %zu globals, %zu structures, "
+        "%lld ms (PE %lld, code %lld, strings %lld)",
+        functions_.size(), app.xrefScanner.GetTotalXRefsCount(), app.stringResults.size(),
+        result.globals.size(), result.structures.size(),
+        static_cast<long long>(result.totalDuration.count()),
+        static_cast<long long>(result.peDuration.count()),
+        static_cast<long long>(result.codeDuration.count()),
+        static_cast<long long>(result.stringDuration.count()));
+    if (result.codeBudgetReached || result.instructionBudgetReached || result.functionLimitReached ||
+        result.stringBudgetReached || result.timeBudgetReached)
+        Logger::Get().Log(LogLevel::Warning, "Module analysis stopped at a configured limit");
     if (!functions_.empty())
         SelectFunction(app, functions_[0].startAddress);
 }
@@ -120,18 +156,6 @@ void IDAProPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, con
     if (!discoveredFuncs.empty())
     {
         functions_ = discoveredFuncs;
-    }
-    else if (!exports.empty())
-    {
-        for (const auto& exp : exports)
-        {
-            FunctionInfo fn;
-            fn.name = exp.name.empty() ? ("sub_" + helpers::FormatAddress(exp.rva, false)) : exp.name;
-            fn.startAddress = exp.rva;
-            fn.size = 64;
-            fn.cyclomaticComplexity = 3;
-            functions_.push_back(fn);
-        }
     }
     else if (!insns.empty())
     {
@@ -184,7 +208,7 @@ void IDAProPanel::SelectFunction(Application& app, uint64_t funcAddress)
     }
 
     activePseudocode_ = app.functionAnalyzer.GeneratePseudocode(activeFunction_, app.is64Bit);
-    app.currentAddress = funcAddress;
+    app.NavigateToAddress(funcAddress);
 
     // Update XREF counts for active function
     auto xrefs = app.xrefScanner.FindXRefsTo(funcAddress);
@@ -193,12 +217,28 @@ void IDAProPanel::SelectFunction(Application& app, uint64_t funcAddress)
 
 void IDAProPanel::Render(Application& app)
 {
-    ImGui::Begin("IDA Studio / Functions & CFG", nullptr, ImGuiWindowFlags_None);
+    ImGui::Begin("Analysis / Functions & CFG", nullptr, ImGuiWindowFlags_None);
+
+    AnalysisJobSnapshot analysisJob = analysisJobId_ != 0
+        ? app.analysisScheduler.GetJob(analysisJobId_) : AnalysisJobSnapshot{};
+    const bool analysisWorking = analysisJob.state == AnalysisJobState::Queued ||
+        analysisJob.state == AnalysisJobState::Running;
+    if (analysisJobId_ != 0 && analysisJob.state == AnalysisJobState::Cancelled)
+        analysisJobId_ = 0;
 
     UIManager::BeginToolbar();
+    if (!app.processHandle || analysisWorking) ImGui::BeginDisabled();
     if (ImGui::Button("Analyze Active Module"))
     {
-        AnalyzeCurrentModule(app);
+        StartAnalyzeCurrentModule(app);
+    }
+    if (!app.processHandle || analysisWorking) ImGui::EndDisabled();
+    if (analysisWorking)
+    {
+        ImGui::SameLine();
+        ImGui::ProgressBar(analysisJob.progress, ImVec2(90.0f, 0.0f));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cancel##moduleanalysis")) app.analysisScheduler.Cancel(analysisJobId_);
     }
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.00f, 1.0f), "Functions: %zu", functions_.size());
@@ -214,12 +254,12 @@ void IDAProPanel::Render(Application& app)
 
     ImGui::Separator();
 
-    if (ImGui::BeginTabBar("IDAStudioTabs"))
+    if (ImGui::BeginTabBar("AnalysisTabs"))
     {
-        if (ImGui::BeginTabItem("Functions (IDA List)"))
+        if (ImGui::BeginTabItem("Functions"))
         {
             if (!app.isAttached)
-                UIManager::EmptyState("Attach to a process to use IDA Studio interactive analysis.");
+                UIManager::EmptyState("Open a binary or attach to a process to analyze functions.");
             else
                 RenderFunctionsTab(app);
             ImGui::EndTabItem();
@@ -232,7 +272,7 @@ void IDAProPanel::Render(Application& app)
                 RenderCFGTab(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Hex-Rays Decompiler"))
+        if (ImGui::BeginTabItem("Experimental Pseudocode"))
         {
             if (!app.isAttached)
                 UIManager::EmptyState("Attach to a process to generate pseudocode.");
@@ -248,7 +288,7 @@ void IDAProPanel::Render(Application& app)
                 RenderXRefsTab(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("OpenReverse Cloud Dev Creator Studio (Script & AI)"))
+        if (ImGui::BeginTabItem("Developer Workspace (Experimental)"))
         {
             RenderScriptEditorTab(app);
             ImGui::EndTabItem();
@@ -264,8 +304,8 @@ void IDAProPanel::RenderFunctionsTab(Application& app)
     ImGui::SetNextItemWidth(250.0f);
     ImGui::InputTextWithHint("##fnfilter", "Filter functions by name/addr...", filterText_, sizeof(filterText_));
     ImGui::SameLine();
-    if (ImGui::Button("Refresh Analysis"))
-        AnalyzeCurrentModule(app);
+    if (ImGui::Button("Refresh Analysis") && app.processHandle)
+        StartAnalyzeCurrentModule(app);
 
     if (functions_.empty())
     {
@@ -274,7 +314,7 @@ void IDAProPanel::RenderFunctionsTab(Application& app)
         return;
     }
 
-    if (ImGui::BeginTable("IDAFuncTable", 6,
+    if (ImGui::BeginTable("FunctionsTable", 6,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable))
     {
@@ -318,7 +358,7 @@ void IDAProPanel::RenderFunctionsTab(Application& app)
             ImGui::Text("%zu B", fn.size);
 
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%zu", fn.basicBlocks.size());
+            ImGui::Text("%zu", fn.cfg.basicBlocks.size());
 
             ImGui::TableSetColumnIndex(4);
             ImVec4 compColor = (fn.cyclomaticComplexity >= 10) ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) :
@@ -346,15 +386,78 @@ void IDAProPanel::RenderCFGTab(Application& app)
     ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.00f, 1.0f), "Function: %s (%s)",
                        activeFunction_.name.c_str(), helpers::FormatAddress(activeFunction_.startAddress, app.is64Bit).c_str());
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.80f, 1.0f), "| %zu Basic Blocks | Complexity V(G): %d",
-                       activeFunction_.basicBlocks.size(), activeFunction_.cyclomaticComplexity);
+    ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.80f, 1.0f),
+                       "| %zu Blocks | %zu Edges | %zu Instructions | V(G): %d",
+                       activeFunction_.cfg.basicBlocks.size(), activeFunction_.cfg.edges.size(),
+                       activeFunction_.cfg.decodedInstructionCount, activeFunction_.cyclomaticComplexity);
+    ImGui::SameLine();
+    const char* cfgStatus = activeFunction_.cfg.complete ? "Complete" :
+        (activeFunction_.cfg.instructionBudgetReached ? "Instruction budget reached" : "Incomplete");
+    ImGui::TextColored(activeFunction_.cfg.complete ? ImVec4(0.25f, 0.85f, 0.50f, 1.0f)
+                                                    : ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
+                       "%s", cfgStatus);
     ImGui::Separator();
+
+    const auto edgeName = [](CFGEdgeType type) {
+        switch (type)
+        {
+        case CFGEdgeType::Fallthrough: return "Fallthrough";
+        case CFGEdgeType::ConditionalTrue: return "True";
+        case CFGEdgeType::ConditionalFalse: return "False";
+        case CFGEdgeType::Unconditional: return "Jump";
+        case CFGEdgeType::Return: return "Return";
+        }
+        return "Unknown";
+    };
+    const auto edgeColor = [](CFGEdgeType type) {
+        switch (type)
+        {
+        case CFGEdgeType::ConditionalTrue: return ImVec4(0.95f, 0.48f, 0.25f, 1.0f);
+        case CFGEdgeType::ConditionalFalse: return ImVec4(0.30f, 0.80f, 0.50f, 1.0f);
+        case CFGEdgeType::Unconditional: return ImVec4(0.85f, 0.65f, 0.25f, 1.0f);
+        case CFGEdgeType::Return: return ImVec4(0.90f, 0.35f, 0.40f, 1.0f);
+        default: return ImVec4(0.35f, 0.70f, 0.90f, 1.0f);
+        }
+    };
+
+    if (ImGui::CollapsingHeader("Typed Edge Index"))
+    {
+        if (ImGui::BeginTable("CFGEdges", 3,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
+        {
+            ImGui::TableSetupColumn("Source");
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("Target");
+            ImGui::TableHeadersRow();
+            for (const auto& edge : activeFunction_.cfg.edges)
+            {
+                ImGui::PushID(&edge);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                const auto source = helpers::FormatAddress(edge.source, app.is64Bit);
+                if (ImGui::Selectable(source.c_str())) app.NavigateToAddress(edge.source);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextColored(edgeColor(edge.type), "%s", edgeName(edge.type));
+                ImGui::TableSetColumnIndex(2);
+                if (edge.target == 0)
+                    ImGui::TextDisabled("Function exit");
+                else
+                {
+                    const auto target = helpers::FormatAddress(edge.target, app.is64Bit);
+                    if (ImGui::Selectable(target.c_str())) app.NavigateToAddress(edge.target);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Separator();
+    }
 
     ImGui::BeginChild("CFGBlocksScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-    for (size_t i = 0; i < activeFunction_.basicBlocks.size(); ++i)
+    for (size_t i = 0; i < activeFunction_.cfg.basicBlocks.size(); ++i)
     {
-        const auto& bb = activeFunction_.basicBlocks[i];
+        const auto& bb = activeFunction_.cfg.basicBlocks[i];
         ImGui::PushID((int)i);
 
         ImGui::BeginGroup();
@@ -367,6 +470,21 @@ void IDAProPanel::RenderCFGTab(Application& app)
 
         if (ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen))
         {
+            bool showedBlockBadge = false;
+            if (bb.startAddress == activeFunction_.cfg.entryAddress)
+            {
+                ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.50f, 1.0f), "ENTRY");
+                showedBlockBadge = true;
+            }
+            if (bb.isTerminal)
+            {
+                if (showedBlockBadge) ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.42f, 0.42f, 1.0f), "TERMINAL");
+                showedBlockBadge = true;
+            }
+            if (showedBlockBadge) ImGui::SameLine();
+            ImGui::TextDisabled("Predecessors: %zu | Successors: %zu",
+                                bb.predecessors.size(), bb.successors.size());
             if (UIManager::GetMonoFont()) ImGui::PushFont(UIManager::GetMonoFont());
 
             for (const auto& ins : bb.instructions)
@@ -387,30 +505,22 @@ void IDAProPanel::RenderCFGTab(Application& app)
 
             if (UIManager::GetMonoFont()) ImGui::PopFont();
 
-            // Branch Edge Buttons
             ImGui::Spacing();
-            if (bb.branchAddr != 0)
+            bool hasOutgoingEdge = false;
+            for (const auto& edge : activeFunction_.cfg.edges)
             {
-                char branchBtn[64];
-                snprintf(branchBtn, sizeof(branchBtn), "Branch -> 0x%llX", (unsigned long long)bb.branchAddr);
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.35f, 0.15f, 0.8f));
-                if (ImGui::Button(branchBtn))
-                {
-                    app.NavigateToAddress(bb.branchAddr);
-                }
+                if (edge.source != bb.startAddress) continue;
+                if (hasOutgoingEdge) ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, edgeColor(edge.type));
+                char edgeButton[96];
+                if (edge.target == 0)
+                    snprintf(edgeButton, sizeof(edgeButton), "%s -> exit", edgeName(edge.type));
+                else
+                    snprintf(edgeButton, sizeof(edgeButton), "%s -> 0x%llX", edgeName(edge.type),
+                             static_cast<unsigned long long>(edge.target));
+                if (ImGui::Button(edgeButton) && edge.target != 0) app.NavigateToAddress(edge.target);
                 ImGui::PopStyleColor();
-                ImGui::SameLine();
-            }
-            if (bb.fallthroughAddr != 0)
-            {
-                char fallBtn[64];
-                snprintf(fallBtn, sizeof(fallBtn), "Fallthrough -> 0x%llX", (unsigned long long)bb.fallthroughAddr);
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.50f, 0.35f, 0.8f));
-                if (ImGui::Button(fallBtn))
-                {
-                    app.NavigateToAddress(bb.fallthroughAddr);
-                }
-                ImGui::PopStyleColor();
+                hasOutgoingEdge = true;
             }
         }
 
@@ -428,7 +538,7 @@ void IDAProPanel::RenderDecompilerTab(Application& app)
     if (activeFunction_.startAddress == 0 || activePseudocode_.empty())
     {
         ImGui::Spacing();
-        ImGui::TextDisabled("No decompiled C pseudocode available. Select a function from the Functions tab.");
+        ImGui::TextDisabled("No experimental pseudocode is available. Select a function from the Functions tab.");
         return;
     }
 
@@ -439,12 +549,12 @@ void IDAProPanel::RenderDecompilerTab(Application& app)
     ImGui::SameLine();
     if (ImGui::Button("Send to AI Copilot for Complete Refinement"))
     {
-        std::string req = "Please perform a comprehensive senior reverse engineering analysis and security review on this C pseudocode decompiled from " +
+        std::string req = "Review this experimental C-like pseudocode generated for " +
                           activeFunction_.name + ":\n\n```c\n" + activePseudocode_ + "\n```";
         app.aiService.Send(req, nullptr);
     }
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "Hex-Rays Syntax Synthesizer Active");
+    ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "OpenReverse experimental output");
 
     ImGui::Separator();
 
@@ -461,6 +571,15 @@ void IDAProPanel::RenderDecompilerTab(Application& app)
 
 void IDAProPanel::RenderXRefsTab(Application& app)
 {
+    if (xrefTargetAddress_ != 0)
+    {
+        snprintf(xrefAddressInput_, sizeof(xrefAddressInput_), "%llX",
+                 static_cast<unsigned long long>(xrefTargetAddress_));
+        currentXrefs_ = app.xrefScanner.FindXRefsTo(xrefTargetAddress_);
+        xrefModeTo_ = true;
+        xrefTargetAddress_ = 0;
+    }
+
     ImGui::Text("Address:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160.0f);
@@ -473,7 +592,6 @@ void IDAProPanel::RenderXRefsTab(Application& app)
         if (addr != 0) return addr;
 
         std::string lowerInput = helpers::ToLower(input);
-        // 1. Check String table
         for (const auto& s : app.stringResults)
         {
             if (helpers::ToLower(s.value) == lowerInput ||
@@ -482,7 +600,6 @@ void IDAProPanel::RenderXRefsTab(Application& app)
                 return s.address;
             }
         }
-        // 2. Check function names
         for (const auto& fn : functions_)
         {
             if (helpers::ToLower(fn.name) == lowerInput ||
@@ -519,7 +636,7 @@ void IDAProPanel::RenderXRefsTab(Application& app)
     if (currentXrefs_.empty())
     {
         ImGui::Spacing();
-        ImGui::TextDisabled("No XREFs found. Make sure you clicked 'Analyze Active Module' in the IDA Studio toolbar.");
+        ImGui::TextDisabled("No XREFs found. Analyze the active module or choose another address.");
         return;
     }
 
@@ -558,7 +675,8 @@ void IDAProPanel::RenderXRefsTab(Application& app)
             const char* typeStr = (xr.type == XRefType::Call) ? "CALL" :
                                   (xr.type == XRefType::Jump) ? "JUMP" :
                                   (xr.type == XRefType::Lea)  ? "LEA" :
-                                  (xr.type == XRefType::Read) ? "READ" : "WRITE";
+                                  (xr.type == XRefType::Read) ? "READ" :
+                                  (xr.type == XRefType::ReadWrite) ? "R/W" : "WRITE";
             ImVec4 typeColor = (xr.type == XRefType::Call) ? ImVec4(0.00f, 0.90f, 1.0f, 1.0f) :
                                (xr.type == XRefType::Jump) ? ImVec4(1.0f, 0.67f, 0.25f, 1.0f) :
                                                              ImVec4(0.75f, 0.85f, 0.75f, 1.0f);
@@ -574,48 +692,35 @@ void IDAProPanel::RenderXRefsTab(Application& app)
 
 void IDAProPanel::RenderScriptEditorTab(Application& app)
 {
-    ImGui::TextColored(ImVec4(1.0f, 0.30f, 0.30f, 1.0f), "[SCRIPT EDITOR & AI ASSISTANT]");
+    ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.25f, 1.0f), "[EXPERIMENTAL SCRIPT EDITOR]");
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.60f, 0.85f, 0.60f, 1.0f), "| SDK: Unrestricted | All Cloud AI Clusters & Marketplace Royalties: Active");
+    ImGui::TextDisabled("| Editing and AI assistance only; execution and publishing are not implemented");
     ImGui::Separator();
 
-    // Toolbar buttons for Developer Scripting
-    if (ImGui::Button("Run Script in Workspace"))
-    {
-        scriptLog_ += "[+] Running OnAnalyzeModule() script against " + std::to_string(functions_.size()) + " discovered functions...\n";
-        int modifiedCount = 0;
-        for (auto& fn : functions_)
-        {
-            if (fn.cyclomaticComplexity > 5 && fn.name.find("sub_") == 0)
-            {
-                fn.name = "cloud_heur_" + helpers::FormatAddress(fn.startAddress, app.is64Bit);
-                modifiedCount++;
-            }
-        }
-        scriptLog_ += "[+] Executed successfully! Modified/tagged " + std::to_string(modifiedCount) + " function signatures.\n";
-    }
+    ImGui::BeginDisabled();
+    ImGui::Button("Run Script (Not Implemented)");
+    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Ask AI Copilot (With Script & Binary Context)"))
+    if (ImGui::Button("Ask AI (With Script & Selected Context)"))
     {
-        scriptLog_ += "[*] Packaging editor script + target binary context for OpenReverse Cloud AI Copilot...\n";
+        scriptLog_ += "[*] Sending the script and selected analysis context to the configured AI provider...\n";
         std::string prompt = std::string(devAiPrompt_);
         if (prompt.empty()) prompt = "Audit this script and suggest improvement heuristics for reverse engineering.";
         std::string fullContextPrompt = "Script Code:\n```cpp\n" + std::string(scriptBuffer_) + "\n```\nTarget Binary Functions Count: " +
                                         std::to_string(functions_.size()) + "\nUser Request: " + prompt;
 
         app.aiService.Send(fullContextPrompt, nullptr, app.GetAIContextSummary());
-        devAiResponse_ = "OpenReverse Cloud AI Copilot is analyzing your script with full reverse engineering target context...";
+        devAiResponse_ = "The configured AI provider is analyzing the script and selected context...";
     }
     ImGui::SameLine();
-    if (ImGui::Button("Publish to OpenReverse Cloud Hub (/hub)"))
-    {
-        scriptLog_ += "[+] Plugin signature generated! Submitted to OpenReverse Cloud Community Marketplace.\n";
-    }
+    ImGui::BeginDisabled();
+    ImGui::Button("Publish (Not Implemented)");
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Load Sample Heuristic"))
     {
         snprintf(scriptBuffer_, sizeof(scriptBuffer_),
-                 "// OpenReverse Cloud Sample: Cobalt Strike / OLLVM Deobfuscator Heuristic\n"
+                  "// OpenReverse Draft: Cobalt Strike / OLLVM Analysis Heuristic\n"
                  "void OnAnalyzeModule(openreverse::Application& app, std::vector<openreverse::FunctionInfo>& funcs) {\n"
                  "    for (auto& fn : funcs) {\n"
                  "        if (fn.cyclomaticComplexity > 15 && fn.name.find(\"sub_\") == 0) {\n"
@@ -636,7 +741,7 @@ void IDAProPanel::RenderScriptEditorTab(Application& app)
     ImGui::SetColumnWidth(0, ImGui::GetWindowWidth() * 0.58f);
 
     // Left Column: Script Editor Buffer (Paris-main Syntax Highlighting TextEditor)
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.0f, 1.0f), "C++ / Python / Lua Plugin Editor (Syntax Highlighted):");
+    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.0f, 1.0f), "Analysis Script Draft (Syntax Highlighted):");
     if (!textEditorPtr_) {
         textEditorPtr_ = new TextEditor();
         textEditorPtr_->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
@@ -651,7 +756,7 @@ void IDAProPanel::RenderScriptEditorTab(Application& app)
     ImGui::NextColumn();
 
     // Right Column: AI Assistant Chat + Context & Execution Log
-    ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.20f, 1.0f), "OpenReverse Cloud AI Assistant (Script & RE Context):");
+    ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.20f, 1.0f), "AI Assistant (Script & Selected Context):");
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::InputTextWithHint("##devprompt", "Ask AI to write heuristic or debug script...", devAiPrompt_, sizeof(devAiPrompt_));
 
@@ -665,7 +770,7 @@ void IDAProPanel::RenderScriptEditorTab(Application& app)
     }
     ImGui::EndChild();
 
-    ImGui::TextColored(ImVec4(0.70f, 0.85f, 0.95f, 1.0f), "Script Execution & Hub Sandbox Log:");
+    ImGui::TextColored(ImVec4(0.70f, 0.85f, 0.95f, 1.0f), "Workspace Log:");
     ImGui::BeginChild("DevScriptLogBox", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(scriptLog_.c_str());
     ImGui::EndChild();

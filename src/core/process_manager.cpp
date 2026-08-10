@@ -76,8 +76,7 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
 HANDLE ProcessManager::OpenProcess(DWORD pid)
 {
     return ::OpenProcess(
-        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
-        PROCESS_QUERY_INFORMATION,
+        PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
         FALSE, pid
     );
 }

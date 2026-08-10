@@ -3,7 +3,7 @@
 // ============================================================================
 
 #include "automator.h"
-#include "utils/helpers.h"
+#include "core/module_analyzer.h"
 #include "utils/logger.h"
 #include <sstream>
 #include <iomanip>
@@ -17,13 +17,12 @@ AutoAnalysisResult Automator::AnalyzeProcess(Application& app, DWORD pid, const 
     res.targetPid = pid;
     res.targetProcessName = processName;
 
-    if (!app.AttachToProcess(pid))
+    if ((!app.isAttached || app.attachedPID != pid || !app.processHandle) && !app.AttachToProcess(pid))
     {
         Logger::Get().Log(LogLevel::Error, "Automator failed to attach to PID %d", pid);
         return res;
     }
 
-    res.success = true;
     res.targetProcessName = app.attachedProcessName;
 
     auto* mod = app.moduleManager.FindModuleByAddress(app.currentAddress);
@@ -35,32 +34,25 @@ AutoAnalysisResult Automator::AnalyzeProcess(Application& app, DWORD pid, const 
 
     res.baseAddress = mod->baseAddress;
 
-    // Limit scan size to 8 MB
-    size_t scanSize = mod->size;
-    if (scanSize > 8ULL * 1024 * 1024)
-        scanSize = 8ULL * 1024 * 1024;
-
-    std::vector<uint8_t> bytes(scanSize, 0);
-    size_t totalRead = 0;
-    for (size_t offset = 0; offset < scanSize; offset += 4096)
+    ModuleAnalysisOptions options;
+    options.maxFunctions = 200;
+    options.maxStrings = 2000;
+    ModuleAnalyzer moduleAnalyzer;
+    auto analysis = moduleAnalyzer.AnalyzeLive(app.processHandle, *mod, app.is64Bit, options);
+    if (!analysis.success)
     {
-        size_t chunk = std::min((size_t)4096, scanSize - offset);
-        SIZE_T read = 0;
-        if (ReadProcessMemory(app.processHandle, (LPCVOID)(mod->baseAddress + offset), &bytes[offset], chunk, &read))
-        {
-            totalRead += read;
-        }
-    }
-    if (totalRead == 0)
-    {
-        res.success = false;
+        Logger::Get().Log(LogLevel::Error, "Automator failed to analyze %s: %s",
+                          mod->name.c_str(), analysis.error.c_str());
         return res;
     }
 
-    // 1. Scan Strings
-    auto stringResults = app.stringScanner.Scan(app.processHandle, mod->baseAddress, mod->baseAddress + scanSize, 4, true, true, 2000);
-    res.stringsFound = stringResults.size();
-    for (const auto& sr : stringResults)
+    Disassembler disassembler;
+    if (!disassembler.Init(app.is64Bit))
+        return res;
+    FunctionAnalyzer functionAnalyzer;
+
+    res.stringsFound = analysis.strings.size();
+    for (const auto& sr : analysis.strings)
     {
         if (sr.category == "URL / C2")
             res.c2Urls.push_back(sr.value);
@@ -68,23 +60,21 @@ AutoAnalysisResult Automator::AnalyzeProcess(Application& app, DWORD pid, const 
             res.registryKeys.push_back(sr.value);
     }
 
-    // 2. Discover & Decompile Functions
-    auto functions = app.functionAnalyzer.DiscoverFunctions(bytes.data(), bytes.size(), mod->baseAddress, app.is64Bit, 200);
-    res.functionsDiscovered = functions.size();
+    res.functionsDiscovered = analysis.functions.size();
+    res.totalXrefs = analysis.xrefs.size();
 
-    // 3. Scan XREFs
-    app.xrefScanner.ScanBuffer(bytes.data(), bytes.size(), mod->baseAddress, mod->name, app.disassembler, app.is64Bit);
-    res.totalXrefs = app.xrefScanner.GetTotalXRefsCount();
-
-    // 4. Select interesting functions (e.g., higher complexity or top functions)
     size_t maxReportFuncs = 15;
-    for (size_t i = 0; i < functions.size() && res.keyFunctions.size() < maxReportFuncs; ++i)
+    for (size_t i = 0; i < analysis.functions.size() && res.keyFunctions.size() < maxReportFuncs; ++i)
     {
-        auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(),
-                                                       functions[i].startAddress, mod->baseAddress,
-                                                       app.disassembler, app.is64Bit, 4096);
+        auto read = app.memoryReader.ReadReadableBlocks(app.processHandle,
+            analysis.functions[i].startAddress, 4096, 4096);
+        if (read.blocks.empty() || read.blocks[0].baseAddress != analysis.functions[i].startAddress)
+            continue;
+        auto fi = functionAnalyzer.AnalyzeFunction(read.blocks[0].bytes.data(), read.blocks[0].bytes.size(),
+            analysis.functions[i].startAddress, analysis.functions[i].startAddress,
+            disassembler, app.is64Bit, 4096);
+        if (!analysis.functions[i].name.empty()) fi.name = analysis.functions[i].name;
 
-        // Include if it has complexity >= 2 or if it's among the first 5 functions
         if (fi.cyclomaticComplexity >= 2 || i < 5)
         {
             AutoAnalysisResult::FunctionSummary fs;
@@ -92,20 +82,21 @@ AutoAnalysisResult Automator::AnalyzeProcess(Application& app, DWORD pid, const 
             fs.name = fi.name;
             fs.size = fi.size;
             fs.complexity = fi.cyclomaticComplexity;
-            auto xrefs = app.xrefScanner.FindXRefsTo(fi.startAddress);
-            fs.xrefCount = (int)xrefs.size();
-            fs.pseudocode = app.functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
+            fs.xrefCount = static_cast<int>(std::count_if(analysis.xrefs.begin(), analysis.xrefs.end(),
+                [&fi](const XRefEntry& xref) { return xref.toAddress == fi.startAddress; }));
+            fs.pseudocode = functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
             res.keyFunctions.push_back(fs);
         }
     }
 
+    res.success = true;
     return res;
 }
 
 std::string Automator::FormatReport(const AutoAnalysisResult& res)
 {
     std::ostringstream ss;
-    ss << "# OpenReverse Automated Decompilation & Reverse Engineering Report\n\n";
+    ss << "# OpenReverse Automated Analysis Report\n\n";
     ss << "- **Target Process**: `" << res.targetProcessName << "` (PID: `" << res.targetPid << "`)\n";
     ss << "- **Base Address**: `0x" << std::uppercase << std::hex << res.baseAddress << "`\n";
     ss << "- **Functions Discovered**: `" << std::dec << res.functionsDiscovered << "`\n";
@@ -128,7 +119,7 @@ std::string Automator::FormatReport(const AutoAnalysisResult& res)
         ss << "\n";
     }
 
-    ss << "## Decompiled Hex-Rays C Pseudocode (Key Functions)\n\n";
+    ss << "## Experimental C-like Pseudocode (Key Functions)\n\n";
     for (const auto& fn : res.keyFunctions)
     {
         ss << "### Function `" << fn.name << "` (0x" << std::uppercase << std::hex << fn.address << ")\n";

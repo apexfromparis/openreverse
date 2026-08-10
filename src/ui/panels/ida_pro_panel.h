@@ -1,6 +1,6 @@
 #pragma once
 // ============================================================================
-// OpenReverse - UI Panel: IDA Pro Studio (Function List, CFG Basic Blocks, Hex-Rays Decompiler, XREFs)
+// OpenReverse - UI Panel: Function List, CFG, Experimental Pseudocode, and Xrefs
 // ============================================================================
 
 #include <cstdint>
@@ -10,6 +10,7 @@
 #include "core/xref_scanner.h"
 #include "core/pe_parser.h"
 #include "core/disassembler.h"
+#include "core/module_analyzer.h"
 
 class TextEditor;
 
@@ -25,6 +26,8 @@ public:
 
     void Render(Application& app);
     void AnalyzeCurrentModule(Application& app);
+    void StartAnalyzeCurrentModule(Application& app);
+    void ResetAnalysis();
     void SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs = {});
     void SelectFunction(Application& app, uint64_t funcAddress);
     void OpenXrefsForAddress(uint64_t address) { xrefTargetAddress_ = address; xrefModeTo_ = true; }
@@ -37,6 +40,7 @@ private:
     FunctionInfo              activeFunction_;
     std::string               activePseudocode_;
     bool                      hasAnalyzed_ = false;
+    uint64_t                  analysisJobId_ = 0;
     char                      filterText_[128] = {};
 
     // XREF Tab state
@@ -50,12 +54,13 @@ private:
     void RenderDecompilerTab(Application& app);
     void RenderXRefsTab(Application& app);
     void RenderScriptEditorTab(Application& app);
+    void ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result);
 
-    // Dev Creator Studio (Script Editor & AI Assistant Tab)
+    // Experimental script editor and AI assistant tab.
     char                      scriptBuffer_[8192] =
         "// =========================================================================\n"
-        "// OpenReverse Dev Creator Studio - Plugin Script Editor\n"
-        "// Access loaded functions, memory & AI SDK in your custom heuristics\n"
+        "// OpenReverse Experimental Analysis Script Draft\n"
+        "// Script execution and plugin APIs are not implemented yet.\n"
         "// =========================================================================\n"
         "void OnAnalyzeModule(openreverse::Application& app, std::vector<openreverse::FunctionInfo>& funcs) {\n"
         "    // Example: Auto-tag suspicious cryptographic loops\n"
@@ -66,8 +71,8 @@ private:
         "    }\n"
         "}\n";
     char                      devAiPrompt_[1024] = "";
-    std::string               devAiResponse_ = "Welcome to OpenReverse Dev Creator Studio. Type a prompt below to ask AI for script heuristics!";
-    std::string               scriptLog_ = "[*] OpenReverse Dev Creator Studio initialized. Ready to execute scripts against target binary.\n";
+    std::string               devAiResponse_ = "Ask the configured AI provider for help drafting analysis heuristics.";
+    std::string               scriptLog_ = "[*] Editor preview initialized. Script execution and publishing are unavailable.\n";
     ::TextEditor*             textEditorPtr_ = nullptr;
 };
 

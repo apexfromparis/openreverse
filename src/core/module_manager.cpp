@@ -3,7 +3,11 @@
 // ============================================================================
 
 #include "module_manager.h"
+#include "pe_parser.h"
 #include <algorithm>
+#include <iterator>
+#include <limits>
+#include <utility>
 
 namespace openreverse {
 
@@ -13,15 +17,15 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
     if (!processHandle)
         return;
 
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
+    HMODULE hMods[1024]{};
+    DWORD cbNeeded = 0;
 
     if (EnumProcessModulesEx(processHandle, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_ALL))
     {
-        size_t count = cbNeeded / sizeof(HMODULE);
+        size_t count = (std::min)(static_cast<size_t>(cbNeeded / sizeof(HMODULE)), std::size(hMods));
         for (size_t i = 0; i < count; ++i)
         {
-            ModuleInfo mod;
+            ModuleInfo mod{};
             mod.baseAddress = (uint64_t)hMods[i];
 
             // Get module name
@@ -43,7 +47,7 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
             }
 
             // Get module size
-            MODULEINFO mi;
+            MODULEINFO mi{};
             if (GetModuleInformation(processHandle, hMods[i], &mi, sizeof(mi)))
             {
                 mod.size = mi.SizeOfImage;
@@ -61,90 +65,31 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
 std::vector<ExportInfo> ModuleManager::GetExports(HANDLE processHandle, uint64_t moduleBase)
 {
     std::vector<ExportInfo> exports;
-
-    // Read DOS header
-    IMAGE_DOS_HEADER dosHeader;
-    SIZE_T bytesRead;
-    if (!ReadProcessMemory(processHandle, (LPCVOID)moduleBase, &dosHeader, sizeof(dosHeader), &bytesRead))
+    if (!processHandle)
         return exports;
 
-    if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE)
+    const auto module = std::find_if(modules_.begin(), modules_.end(), [moduleBase](const ModuleInfo& value) {
+        return value.baseAddress == moduleBase;
+    });
+    if (module == modules_.end() || module->size == 0)
         return exports;
 
-    // Read NT headers
-    IMAGE_NT_HEADERS64 ntHeaders;
-    uint64_t ntAddr = moduleBase + dosHeader.e_lfanew;
-    if (!ReadProcessMemory(processHandle, (LPCVOID)ntAddr, &ntHeaders, sizeof(ntHeaders), &bytesRead))
+    PEParser parser;
+    const PEInfo pe = parser.Parse(processHandle, moduleBase, module->size);
+    if (!pe.valid)
         return exports;
 
-    if (ntHeaders.Signature != IMAGE_NT_SIGNATURE)
-        return exports;
-
-    // Get export directory
-    DWORD exportDirRVA = 0;
-    DWORD exportDirSize = 0;
-
-    if (ntHeaders.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    exports.reserve((std::min)(pe.exports.size(), static_cast<size_t>(10000)));
+    for (const auto& entry : pe.exports)
     {
-        if (ntHeaders.OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
-        {
-            exportDirRVA = ntHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-            exportDirSize = ntHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
-        }
-    }
-    else
-    {
-        // 32-bit
-        IMAGE_NT_HEADERS32 ntHeaders32;
-        ReadProcessMemory(processHandle, (LPCVOID)ntAddr, &ntHeaders32, sizeof(ntHeaders32), &bytesRead);
-        if (ntHeaders32.OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXPORT)
-        {
-            exportDirRVA = ntHeaders32.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-            exportDirSize = ntHeaders32.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
-        }
-    }
-
-    if (exportDirRVA == 0)
-        return exports;
-
-    // Read export directory
-    IMAGE_EXPORT_DIRECTORY exportDir;
-    if (!ReadProcessMemory(processHandle, (LPCVOID)(moduleBase + exportDirRVA), &exportDir, sizeof(exportDir), &bytesRead))
-        return exports;
-
-    // Read function addresses, names, and ordinals
-    std::vector<DWORD> functions(exportDir.NumberOfFunctions);
-    std::vector<DWORD> names(exportDir.NumberOfNames);
-    std::vector<WORD>  ordinals(exportDir.NumberOfNames);
-
-    ReadProcessMemory(processHandle, (LPCVOID)(moduleBase + exportDir.AddressOfFunctions),
-        functions.data(), functions.size() * sizeof(DWORD), &bytesRead);
-    ReadProcessMemory(processHandle, (LPCVOID)(moduleBase + exportDir.AddressOfNames),
-        names.data(), names.size() * sizeof(DWORD), &bytesRead);
-    ReadProcessMemory(processHandle, (LPCVOID)(moduleBase + exportDir.AddressOfNameOrdinals),
-        ordinals.data(), ordinals.size() * sizeof(WORD), &bytesRead);
-
-    // Build export list
-    for (DWORD i = 0; i < exportDir.NumberOfNames && i < 10000; ++i)
-    {
+        if (exports.size() >= 10000 || entry.ordinal > (std::numeric_limits<uint16_t>::max)())
+            break;
         ExportInfo exp;
-
-        // Read name
-        char nameBuf[512];
-        if (ReadProcessMemory(processHandle, (LPCVOID)(moduleBase + names[i]), nameBuf, sizeof(nameBuf), &bytesRead))
-        {
-            nameBuf[511] = 0;
-            exp.name = nameBuf;
-        }
-
-        exp.ordinal = ordinals[i] + (uint16_t)exportDir.Base;
-
-        if (ordinals[i] < functions.size())
-            exp.address = moduleBase + functions[ordinals[i]];
-        else
-            exp.address = 0;
-
-        exports.push_back(exp);
+        exp.name = entry.name;
+        exp.ordinal = static_cast<uint16_t>(entry.ordinal);
+        if (!entry.isForwarder && entry.rva <= (std::numeric_limits<uint64_t>::max)() - moduleBase)
+            exp.address = moduleBase + entry.rva;
+        exports.push_back(std::move(exp));
     }
 
     return exports;
