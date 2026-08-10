@@ -1,9 +1,3 @@
-// ============================================================================
-// OpenReverse Editor - Integrated C++ & Script Decompilation IDE
-// Complete Paris-Main / VS Code Replica: Activity Bar, Search & Replace,
-// Context Menus, Welcome Screen, Problems Panel & Status Bar
-// ============================================================================
-
 #include "openreverse_editor.h"
 #include "app/application.h"
 #include "utils/logger.h"
@@ -17,6 +11,22 @@
 namespace fs = std::filesystem;
 
 namespace openreverse {
+
+namespace {
+
+bool IsInsideWorkspace(const fs::path& workspace, const fs::path& candidate)
+{
+    std::error_code ec;
+    const fs::path root = fs::weakly_canonical(workspace, ec);
+    if (ec) return false;
+    const fs::path target = fs::weakly_canonical(candidate, ec);
+    if (ec) return false;
+    const fs::path relative = target.lexically_relative(root);
+    if (relative.empty() || relative.is_absolute()) return false;
+    return *relative.begin() != "..";
+}
+
+} // namespace
 
 OpenReverseEditorPanel::OpenReverseEditorPanel()
 {
@@ -37,58 +47,9 @@ void OpenReverseEditorPanel::EnsureDefaultFiles()
         return;
 
     std::error_code ec;
-    if (!fs::exists(workspaceDir_, ec))
-    {
-        fs::create_directories(workspaceDir_ + "/user_scripts", ec);
-        fs::create_directories(workspaceDir_ + "/decompiled_modules", ec);
-        fs::create_directories(workspaceDir_ + "/plugins", ec);
-
-        // Write real template files to disk
-        {
-            std::ofstream out(workspaceDir_ + "/user_scripts/example_hook.cpp");
-            if (out)
-            {
-                out << "// OpenReverse Studio v2.0 - Automated Hook & Memory Injection Script\n"
-                    << "#include <windows.h>\n"
-                    << "#include \"api/openreverse_api.h\"\n\n"
-                    << "void OnModuleLoaded(const char* moduleName, uint64_t baseAddress) {\n"
-                    << "    OpenReverse::Log(\"[+] Intercepted module load: %s at 0x%llX\", moduleName, baseAddress);\n"
-                    << "    // Example NOP patch on security check:\n"
-                    << "    OpenReverse::PatchBytes(baseAddress + 0x1042, \"\\x90\\x90\\x90\", 3);\n"
-                    << "}\n";
-            }
-        }
-        {
-            std::ofstream out(workspaceDir_ + "/user_scripts/pe_analyzer.py");
-            if (out)
-            {
-                out << "# OpenReverse Python Automation Script\n"
-                    << "# Automatically scans imported DLLs and dumps suspicious section headers\n"
-                    << "import openreverse as rev\n\n"
-                    << "def scan_pe_sections():\n"
-                    << "    sections = rev.get_pe_sections()\n"
-                    << "    for s in sections:\n"
-                    << "        print(f'Section: {s.name} - VirtualSize: {hex(s.virtual_size)}')\n\n"
-                    << "if __name__ == '__main__':\n"
-                    << "    scan_pe_sections()\n";
-            }
-        }
-        {
-            std::ofstream out(workspaceDir_ + "/decompiled_modules/sub_140001000.cpp");
-            if (out)
-            {
-                out << "// IDA Pro Decompiled Routine - Function sub_140001000\n"
-                    << "// Address: 0x140001000 | XREFs: 14\n"
-                    << "#include <cstdint>\n\n"
-                    << "uint64_t __fastcall sub_140001000(uint64_t rcx, uint32_t edx) {\n"
-                    << "    if ((edx & 0x1000) != 0) {\n"
-                    << "        return *(uint64_t*)(rcx + 0x48) ^ 0xDEADBEEF;\n"
-                    << "    }\n"
-                    << "    return *(uint64_t*)(rcx + 0x20);\n"
-                    << "}\n";
-            }
-        }
-    }
+    fs::create_directories(workspaceDir_ + "/user_scripts", ec);
+    fs::create_directories(workspaceDir_ + "/decompiled_modules", ec);
+    fs::create_directories(workspaceDir_ + "/plugins", ec);
 
     ScanWorkspaceFolder();
     initialized_ = true;
@@ -129,13 +90,18 @@ void OpenReverseEditorPanel::ScanWorkspaceFolder()
 
 void OpenReverseEditorPanel::OpenFileFromDisk(const std::string& filepath)
 {
+    if (activeTabIdx_ >= 0 && activeTabIdx_ < static_cast<int>(openTabs_.size()))
+    {
+        auto& activeTab = openTabs_[activeTabIdx_];
+        activeTab.currentText = textEditor_.GetText();
+        activeTab.isDirty = activeTab.currentText != activeTab.initialText;
+    }
     for (size_t i = 0; i < openTabs_.size(); ++i)
     {
         if (openTabs_[i].filepath == filepath)
         {
             activeTabIdx_ = (int)i;
-            textEditor_.SetText(openTabs_[i].initialText);
-            SimulateSyntaxCheck();
+            textEditor_.SetText(openTabs_[i].currentText);
             return;
         }
     }
@@ -155,6 +121,7 @@ void OpenReverseEditorPanel::OpenFileFromDisk(const std::string& filepath)
     tab.filepath = filepath;
     tab.filename = fs::path(filepath).filename().string();
     tab.initialText = content;
+    tab.currentText = content;
     tab.isDirty = false;
 
     openTabs_.push_back(tab);
@@ -162,7 +129,6 @@ void OpenReverseEditorPanel::OpenFileFromDisk(const std::string& filepath)
     textEditor_.SetText(content);
     currentSelectedPath_ = filepath;
 
-    SimulateSyntaxCheck();
     Logger::Get().Log(LogLevel::Info, "%s", ("Opened file from disk: " + tab.filename).c_str());
 }
 
@@ -186,9 +152,9 @@ void OpenReverseEditorPanel::SaveActiveFileToDisk()
 
     out << currentText;
     tab.initialText = currentText;
+    tab.currentText = currentText;
     tab.isDirty = false;
 
-    SimulateSyntaxCheck();
     Logger::Get().Log(LogLevel::Info, "%s", ("Saved file to disk: " + tab.filename).c_str());
 }
 
@@ -197,27 +163,41 @@ void OpenReverseEditorPanel::CreateNewFileOnDisk(const std::string& filename, co
     if (filename.empty())
         return;
 
-    std::error_code ec;
-    std::string targetDir = workspaceDir_ + "/" + (folderName.empty() ? "user_scripts" : folderName);
-    fs::create_directories(targetDir, ec);
+    const fs::path targetDir = fs::path(workspaceDir_) /
+        (folderName.empty() ? fs::path("user_scripts") : fs::path(folderName));
+    const fs::path fullPath = targetDir / filename;
+    if (!IsInsideWorkspace(workspaceDir_, fullPath))
+    {
+        Logger::Get().Log(LogLevel::Error, "File path is outside the editor workspace");
+        return;
+    }
 
-    std::string fullPath = targetDir + "/" + filename;
+    std::error_code ec;
+    fs::create_directories(targetDir, ec);
+    if (ec)
+    {
+        Logger::Get().Log(LogLevel::Error, "Could not create editor folder");
+        return;
+    }
+
     if (fs::exists(fullPath, ec))
     {
         Logger::Get().Log(LogLevel::Warning, "%s", ("File already exists: " + filename).c_str());
-        OpenFileFromDisk(fullPath);
+        OpenFileFromDisk(fullPath.string());
         return;
     }
 
     std::ofstream out(fullPath);
-    if (out)
+    if (!out)
     {
-        out << "// " << filename << " - Created in OpenReverse Studio\n\n";
+        Logger::Get().Log(LogLevel::Error, "Could not create editor file");
+        return;
     }
+    out.close();
 
     ScanWorkspaceFolder();
-    OpenFileFromDisk(fullPath);
-    Logger::Get().Log(LogLevel::Info, "%s", ("Created new file on disk: " + fullPath).c_str());
+    OpenFileFromDisk(fullPath.string());
+    Logger::Get().Log(LogLevel::Info, "%s", ("Created file: " + fullPath.string()).c_str());
 }
 
 void OpenReverseEditorPanel::CreateNewFolderOnDisk(const std::string& folderName)
@@ -225,17 +205,40 @@ void OpenReverseEditorPanel::CreateNewFolderOnDisk(const std::string& folderName
     if (folderName.empty())
         return;
 
+    const fs::path targetDir = fs::path(workspaceDir_) / folderName;
+    if (!IsInsideWorkspace(workspaceDir_, targetDir))
+    {
+        Logger::Get().Log(LogLevel::Error, "Folder path is outside the editor workspace");
+        return;
+    }
     std::error_code ec;
-    std::string targetDir = workspaceDir_ + "/" + folderName;
     fs::create_directories(targetDir, ec);
+    if (ec)
+    {
+        Logger::Get().Log(LogLevel::Error, "Could not create editor folder");
+        return;
+    }
     ScanWorkspaceFolder();
-    Logger::Get().Log(LogLevel::Info, "%s", ("Created folder on disk: " + targetDir).c_str());
+    Logger::Get().Log(LogLevel::Info, "%s", ("Created folder: " + targetDir.string()).c_str());
 }
 
 void OpenReverseEditorPanel::DeleteFileFromDisk(const std::string& filepath)
 {
     if (filepath.empty())
         return;
+    if (!IsInsideWorkspace(workspaceDir_, filepath))
+    {
+        Logger::Get().Log(LogLevel::Error, "File path is outside the editor workspace");
+        return;
+    }
+    const auto openTab = std::find_if(openTabs_.begin(), openTabs_.end(), [&](const EditorTab& tab) {
+        return tab.filepath == filepath;
+    });
+    if (openTab != openTabs_.end() && openTab->isDirty)
+    {
+        Logger::Get().Log(LogLevel::Warning, "Save changes before deleting %s", openTab->filename.c_str());
+        return;
+    }
 
     std::error_code ec;
     if (fs::exists(filepath, ec))
@@ -261,7 +264,7 @@ void OpenReverseEditorPanel::DeleteFileFromDisk(const std::string& filepath)
     }
     if (activeTabIdx_ >= 0)
     {
-        textEditor_.SetText(openTabs_[activeTabIdx_].initialText);
+        textEditor_.SetText(openTabs_[activeTabIdx_].currentText);
     }
     else
     {
@@ -278,23 +281,33 @@ void OpenReverseEditorPanel::RenameFileOnDisk(const std::string& oldPath, const 
 
     std::error_code ec;
     fs::path oldP(oldPath);
-    std::string newPath = (oldP.parent_path() / newName).string();
+    const fs::path newPath = oldP.parent_path() / newName;
+    if (!IsInsideWorkspace(workspaceDir_, oldP) || !IsInsideWorkspace(workspaceDir_, newPath))
+    {
+        Logger::Get().Log(LogLevel::Error, "Rename path is outside the editor workspace");
+        return;
+    }
 
     if (fs::exists(oldP, ec))
     {
         fs::rename(oldP, newPath, ec);
-        Logger::Get().Log(LogLevel::Info, "%s", ("Renamed file to: " + newName).c_str());
     }
+    if (ec)
+    {
+        Logger::Get().Log(LogLevel::Error, "Could not rename editor file");
+        return;
+    }
+    Logger::Get().Log(LogLevel::Info, "%s", ("Renamed file to: " + newName).c_str());
 
     for (auto& tab : openTabs_)
     {
         if (tab.filepath == oldPath)
         {
-            tab.filepath = newPath;
+            tab.filepath = newPath.string();
             tab.filename = newName;
         }
     }
-    currentSelectedPath_ = newPath;
+    currentSelectedPath_ = newPath.string();
     ScanWorkspaceFolder();
 }
 
@@ -373,36 +386,6 @@ void OpenReverseEditorPanel::PerformGlobalReplace()
     Logger::Get().Log(LogLevel::Info, "[Replace] Replaced %d occurrences across workspace scripts.", totalReplaced);
 }
 
-void OpenReverseEditorPanel::SimulateSyntaxCheck()
-{
-    ::TextEditor::ErrorMarkers markers;
-    std::string text = textEditor_.GetText();
-    std::istringstream iss(text);
-    std::string line;
-    int lineNo = 1;
-
-    errorCount_ = 0;
-    warningCount_ = 0;
-
-    while (std::getline(iss, line))
-    {
-        // Check simple syntax errors like mismatched or stray tokens
-        if (line.find("ERROR_TEST") != std::string::npos || line.find("UNDEFINED_VAR") != std::string::npos)
-        {
-            markers[lineNo] = "Syntax error: Undefined identifier or symbol";
-            errorCount_++;
-        }
-        else if (line.find("TODO:") != std::string::npos || line.find("FIXME:") != std::string::npos)
-        {
-            markers[lineNo] = "Warning: Unresolved TODO/FIXME comment tag";
-            warningCount_++;
-        }
-        lineNo++;
-    }
-
-    textEditor_.SetErrorMarkers(markers);
-}
-
 void OpenReverseEditorPanel::Render(Application& app, bool& p_open)
 {
     if (!p_open)
@@ -418,14 +401,6 @@ void OpenReverseEditorPanel::Render(Application& app, bool& p_open)
     {
         activeSidebarTab_ = 1;
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
-    {
-        if (activeTabIdx_ >= 0 && activeTabIdx_ < (int)openTabs_.size())
-        {
-            Logger::Get().Log(LogLevel::Info, "%s", ("[Script Engine] Executing script: " + openTabs_[activeTabIdx_].filename).c_str());
-        }
-    }
-
     ImGuiWindowFlags flags = ImGuiWindowFlags_None;
     if (app.isEditorFloating)
     {
@@ -446,7 +421,6 @@ void OpenReverseEditorPanel::Render(Application& app, bool& p_open)
     float sidebarW = 220.0f;
     float editorW = availW - activityBarW - sidebarW - 12.0f;
 
-    // 1. VS Code Activity Bar
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
     ImGui::BeginChild("ActivityBar", ImVec2(activityBarW, availH), false);
     RenderActivityBar(app);
@@ -455,7 +429,6 @@ void OpenReverseEditorPanel::Render(Application& app, bool& p_open)
 
     ImGui::SameLine(0.0f, 4.0f);
 
-    // 2. Left Sidebar (Explorer or Search)
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.14f, 0.14f, 0.14f, 1.0f));
     ImGui::BeginChild("SidebarPane", ImVec2(sidebarW, availH), true);
     RenderSidebarPane(app);
@@ -464,7 +437,6 @@ void OpenReverseEditorPanel::Render(Application& app, bool& p_open)
 
     ImGui::SameLine(0.0f, 4.0f);
 
-    // 3. Main Editor & Bottom Problems Panel
     float editorPaneH = showProblemsPanel_ ? (availH - 170.0f) : availH;
     ImGui::BeginChild("EditorPane", ImVec2(editorW, editorPaneH), true);
     RenderEditorPane(app);
@@ -722,17 +694,19 @@ void OpenReverseEditorPanel::RenderEditorPane(Application& app)
         return;
     }
 
+    if (activeTabIdx_ >= 0 && activeTabIdx_ < static_cast<int>(openTabs_.size()))
+    {
+        auto& activeTab = openTabs_[activeTabIdx_];
+        activeTab.currentText = textEditor_.GetText();
+        activeTab.isDirty = activeTab.currentText != activeTab.initialText;
+    }
+
     if (ImGui::BeginTabBar("EditorFileTabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs))
     {
         for (size_t i = 0; i < openTabs_.size(); ++i)
         {
             bool tabOpen = true;
             ImGuiTabItemFlags tabFlags = (activeTabIdx_ == (int)i) ? ImGuiTabItemFlags_SetSelected : 0;
-
-            if (activeTabIdx_ == (int)i && textEditor_.GetText() != openTabs_[i].initialText)
-            {
-                openTabs_[i].isDirty = true;
-            }
 
             std::string label = (openTabs_[i].isDirty ? "* " : "") + openTabs_[i].filename + "###Tab_" + std::to_string(i);
 
@@ -741,15 +715,20 @@ void OpenReverseEditorPanel::RenderEditorPane(Application& app)
                 if (activeTabIdx_ != (int)i)
                 {
                     activeTabIdx_ = (int)i;
-                    textEditor_.SetText(openTabs_[i].initialText);
+                    textEditor_.SetText(openTabs_[i].currentText);
                     currentSelectedPath_ = openTabs_[i].filepath;
-                    SimulateSyntaxCheck();
                 }
                 ImGui::EndTabItem();
             }
 
             if (!tabOpen)
             {
+                if (openTabs_[i].isDirty)
+                {
+                    Logger::Get().Log(LogLevel::Warning, "Save changes before closing %s",
+                                      openTabs_[i].filename.c_str());
+                    break;
+                }
                 openTabs_.erase(openTabs_.begin() + i);
                 if (activeTabIdx_ >= (int)openTabs_.size())
                 {
@@ -757,7 +736,7 @@ void OpenReverseEditorPanel::RenderEditorPane(Application& app)
                 }
                 if (activeTabIdx_ >= 0)
                 {
-                    textEditor_.SetText(openTabs_[activeTabIdx_].initialText);
+                    textEditor_.SetText(openTabs_[activeTabIdx_].currentText);
                 }
                 break;
             }
@@ -786,7 +765,7 @@ void OpenReverseEditorPanel::RenderWelcomeScreen(Application& app)
     ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "%s", t2);
 
     ImGui::Dummy(ImVec2(0, 24.0f));
-    const char* t3 = "Ctrl+S: Save File   |   Ctrl+F: Search & Replace   |   F5: Execute Script";
+    const char* t3 = "Ctrl+S: Save File   |   Ctrl+F: Search & Replace";
     ImGui::SetCursorPosX((winW - ImGui::CalcTextSize(t3).x) * 0.5f);
     ImGui::TextDisabled("%s", t3);
 }
@@ -802,24 +781,7 @@ void OpenReverseEditorPanel::RenderProblemsPanel(Application& app)
 
     ImGui::SetCursorPos(ImVec2(12.f, 28.f));
     ImGui::BeginChild("ProblemsList", ImVec2(0, 0), false);
-    auto errs = textEditor_.GetErrorMarkers();
-    if (errs.empty())
-    {
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "No problems have been detected in the active script.");
-    }
-    else
-    {
-        for (auto& err : errs)
-        {
-            ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.f), "(X)");
-            ImGui::SameLine();
-            std::string msg = "Line " + std::to_string(err.first) + ": " + err.second;
-            if (ImGui::Selectable(msg.c_str()))
-            {
-                textEditor_.SetCursorPosition(::TextEditor::Coordinates(err.first - 1, 0));
-            }
-        }
-    }
+    ImGui::TextDisabled("Compiler diagnostics are not available in the draft editor.");
     ImGui::EndChild();
 }
 
@@ -830,23 +792,14 @@ void OpenReverseEditorPanel::RenderStatusBar(Application& app)
     ImGui::BeginChild("StatusBar", ImVec2(ImGui::GetWindowWidth(), 24.0f), false);
 
     ImGui::SetCursorPos(ImVec2(10.f, 4.f));
-    char statusText[128];
-    sprintf_s(statusText, "(X) %d   /!\\ %d", errorCount_, warningCount_);
-    if (errorCount_ == 0 && warningCount_ == 0)
-    {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Ready");
-    }
-    else
-    {
-        ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "%s", statusText);
-    }
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Draft editor");
     if (ImGui::IsItemClicked())
     {
         showProblemsPanel_ = !showProblemsPanel_;
     }
 
     ImGui::SameLine(ImGui::GetWindowWidth() - 360.0f);
-    ImGui::TextDisabled("Execute (F5)  |  C++ / Script Engine  |  UTF-8  |  v2.0");
+    ImGui::TextDisabled("Editing only  |  UTF-8  |  v2.0");
 
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -854,21 +807,9 @@ void OpenReverseEditorPanel::RenderStatusBar(Application& app)
 
 void OpenReverseEditorPanel::RenderTopActionBar(Application& app)
 {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.271f, 0.761f, 0.620f, 1.0f));
-    if (ImGui::Button("  |>  Execute Script (F5)  "))
-    {
-        if (activeTabIdx_ >= 0 && activeTabIdx_ < (int)openTabs_.size())
-        {
-            std::string fn = openTabs_[activeTabIdx_].filename;
-            Logger::Get().Log(LogLevel::Info, "%s", ("[Script Engine] Executing script: " + fn + " ...").c_str());
-            Logger::Get().Log(LogLevel::Info, "[Script Engine] Execution complete. 0 errors.");
-        }
-        else
-        {
-            Logger::Get().Log(LogLevel::Warning, "[Script Engine] No open script to execute.");
-        }
-    }
-    ImGui::PopStyleColor();
+    ImGui::BeginDisabled();
+    ImGui::Button("  Script execution unavailable  ");
+    ImGui::EndDisabled();
 
     ImGui::SameLine(0.0f, 10.0f);
     if (ImGui::Button("  + New Script  "))

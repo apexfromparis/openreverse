@@ -67,7 +67,7 @@ void __declspec(noinline) SecretPayload()
 bool __declspec(noinline) VerifyLicenseKey(const std::string& userKey, const std::string& expectedKey)
 {
     // Simulate checking remote C2 server or Registry
-    // In OpenReverse IDA Studio, look at the basic blocks of this function!
+    // In OpenReverse Analysis, look at the basic blocks of this function.
     if (userKey.length() != expectedKey.length())
     {
         return false;
@@ -105,7 +105,7 @@ int main(int argc, char** argv)
     {
         if (std::string(argv[i]) == "--daemon")
         {
-            std::cout << "[*] Running in daemon mode for automated OpenReverse decompilation...\n";
+            std::cout << "[*] Running in daemon mode for automated OpenReverse analysis...\n";
             while (true)
             {
                 Sleep(1000);

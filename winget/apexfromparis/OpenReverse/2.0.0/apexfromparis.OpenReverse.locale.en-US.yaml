@@ -6,25 +6,24 @@ PackageVersion: 2.0.0
 PackageLocale: en-US
 Publisher: apexfromparis
 PublisherUrl: https://github.com/apexfromparis
-PublisherSupportUrl: https://github.com/apexfromparis/powerfull-ida/issues
+PublisherSupportUrl: https://github.com/apexfromparis/openreverse/issues
 Author: apexfromparis
 PackageName: OPENREVERSE Studio
-PackageUrl: https://github.com/apexfromparis/powerfull-ida
+PackageUrl: https://github.com/apexfromparis/openreverse
 License: MIT
-LicenseUrl: https://github.com/apexfromparis/powerfull-ida/blob/main/LICENSE
+LicenseUrl: https://github.com/apexfromparis/openreverse/blob/main/LICENSE
 Copyright: Copyright (c) 2026 apexfromparis
-ShortDescription: AI-powered x64 reverse engineering CLI REPL with Hex-Rays style decompilation and interactive analysis.
+ShortDescription: Open-source Windows reverse-engineering workspace with optional AI assistance.
 Description: |-
-  OPENREVERSE Studio is a high-performance, AI-powered interactive reverse engineering engine and terminal CLI for x64 Windows binaries.
-  It provides Hex-Rays style C/C++ pseudocode decompilation, control flow graphs, cross-reference scanning, and deep AI Copilot integration in a sleek monochrome terminal interface.
+  OpenReverse Studio is a Windows reverse-engineering workspace and command shell.
+  It provides PE inspection, Capstone disassembly, heuristic function and experimental pseudocode analysis, control-flow graphs, cross-reference scanning, and optional AI assistance.
 Tags:
   - reverse-engineering
-  - decompiler
   - disassembler
   - ai
   - cli
   - malware-analysis
-  - ida-pro
+  - pe-analysis
   - x64
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

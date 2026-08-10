@@ -53,7 +53,6 @@ if ($pathParts -notcontains $targetDir) {
     Write-Host "[*] $targetDir is already configured in Windows User PATH." -ForegroundColor Yellow
 }
 
-# 5. Update current session PATH
 $env:Path = "$targetDir;$env:Path"
 
 Write-Host ""
@@ -62,10 +61,10 @@ Write-Host "  [SUCCESS] OPENREVERSE CLI IS INSTALLED AND READY IN YOUR SHELL!   
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host "  Run 'openreverse' in any terminal to launch the CLI." -ForegroundColor White
 Write-Host "  Commands available:" -ForegroundColor White
-Write-Host "    • /login          -> Quick Connect Wizard (Free Local Ollama / LM Studio)" -ForegroundColor Gray
-Write-Host "    • /anti-debug     -> Scan PEB & kernel trap flags" -ForegroundColor Gray
-Write-Host "    • /shield         -> Protect against VM/Sandbox & active anti-debugging" -ForegroundColor Gray
-Write-Host "    • /anti-vm        -> Analyze RDTSC timing & hypervisor artifacts" -ForegroundColor Gray
-Write-Host "    • /hub            -> Browse installed extensions" -ForegroundColor Gray
+Write-Host "    - /open <file>    -> Open a PE file for static analysis" -ForegroundColor Gray
+Write-Host "    - /attach <pid>   -> Attach to a running process" -ForegroundColor Gray
+Write-Host "    - /functions      -> List discovered functions" -ForegroundColor Gray
+Write-Host "    - /xrefs <addr>   -> List references to an address" -ForegroundColor Gray
+Write-Host "    - /setup          -> Configure an optional AI provider" -ForegroundColor Gray
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host ""

@@ -1,9 +1,3 @@
-// ============================================================================
-// OpenReverse Editor - Integrated C++ & Script Decompilation IDE
-// Complete Paris-Main / VS Code Replica: Activity Bar, Search & Replace,
-// Context Menus, Welcome Screen, Problems Panel & Status Bar
-// ============================================================================
-
 #pragma once
 #include "TextEditor.h"
 #include <string>
@@ -24,6 +18,7 @@ struct EditorTab {
     std::string filepath;
     std::string filename;
     std::string initialText;
+    std::string currentText;
     bool isDirty = false;
 };
 
@@ -50,7 +45,6 @@ public:
     void EnsureDefaultFiles();
     void PerformGlobalSearch();
     void PerformGlobalReplace();
-    void SimulateSyntaxCheck();
 
     void SetWorkspaceDir(const std::string& dir) { workspaceDir_ = dir; }
     std::string GetWorkspaceDir() const { return workspaceDir_; }
@@ -66,8 +60,6 @@ private:
     // Paris-main / VS Code state
     int activeSidebarTab_ = 0; // 0 = Explorer, 1 = Search
     bool showProblemsPanel_ = false;
-    int errorCount_ = 0;
-    int warningCount_ = 0;
 
     // Search & Replace
     char searchBuf_[128] = {};

@@ -24,6 +24,7 @@ setup_trace.txt
 *_test_report.md
 report_test.md
 decompiled_report.md
+openreverse_scripts/
 
 # Frontend dependencies and build output
 **/node_modules/
