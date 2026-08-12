@@ -1,15 +1,19 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.23)
 project(OpenReverse VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# ─── Fetch Dependencies ───────────────────────────────────────────────────────
+configure_file(
+    src/app/version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/openreverse_version.h
+    @ONLY
+)
+
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "Disable git updates during build" FORCE)
 include(FetchContent)
 
-# Dear ImGui (docking branch for multi-panel layout)
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -17,10 +21,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
-# Capstone disassembly engine
 set(CAPSTONE_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(CAPSTONE_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
 set(CAPSTONE_BUILD_CSTOOL OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_ARCHITECTURE_DEFAULT OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_X86_SUPPORT ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     capstone
     GIT_REPOSITORY https://github.com/capstone-engine/capstone.git
@@ -29,7 +34,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(capstone)
 
-# JSON for modern C++ (for config/bookmarks persistence)
 FetchContent_Declare(
     json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
@@ -38,10 +42,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# ─── ImGui static library (no CMakeLists in ImGui repo) ───────────────────────
 add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_demo.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
@@ -54,13 +56,18 @@ target_include_directories(imgui_lib PUBLIC
 )
 target_link_libraries(imgui_lib PUBLIC d3d11 d3dcompiler dxgi)
 
-# ─── OpenReverse executable ────────────────────────────────────────────────────
 file(GLOB_RECURSE OPENREVERSE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
-add_executable(OpenReverse WIN32 ${OPENREVERSE_SOURCES} installer/app.rc)
+configure_file(installer/app.rc.in installer/app.rc @ONLY)
+
+add_executable(OpenReverse WIN32
+    ${OPENREVERSE_SOURCES}
+    ${CMAKE_CURRENT_BINARY_DIR}/installer/app.rc
+)
 
 target_include_directories(OpenReverse PRIVATE
     src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${capstone_SOURCE_DIR}/include
 )
 
@@ -84,14 +91,42 @@ target_compile_definitions(OpenReverse PRIVATE
 
 set_target_properties(OpenReverse PROPERTIES OUTPUT_NAME "OpenReverse")
 
-# ─── OpenReverse Studio GUI setup installer ────────────────────────────────────
+set(OPENREVERSE_INSTALLER_PAYLOAD
+    ${CMAKE_CURRENT_BINARY_DIR}/installer/OpenReverse.payload.exe
+)
 configure_file(installer/setup.rc.in installer/setup.rc @ONLY)
 
-add_executable(OpenReverse_Setup WIN32 installer/setup_gui.cpp ${CMAKE_CURRENT_BINARY_DIR}/installer/setup.rc)
+add_custom_command(
+    OUTPUT ${OPENREVERSE_INSTALLER_PAYLOAD}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:OpenReverse>
+        ${OPENREVERSE_INSTALLER_PAYLOAD}
+    DEPENDS OpenReverse $<TARGET_FILE:OpenReverse>
+    COMMENT "Preparing the OpenReverse installer payload"
+    VERBATIM
+)
+
+set_source_files_properties(
+    ${OPENREVERSE_INSTALLER_PAYLOAD}
+    PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE
+)
+set_source_files_properties(
+    ${CMAKE_CURRENT_BINARY_DIR}/installer/setup.rc
+    PROPERTIES OBJECT_DEPENDS ${OPENREVERSE_INSTALLER_PAYLOAD}
+)
+
+add_executable(OpenReverse_Setup WIN32
+    installer/setup_gui.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/installer/setup.rc
+    ${OPENREVERSE_INSTALLER_PAYLOAD}
+)
 
 add_dependencies(OpenReverse_Setup OpenReverse)
 
-target_include_directories(OpenReverse_Setup PRIVATE src)
+target_include_directories(OpenReverse_Setup PRIVATE
+    src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
 
 target_link_libraries(OpenReverse_Setup PRIVATE
     ole32
@@ -111,10 +146,9 @@ target_compile_definitions(OpenReverse_Setup PRIVATE
 )
 
 set_target_properties(OpenReverse_Setup PROPERTIES
-    OUTPUT_NAME "OpenReverse_Studio_Setup_v2.0"
+    OUTPUT_NAME "OpenReverse-${PROJECT_VERSION}-Setup"
 )
 
-# ─── Core regression tests ────────────────────────────────────────────────────
 include(CTest)
 if(BUILD_TESTING)
     add_executable(OpenReverseCoreTests
@@ -145,4 +179,9 @@ if(BUILD_TESTING)
         NOMINMAX
     )
     add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
+
+    add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
+    set_target_properties(OpenReverseTestFixture PROPERTIES
+        OUTPUT_NAME "OpenReverseTestFixture"
+    )
 endif()

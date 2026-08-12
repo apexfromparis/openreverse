@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Memory Reader Implementation
-// ============================================================================
-
 #include "memory_reader.h"
 #include <fstream>
 #include <algorithm>

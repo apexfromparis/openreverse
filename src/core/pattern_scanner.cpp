@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Pattern Scanner Implementation
-// ============================================================================
-
 #include "pattern_scanner.h"
 #include "memory_reader.h"
 #include <sstream>
@@ -206,6 +202,15 @@ bool PatternScanner::MatchPattern(const uint8_t* data, size_t dataSize,
     return true;
 }
 
+size_t PatternScanner::AdvanceAfterRead(size_t bytesRead, size_t patternSize)
+{
+    if (bytesRead == 0 || patternSize == 0)
+        return 0;
+    if (bytesRead < patternSize)
+        return bytesRead;
+    return bytesRead - patternSize + 1;
+}
+
 std::vector<ScanResult> PatternScanner::Scan(HANDLE processHandle,
                                                const std::vector<PatternByte>& pattern,
                                                uint64_t startAddress, uint64_t endAddress,
@@ -252,7 +257,8 @@ std::vector<ScanResult> PatternScanner::Scan(HANDLE processHandle,
                 size_t bytesToRead = (size_t)(std::min)((uint64_t)chunkSize, regionEnd - scanAddr);
                 SIZE_T bytesRead = 0;
 
-                if (ReadProcessMemory(processHandle, (LPCVOID)scanAddr, buffer.data(), bytesToRead, &bytesRead) && bytesRead > 0)
+                ReadProcessMemory(processHandle, (LPCVOID)scanAddr, buffer.data(), bytesToRead, &bytesRead);
+                if (bytesRead > 0)
                 {
                     for (size_t i = 0; i + pattern.size() <= bytesRead; ++i)
                     {
@@ -265,7 +271,7 @@ std::vector<ScanResult> PatternScanner::Scan(HANDLE processHandle,
                     }
                 }
 
-                size_t step = bytesToRead >= pattern.size() ? bytesRead - pattern.size() + 1 : bytesRead;
+                const size_t step = AdvanceAfterRead(bytesRead, pattern.size());
                 if (step == 0 || step > (std::numeric_limits<uint64_t>::max)() - scanAddr)
                     break;
                 scanAddr += step;

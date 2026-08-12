@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Utils: Logger
 // Thread-safe logging system with severity levels and ring buffer
-// ============================================================================
 
 #include <string>
 #include <vector>
@@ -51,13 +49,17 @@ public:
             entries_.erase(entries_.begin());
     }
 
-    const std::vector<LogEntry>& GetEntries() const { return entries_; }
+    std::vector<LogEntry> Snapshot() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entries_;
+    }
     void Clear() { std::lock_guard<std::mutex> lock(mutex_); entries_.clear(); }
 
 private:
     Logger() = default;
     std::vector<LogEntry> entries_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace openreverse

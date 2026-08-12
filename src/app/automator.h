@@ -1,9 +1,5 @@
 #pragma once
-// ============================================================================
-// OpenReverse - Core: Automator / Headless Engine
-// Runs bounded analysis on a target process for headless reports.
-// without GUI interaction and formats OpenReverse summary reports
-// ============================================================================
+// Coordinates bounded headless analysis through the shared application state.
 
 #include "app/application.h"
 #include <string>
@@ -31,8 +27,8 @@ struct AutoAnalysisResult {
     };
 
     std::vector<FunctionSummary> keyFunctions;
-    std::vector<std::string>     c2Urls;
-    std::vector<std::string>     registryKeys;
+    std::vector<std::string>     urls;
+    std::vector<std::string>     registryPaths;
 };
 
 class Automator {
@@ -40,10 +36,8 @@ public:
     Automator() = default;
     ~Automator() = default;
 
-    // Run automated OpenReverse analysis on a running process.
     AutoAnalysisResult AnalyzeProcess(Application& app, DWORD pid, const std::string& processName = "");
 
-    // Format the result into a beautiful markdown report
     static std::string FormatReport(const AutoAnalysisResult& res);
 };
 

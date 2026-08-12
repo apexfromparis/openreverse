@@ -1,10 +1,6 @@
-// ============================================================================
-// OpenReverse - Core: Interactive REPL & Terminal Interpreter Implementation
-// ============================================================================
-
 #include "cli_repl.h"
-#include "automator.h"
-#include "ui/panels/ida_pro_panel.h"
+#include "openreverse_version.h"
+#include "app/automator.h"
 #include "utils/helpers.h"
 #include <windows.h>
 #include <iostream>
@@ -83,7 +79,7 @@ void CLIRepl::PrintBanner()
 
 void CLIRepl::PrintCLIVersion()
 {
-    std::cout << "2.0.0 (openreverse-studio)\n";
+    std::cout << openreverse::kVersion << " (openreverse)\n";
 }
 
 void CLIRepl::PrintCLIHelp()
@@ -102,11 +98,7 @@ void CLIRepl::PrintCLIHelp()
     std::cout << "  openreverse session             manage sessions\n\n";
     std::cout << "Options:\n";
     std::cout << "  -h, --help          show help                                                            [boolean]\n";
-    std::cout << "  -v, --version       show version number                                                  [boolean]\n";
-    std::cout << "  -m, --model         model to use in the format of provider/model                          [string]\n";
-    std::cout << "  -c, --continue      continue the last session                                            [boolean]\n";
-    std::cout << "  -s, --session       session id to continue                                                [string]\n";
-    std::cout << "      --prompt        prompt to use                                                         [string]\n\n";
+    std::cout << "  -v, --version       show version number                                                  [boolean]\n\n";
 }
 
 void CLIRepl::PrintHelp()
@@ -118,7 +110,7 @@ void CLIRepl::PrintHelp()
     std::cout << "  decompile <addr|name> Generate experimental C-like pseudocode\n";
     std::cout << "  cfg <addr|name>       Display basic block control flow graph & branching\n";
     std::cout << "  xrefs <addr|name>     Show Cross-References (CALL, JUMP, READ, WRITE) to/from addr\n";
-    std::cout << "  strings [filter]      Display strings (highlights URL/C2 and Registry paths)\n";
+    std::cout << "  strings [filter]      Display strings with neutral evidence categories\n";
     std::cout << "  disasm <addr> [cnt]   Disassemble hex instructions at memory address\n";
     std::cout << "  modules               List loaded PE modules and base addresses\n";
     std::cout << "  report [file.md]      Export an analysis report to disk\n";
@@ -136,14 +128,14 @@ void CLIRepl::PrintHelp()
     std::cout << "  ai-vuln <func>        Ask AI to audit experimental function pseudocode\n";
     std::cout << "---------------------------------------------------------------------------------\n";
     std::cout << "  gui                   Switch immediately to Graphical User Interface\n";
-    std::cout << "  exit / quit           Exit OPENREVERSE Studio\n\n";
+    std::cout << "  exit / quit           Exit OpenReverse\n\n";
 }
 
 uint64_t CLIRepl::ParseAddressOrName(Application& app, const std::string& token)
 {
     if (token.empty()) return 0;
     if (token.front() == '-' || token.front() == '+') return 0;
-    for (const auto& fn : app.idaProPanel.GetFunctions())
+    for (const auto& fn : app.analysisPanel.GetFunctions())
     {
         if (helpers::ToLower(fn.name) == helpers::ToLower(token) ||
             fn.name.find(token) != std::string::npos)
@@ -192,7 +184,7 @@ void CLIRepl::HandleAttach(Application& app, const std::vector<std::string>& arg
         std::cout << "\033[1;31m[-] Failed to attach to PID " << pid << "\033[0m\n";
         return;
     }
-    app.idaProPanel.AnalyzeCurrentModule(app);
+    app.analysisPanel.AnalyzeCurrentModule(app);
     if (app.analysisDatabase.GetModules().empty())
     {
         std::cout << "\033[1;31m[-] Failed to analyze PID " << pid << "\033[0m\n";
@@ -228,7 +220,7 @@ bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
         uint64_t baseAddr = app.moduleManager.GetModules().empty() ? 0 : app.moduleManager.GetModules()[0].baseAddress;
         std::cout << "\033[1;32m[+] Successfully parsed offline target: " << app.attachedProcessName << " (" << (app.is64Bit ? "x64" : "x86") << ")\033[0m\n";
         std::cout << "[+] Base Address: \033[1;36m0x" << std::hex << baseAddr << "\033[0m\n";
-        std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec << app.idaProPanel.GetFunctions().size() << "\033[0m | Strings: \033[1;36m" << app.stringResults.size() << "\033[0m\n\n";
+        std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec << app.analysisPanel.GetFunctions().size() << "\033[0m | Strings: \033[1;36m" << app.stringResults.size() << "\033[0m\n\n";
         return true;
     }
 
@@ -238,7 +230,7 @@ bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
 
 void CLIRepl::HandleFunctions(Application& app, const std::vector<std::string>& args)
 {
-    auto functions = app.idaProPanel.GetFunctions();
+    auto functions = app.analysisPanel.GetFunctions();
     if (functions.empty())
     {
         std::cout << "No functions discovered. Run 'open <exe>' or 'attach <pid>' first.\n";
@@ -386,12 +378,7 @@ void CLIRepl::HandleStrings(Application& app, const std::vector<std::string>& ar
 
         std::string addrStr = helpers::FormatAddress(sr.address, app.is64Bit);
         std::cout << "\033[1;36m" << addrStr << "\033[0m  ";
-        if (sr.category == "URL / C2")
-            std::cout << "\033[1;31m" << std::left << std::setw(14) << sr.category << "\033[0m  ";
-        else if (sr.category == "Registry")
-            std::cout << "\033[1;33m" << std::left << std::setw(14) << sr.category << "\033[0m  ";
-        else
-            std::cout << std::left << std::setw(14) << sr.category << "  ";
+        std::cout << std::left << std::setw(20) << sr.category << "  ";
 
         std::cout << sr.value << "\n";
         if (++count >= 30)
@@ -470,15 +457,15 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
         res.targetPid = 0;
         if (!app.moduleManager.GetModules().empty())
             res.baseAddress = app.moduleManager.GetModules()[0].baseAddress;
-        res.functionsDiscovered = app.idaProPanel.GetFunctions().size();
+        res.functionsDiscovered = app.analysisPanel.GetFunctions().size();
         res.totalXrefs = app.xrefScanner.GetTotalXRefsCount();
         res.stringsFound = app.stringResults.size();
         for (const auto& string : app.stringResults)
         {
-            if (string.category == "URL / C2") res.c2Urls.push_back(string.value);
-            if (string.category == "Registry") res.registryKeys.push_back(string.value);
+            if (string.category == "URL") res.urls.push_back(string.value);
+            if (string.category == "Registry Path") res.registryPaths.push_back(string.value);
         }
-        for (const auto& function : app.idaProPanel.GetFunctions())
+        for (const auto& function : app.analysisPanel.GetFunctions())
         {
             if (res.keyFunctions.size() >= 15) break;
             auto bytes = app.memoryReader.ReadBytes(nullptr, function.startAddress, 4096);
@@ -768,7 +755,7 @@ void CLIRepl::HandleAIAsk(Application& app, const std::vector<std::string>& args
         prompt += args[i];
     }
     std::cout << "[*] Sending request to AI Copilot (" << app.aiService.Model() << ")...\n";
-    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+    app.aiService.Send(prompt, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -805,7 +792,7 @@ void CLIRepl::HandleAIExplain(Application& app, const std::vector<std::string>& 
     std::string prompt = "Analyze this experimental C-like pseudocode from an x64 binary and explain what it does:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Explaining function 0x" << std::hex << addr << std::dec << " via AI Copilot...\n";
-    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+    app.aiService.Send(prompt, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -842,7 +829,7 @@ void CLIRepl::HandleAIRename(Application& app, const std::vector<std::string>& a
     std::string prompt = "Analyze this experimental C-like pseudocode and suggest descriptive names as a markdown table:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Asking AI Copilot for renaming suggestions for 0x" << std::hex << addr << std::dec << "...\n";
-    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+    app.aiService.Send(prompt, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -867,7 +854,7 @@ void CLIRepl::HandleAITriage(Application& app, const std::vector<std::string>& a
     (void)args;
     std::cout << "\033[1;36m[*] Generating threat report and MITRE ATT&CK mapping...\033[0m\n";
     std::string exeName = app.attachedProcessName.empty() ? "Target Binary" : app.attachedProcessName;
-    size_t fnCount = app.idaProPanel.GetFunctions().size();
+    size_t fnCount = app.analysisPanel.GetFunctions().size();
     
     std::string prompt = "Generate a threat assessment and MITRE ATT&CK mapping for reverse engineering target: `" + exeName + "` (" + std::to_string(fnCount) + " functions discovered).\n"
                          "Include:\n"
@@ -876,7 +863,7 @@ void CLIRepl::HandleAITriage(Application& app, const std::vector<std::string>& a
                          "3. **MITRE ATT&CK Matrix**: Map observed behaviors to TTPs (e.g. T1055 Process Injection, T1056 Input Capture, T1027 Obfuscation).\n"
                          "4. **Key Functions of Interest**: Top 3 suspicious addresses/entry points to audit first.";
 
-    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+    app.aiService.Send(prompt, app.GetAIContextSummary());
 
     int timeoutMs = 30000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -902,7 +889,7 @@ void CLIRepl::HandleAIAutoRename(Application& app, const std::vector<std::string
 {
     (void)args;
     std::cout << "\033[1;36m[*] Launching Global AI Name & Type Inference across all discovered functions...\033[0m\n";
-    auto funcs = app.idaProPanel.GetFunctions();
+    auto funcs = app.analysisPanel.GetFunctions();
     if (funcs.empty()) {
         std::cout << "[-] No functions discovered in current target. Open a binary (/open) or attach (/attach) first.\n";
         return;
@@ -921,7 +908,7 @@ void CLIRepl::HandleAIAutoRename(Application& app, const std::vector<std::string
                          "Functions sample: " + sampleList + "\n\n"
                          "Generate a markdown table proposing clean, descriptive C/C++ function signatures and inferred struct types for the core routines of this executable.";
 
-    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+    app.aiService.Send(prompt, app.GetAIContextSummary());
 
     int timeoutMs = 35000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -960,7 +947,7 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
     std::string prompt = "Audit this experimental C-like pseudocode for security vulnerabilities and report severity:\n```c\n" + pseudo + "\n```";
 
     std::cout << "[*] Auditing function 0x" << std::hex << addr << std::dec << " for vulnerabilities via AI Copilot...\n";
-    app.aiService.Send(prompt, nullptr, app.GetAIContextSummary());
+    app.aiService.Send(prompt, app.GetAIContextSummary());
 
     int timeoutMs = 25000;
     while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
@@ -996,16 +983,16 @@ static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
     {"/rename",    "Ask AI to suggest descriptive variable & function names"},
     {"/vuln",      "Audit experimental pseudocode for vulnerabilities"},
     {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
-    {"/strings",   "List extracted ASCII/UTF-16 strings (URLs, C2, Registry keys)"},
+    {"/strings",   "List extracted ASCII/UTF-16 strings and evidence categories"},
     {"/sessions",  "Manage OpenReverse interactive RE & multi-session workspaces"},
     {"/new",       "Create a new clean session workspace"},
     {"/switch",    "Switch active reverse engineering session ID"},
     {"/models",    "Switch the configured provider model"},
     {"/connect",   "Connect AI provider (Ollama, OpenRouter, Groq Cloud...)"},
     {"/setup",     "One-click interactive AI setup & local model auto-installer"},
-    {"/gui",       "Handover session to OpenReverse Graphical Studio UI"},
+    {"/gui",       "Handover the session to the OpenReverse workspace"},
     {"/clear",     "Clear terminal screen"},
-    {"/exit",      "Exit OpenReverse Studio"}
+    {"/exit",      "Exit OpenReverse"}
 };
 
 std::string CLIRepl::ReadInteractiveLine(Application& app, const std::string& targetLabel)
@@ -1264,18 +1251,18 @@ bool CLIRepl::Run(Application& app)
         else if (cmd == "gui" || cmd == "studio")
         {
             std::cout << "\n================================================================================\n"
-                      << "  [!] OPENREVERSE STUDIO GUI IS A SEPARATE DESKTOP APPLICATION\n"
+                      << "  [!] THE OPENREVERSE GUI IS A SEPARATE DESKTOP APPLICATION\n"
                       << "================================================================================\n"
                       << "  The OpenReverse CLI ('openreverse') is a 100% shell-only terminal tool.\n"
                       << "  To use the Graphical User Interface (GUI):\n"
-                      << "    1. Install it using: OpenReverse_Studio_Setup_v2.0.exe\n"
-                      << "    2. Launch 'OpenReverse Studio' from your Desktop or Start Menu shortcut.\n"
+                      << "    1. Install it using: " << openreverse::kInstallerFileName << "\n"
+                      << "    2. Launch OpenReverse from your Desktop or Start Menu shortcut.\n"
                       << "================================================================================\n\n";
             continue;
         }
         else if (cmd == "exit" || cmd == "quit" || cmd == "q")
         {
-            std::cout << "[*] Exiting OPENREVERSE Studio.\n";
+            std::cout << "[*] Exiting OpenReverse.\n";
             return false;
         }
         else
@@ -1302,7 +1289,7 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/functions\033[0m [filt]   List discovered functions in current binary\n";
     std::cout << "  \033[1;32m/decompile\033[0m <addr>   Generate experimental C-like pseudocode\n";
     std::cout << "  \033[1;32m/xrefs\033[0m <addr>       Show all cross-references (CALL, JUMP, MEM) to/from address\n";
-    std::cout << "  \033[1;32m/strings\033[0m [filt]     List extracted ASCII/UTF-16 strings (URLs, C2, Registry)\n";
+    std::cout << "  \033[1;32m/strings\033[0m [filt]     List extracted strings and evidence categories\n";
     std::cout << "  \033[1;32m/explain\033[0m <addr>     Ask AI to decompile & explain a function in detail\n";
     std::cout << "  \033[1;32m/rename\033[0m <addr>      Ask AI to suggest descriptive variable & function names\n";
     std::cout << "  \033[1;32m/triage\033[0m             Threat report and automatic MITRE ATT&CK mapping\n";
@@ -1310,7 +1297,7 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/model\033[0m <name>       Change the configured provider model\n";
     std::cout << "  \033[1;32m/gui\033[0m                Handover session immediately to Graphical User Interface\n";
     std::cout << "  \033[1;32m/clear\033[0m              Clear terminal screen\n";
-    std::cout << "  \033[1;32m/exit\033[0m               Exit OPENREVERSE Studio\n";
+    std::cout << "  \033[1;32m/exit\033[0m               Exit OpenReverse\n";
     std::cout << "\033[1;36m---------------------------------------------------------------------------------\033[0m\n";
     std::cout << "Tip: Any regular message without '/' is sent directly to your AI Copilot as chat!\n\n";
 }
@@ -1390,7 +1377,7 @@ void CLIRepl::HandleSessionSwitch(Application& app, const std::vector<std::strin
 bool CLIRepl::HandleChat(Application& app, const std::string& userMessage)
 {
     std::cout << "\033[1;36m[AI Chat - " << app.aiService.Model() << "]\033[0m Thinking...\n";
-    if (!app.aiService.Send(userMessage, nullptr, app.GetAIContextSummary()))
+    if (!app.aiService.Send(userMessage, app.GetAIContextSummary()))
     {
         std::cout << "\033[1;31m[-] AI request rejected: " << app.aiService.Status() << "\033[0m\n";
         return false;
@@ -1447,7 +1434,7 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
                 if (s.id == currentSessionId_) {
                     s.targetExe = args[1];
                     s.pid = app.attachedPID;
-                    s.functionsCount = app.idaProPanel.GetFunctions().size();
+                    s.functionsCount = app.analysisPanel.GetFunctions().size();
                     break;
                 }
             }
@@ -1460,7 +1447,7 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
             if (s.id == currentSessionId_) {
                 s.targetExe = app.attachedProcessName;
                 s.pid = app.attachedPID;
-                s.functionsCount = app.idaProPanel.GetFunctions().size();
+                s.functionsCount = app.analysisPanel.GetFunctions().size();
                 break;
             }
         }
@@ -1527,7 +1514,7 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     }
     else if (cmd == "/exit" || cmd == "/quit" || cmd == "/q")
     {
-        std::cout << "[*] Exiting OPENREVERSE Studio.\n";
+        std::cout << "[*] Exiting OpenReverse.\n";
         exit(0);
     }
     else

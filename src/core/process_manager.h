@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Process Manager
 // Enumerate, open, close Windows processes
-// ============================================================================
 
 #include <windows.h>
 #include <psapi.h>

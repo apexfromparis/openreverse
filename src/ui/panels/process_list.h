@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - UI Panel: Process List
 // Browse and attach to running processes
-// ============================================================================
 
 #include <string>
 #include <vector>

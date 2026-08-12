@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Utils: Helpers
 // Formatting and conversion utilities
-// ============================================================================
 
 #include <string>
 #include <vector>
@@ -10,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <optional>
 #include <cstdio>
 #include <windows.h>
 
@@ -82,15 +81,15 @@ inline std::string BytesToCArray(const uint8_t* data, size_t size)
 }
 
 // Parse hex string to uint64_t address
-inline uint64_t ParseAddress(const std::string& str)
+inline std::optional<uint64_t> TryParseAddress(const std::string& str)
 {
-    if (str.empty()) return 0;
+    if (str.empty()) return std::nullopt;
     std::string s = str;
 
     // Trim whitespace
     while (!s.empty() && isspace((unsigned char)s.front())) s.erase(s.begin());
     while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
-    if (s.empty()) return 0;
+    if (s.empty()) return std::nullopt;
 
     bool hasHexPrefix = false;
     if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
@@ -103,7 +102,7 @@ inline uint64_t ParseAddress(const std::string& str)
     for (char c : s)
     {
         if (!isxdigit((unsigned char)c))
-            return 0; // Not a pure hex address, so return 0 to allow symbol/string lookup
+            return std::nullopt;
     }
 
     // If it's a short token without 0x prefix and contains only ASCII letters (e.g. "OpenReverse", "exit"), don't treat as hex address unless prefixed
@@ -118,13 +117,24 @@ inline uint64_t ParseAddress(const std::string& str)
                 break;
             }
         }
-        if (allLetters) return 0;
+        if (allLetters) return std::nullopt;
     }
 
     uint64_t addr = 0;
     std::istringstream iss(s);
     iss >> std::hex >> addr;
+    if (iss.fail() || !iss.eof()) return std::nullopt;
     return addr;
+}
+
+inline std::optional<uint64_t> TryParseAddress(const char* str)
+{
+    return str ? TryParseAddress(std::string(str)) : std::nullopt;
+}
+
+inline uint64_t ParseAddress(const std::string& str)
+{
+    return TryParseAddress(str).value_or(0);
 }
 
 inline uint64_t ParseAddress(const char* str)

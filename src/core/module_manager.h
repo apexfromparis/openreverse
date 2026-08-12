@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Module Manager
 // Enumerate loaded modules and their exports
-// ============================================================================
 
 #include <windows.h>
 #include <psapi.h>

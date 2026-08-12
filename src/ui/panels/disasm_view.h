@@ -1,9 +1,4 @@
 #pragma once
-// ============================================================================
-// OpenReverse - UI Panel: Disassembly View
-// x86/x64 disassembly listing
-// ============================================================================
-
 #include <cstdint>
 #include <vector>
 #include "core/disassembler.h"
@@ -25,9 +20,7 @@ private:
     int      numInstructions_ = 50;
     std::vector<Instruction> instructions_;
     bool     needsRefresh_ = true;
-    bool     intelSyntax_ = true;
     std::vector<uint64_t> history_;
-    char     searchFilter_[128] = {};
 
     void RefreshDisassembly(Application& app);
 };

@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Pattern Scanner
 // AOB (Array of Bytes) scanner with wildcard support
-// ============================================================================
 
 #include <windows.h>
 #include <atomic>
@@ -56,6 +54,7 @@ class PatternScanner {
 public:
     // Parse pattern string like "48 8B ?? ?? 74 0A" into bytes + mask
     static std::vector<PatternByte> ParsePattern(const std::string& pattern);
+    static size_t AdvanceAfterRead(size_t bytesRead, size_t patternSize);
 
     // Scan a validated mapped PE image without confusing RVA and raw offsets.
     PatternScanReport ScanOffline(const std::vector<PatternByte>& pattern,

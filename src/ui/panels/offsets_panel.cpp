@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Offsets Panel Implementation
-// ============================================================================
-
 #include "offsets_panel.h"
 #include "app/application.h"
 #include "core/module_manager.h"
@@ -10,7 +6,6 @@
 #include "utils/logger.h"
 #include <imgui.h>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
 
 namespace openreverse { namespace panels {
@@ -41,9 +36,6 @@ void OffsetsPanel::ExportTxt()
     }
     if (!content.empty())
         ImGui::SetClipboardText(content.c_str());
-
-    // Also try to save to file if we had a path - for now just clipboard
-    // User can paste into a .txt
 }
 
 void OffsetsPanel::ExportHeader()
@@ -83,43 +75,12 @@ void OffsetsPanel::ExportJson()
 
 void OffsetsPanel::Render(Application& app)
 {
-    ImGui::Begin("Offsets & Structures", nullptr, ImGuiWindowFlags_None);
-
-    UIManager::BeginToolbar();
-    ImGui::Text("Name");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::InputText("##offname", nameInput_, sizeof(nameInput_));
-    ImGui::SameLine();
-    ImGui::Text("Address");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
-    ImGui::InputText("##offaddr", addrInput_, sizeof(addrInput_));
-    ImGui::SameLine();
-    if (ImGui::Button("Add"))
-    {
-        uint64_t addr = helpers::ParseAddress(addrInput_);
-        if (addr != 0 || strlen(addrInput_) > 0)
-        {
-            AddFromAddress(app, addr, nameInput_[0] ? nameInput_ : "");
-            nameInput_[0] = addrInput_[0] = 0;
-        }
-    }
-    ImGui::SameLine();
-    if (app.isAttached && ImGui::Button("Add current"))
-    {
-        AddFromAddress(app, app.currentAddress, nameInput_[0] ? nameInput_ : "");
-        nameInput_[0] = 0;
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Add current address (Hex/Disasm selection) as offset");
-    UIManager::EndToolbar();
-
-    ImGui::Separator();
+    ImGui::Begin("STRUCTURES", nullptr, ImGuiWindowFlags_None);
+    UIManager::PanelHeader("STRUCTURES");
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Open a binary or attach to a process to collect offsets.");
+        UIManager::EmptyState("Open a binary or attach to a process to inspect structures.");
         ImGui::End();
         return;
     }
@@ -128,24 +89,81 @@ void OffsetsPanel::Render(Application& app)
     if (!analysis && !app.analysisDatabase.GetModules().empty())
         analysis = &app.analysisDatabase.GetModules().begin()->second;
 
-    const size_t globalCount = analysis ? analysis->globals.size() : 0;
-    char globalsHeader[64];
-    snprintf(globalsHeader, sizeof(globalsHeader), "Inferred Globals (%zu)", globalCount);
-    if (ImGui::CollapsingHeader(globalsHeader, ImGuiTreeNodeFlags_DefaultOpen))
+    const auto evidenceLevel = [](float score) {
+        return score >= 0.8f ? "High evidence" : score >= 0.6f ? "Medium evidence" : "Low evidence";
+    };
+
+    if (!ImGui::BeginTabBar("StructureDataTabs"))
+    {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::BeginTabItem("Structures"))
+    {
+        if (!analysis || analysis->structures.empty())
+        {
+            UIManager::EmptyState("No structures inferred for the current selection.");
+        }
+        else
+        {
+            for (const auto& structure : analysis->structures)
+            {
+                ImGui::PushID(structure.name.c_str());
+                UIManager::SectionLabel(structure.name.c_str(), evidenceLevel(structure.confidence));
+                ImGui::TextDisabled("Base %s  |  Function 0x%llX  |  Minimum size 0x%llX",
+                    structure.baseRegister.c_str(), static_cast<unsigned long long>(structure.functionAddress),
+                    static_cast<unsigned long long>(structure.estimatedSize));
+                if (ImGui::BeginTable("StructureFields", 5,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
+                {
+                    ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 65.0f);
+                    ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 45.0f);
+                    ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+                    ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+                    ImGui::TableSetupColumn("First access");
+                    ImGui::TableHeadersRow();
+                    for (const auto& field : structure.fields)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Text("+0x%llX", static_cast<unsigned long long>(field.offset));
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("%u", static_cast<unsigned>(field.size));
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::Text("%zu", field.readCount + field.addressCount);
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::Text("%zu", field.writeCount);
+                        ImGui::TableSetColumnIndex(4);
+                        if (!field.accessSites.empty())
+                        {
+                            const std::string address = helpers::FormatAddress(field.accessSites.front(), app.is64Bit);
+                            if (ImGui::Selectable(address.c_str())) app.NavigateToAddress(field.accessSites.front());
+                        }
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Globals"))
     {
         if (!analysis || analysis->globals.empty())
         {
-            ImGui::TextDisabled("No non-code global references have been inferred for this module.");
+            UIManager::EmptyState("No globals inferred for the current selection.");
         }
         else if (ImGui::BeginTable("InferredGlobals", 6,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
         {
             ImGui::TableSetupColumn("Name");
-            ImGui::TableSetupColumn("Section", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-            ImGui::TableSetupColumn("Module Offset");
-            ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-            ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-            ImGui::TableSetupColumn("Confidence", ImGuiTableColumnFlags_WidthFixed, 75.0f);
+            ImGui::TableSetupColumn("Section", ImGuiTableColumnFlags_WidthFixed, 65.0f);
+            ImGui::TableSetupColumn("Module offset");
+            ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+            ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+            ImGui::TableSetupColumn("Evidence", ImGuiTableColumnFlags_WidthFixed, 95.0f);
             ImGui::TableHeadersRow();
             for (const auto& global : analysis->globals)
             {
@@ -165,82 +183,27 @@ void OffsetsPanel::Render(Application& app)
                 ImGui::TextUnformatted(global.sectionName.c_str());
                 ImGui::TableSetColumnIndex(2);
                 ImGui::Text("%s+0x%llX", analysis->module.name.c_str(),
-                            static_cast<unsigned long long>(global.moduleOffset));
+                    static_cast<unsigned long long>(global.moduleOffset));
                 ImGui::TableSetColumnIndex(3);
                 ImGui::Text("%zu", global.readCount + global.addressCount);
                 ImGui::TableSetColumnIndex(4);
                 ImGui::Text("%zu", global.writeCount);
                 ImGui::TableSetColumnIndex(5);
-                ImGui::Text("%.0f%%", global.confidence * 100.0f);
+                ImGui::TextDisabled("%s", evidenceLevel(global.confidence));
                 ImGui::PopID();
             }
             ImGui::EndTable();
         }
+        ImGui::EndTabItem();
     }
 
-    const size_t structureCount = analysis ? analysis->structures.size() : 0;
-    char structuresHeader[64];
-    snprintf(structuresHeader, sizeof(structuresHeader), "Inferred Structures (%zu)", structureCount);
-    if (ImGui::CollapsingHeader(structuresHeader, ImGuiTreeNodeFlags_DefaultOpen))
+    if (ImGui::BeginTabItem("Offsets"))
     {
-        if (!analysis || analysis->structures.empty())
+        if (offsets_.empty())
         {
-            ImGui::TextDisabled("No repeated object-relative field layout has been inferred yet.");
+            UIManager::EmptyState("No saved offsets. Add an address from Disassembly, Strings, Scanner, or Memory Map.");
         }
-        else
-        {
-            for (const auto& structure : analysis->structures)
-            {
-                ImGui::PushID(structure.name.c_str());
-                const bool open = ImGui::TreeNode(structure.name.c_str(), "%s  [%s in 0x%llX]  size >= 0x%llX, %.0f%%",
-                    structure.name.c_str(), structure.baseRegister.c_str(),
-                    static_cast<unsigned long long>(structure.functionAddress),
-                    static_cast<unsigned long long>(structure.estimatedSize), structure.confidence * 100.0f);
-                if (open)
-                {
-                    if (ImGui::BeginTable("StructureFields", 5,
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
-                    {
-                        ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-                        ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-                        ImGui::TableSetupColumn("Reads", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-                        ImGui::TableSetupColumn("Writes", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-                        ImGui::TableSetupColumn("First access");
-                        ImGui::TableHeadersRow();
-                        for (const auto& field : structure.fields)
-                        {
-                            ImGui::TableNextRow();
-                            ImGui::TableSetColumnIndex(0);
-                            ImGui::Text("+0x%llX", static_cast<unsigned long long>(field.offset));
-                            ImGui::TableSetColumnIndex(1);
-                            ImGui::Text("%u", static_cast<unsigned>(field.size));
-                            ImGui::TableSetColumnIndex(2);
-                            ImGui::Text("%zu", field.readCount + field.addressCount);
-                            ImGui::TableSetColumnIndex(3);
-                            ImGui::Text("%zu", field.writeCount);
-                            ImGui::TableSetColumnIndex(4);
-                            if (!field.accessSites.empty())
-                            {
-                                const std::string address = helpers::FormatAddress(field.accessSites.front(), app.is64Bit);
-                                if (ImGui::Selectable(address.c_str())) app.NavigateToAddress(field.accessSites.front());
-                            }
-                        }
-                        ImGui::EndTable();
-                    }
-                    ImGui::TreePop();
-                }
-                ImGui::PopID();
-            }
-        }
-    }
-
-    ImGui::SeparatorText("Saved Offsets");
-
-    if (offsets_.empty())
-    {
-        UIManager::EmptyState("No offsets yet. Use Add/Add current, or right-click addresses in Scanner/Disasm to add here.");
-    }
-    else if (ImGui::BeginTable("OffsetsTable", 4,
+        else if (ImGui::BeginTable("OffsetsTable", 4,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable))
     {
@@ -318,27 +281,21 @@ void OffsetsPanel::Render(Application& app)
         ImGui::EndTable();
     }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Dump size (hex bytes)");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputText("##dumpsize", dumpSizeInput_, sizeof(dumpSizeInput_));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Used by right-click -> Dump memory to file (default 0x1000)");
-    ImGui::SameLine();
-    ImGui::Text("Export:");
-    ImGui::SameLine();
-    if (ImGui::Button("Copy as .txt (Name = Module+0x...)"))
-        ExportTxt();
-    ImGui::SameLine();
-    if (ImGui::Button("Copy as .h (C defines)"))
-        ExportHeader();
-    ImGui::SameLine();
-    if (ImGui::Button("Copy as JSON"))
-        ExportJson();
-    if (!offsets_.empty())
-        ImGui::SameLine(), ImGui::TextColored(ImVec4(0.5f, 0.65f, 0.5f, 1.0f), "%zu offsets", offsets_.size());
+        ImGui::Spacing();
+        ImGui::TextDisabled("Dump size (hex)");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputText("##dumpsize", dumpSizeInput_, sizeof(dumpSizeInput_));
+        ImGui::SameLine();
+        if (ImGui::Button("Copy TXT")) ExportTxt();
+        ImGui::SameLine();
+        if (ImGui::Button("Copy C header")) ExportHeader();
+        ImGui::SameLine();
+        if (ImGui::Button("Copy JSON")) ExportJson();
+        ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
 
     ImGui::End();
 }

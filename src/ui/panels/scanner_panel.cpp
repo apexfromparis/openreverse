@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - UI Panel: Scanner Panel Implementation
-// ============================================================================
-
 #include "scanner_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -177,7 +173,6 @@ void ScannerPanel::Render(Application& app)
         return;
     }
 
-    // Results table
     if (!report_.error.empty())
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "%s", report_.error.c_str());
     else if (report_.byteLimitReached)

@@ -1,11 +1,8 @@
-// ============================================================================
-// OpenReverse application entry point and DirectX 11 setup.
-// ============================================================================
-
 #include "app/application.h"
+#include "openreverse_version.h"
 #include "ui/ui_manager.h"
-#include "core/automator.h"
-#include "core/cli_repl.h"
+#include "app/automator.h"
+#include "cli/cli_repl.h"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -19,28 +16,23 @@
 #include <dwmapi.h>
 #include <tchar.h>
 #include <windows.h>
+#include <windowsx.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
 // Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// ─── DirectX 11 Globals ──────────────────────────────────────────────────────
 static ID3D11Device*            g_pd3dDevice           = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext    = nullptr;
 static IDXGISwapChain*          g_pSwapChain           = nullptr;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = nullptr;
 static UINT                     g_ResizeWidth           = 0;
 static UINT                     g_ResizeHeight          = 0;
-
-// ─── Forward Declarations ────────────────────────────────────────────────────
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// ─── Entry Point ─────────────────────────────────────────────────────────────
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     (void)hPrevInstance;
@@ -105,87 +97,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 return 1;
             }
         }
-        else if (arg == "--test-ai-context" && i + 1 < cmdArgs.size())
-        {
-            std::string exePath = cmdArgs[i + 1];
-            AttachConsole(ATTACH_PARENT_PROCESS);
-            freopen("CONOUT$", "w", stdout);
-            printf("[+] OpenReverse Testing AI Context Injection on '%s'...\n", exePath.c_str());
-            STARTUPINFOA si = { sizeof(si) };
-            PROCESS_INFORMATION pi = {};
-            if (CreateProcessA(exePath.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi))
-            {
-                app.AttachToProcess(pi.dwProcessId);
-                openreverse::Automator automator;
-                auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
-                app.idaProPanel.AnalyzeCurrentModule(app);
-                std::string summary = app.GetAIContextSummary();
-                printf("=== TESTED AI CONTEXT SUMMARY OUTPUT ===\n%s\n========================================\n", summary.c_str());
-                TerminateProcess(pi.hProcess, 0);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                return 0;
-            }
-            else
-            {
-                printf("[-] FAILED to launch executable: %s\n", exePath.c_str());
-                return 1;
-            }
-        }
-        else if (arg == "--test-ai-chat" && i + 2 < cmdArgs.size())
-        {
-            std::string exePath = cmdArgs[i + 1];
-            std::string question = cmdArgs[i + 2];
-            AttachConsole(ATTACH_PARENT_PROCESS);
-            freopen("CONOUT$", "w", stdout);
-            printf("[+] OpenReverse Testing AI Chat with live context on '%s'...\n", exePath.c_str());
-            STARTUPINFOA si = { sizeof(si) };
-            PROCESS_INFORMATION pi = {};
-            std::string cmd = "\"" + exePath + "\"";
-            if (CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            {
-                Sleep(1200);
-                app.AttachToProcess(pi.dwProcessId);
-                openreverse::Automator automator;
-                auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
-                app.idaProPanel.AnalyzeCurrentModule(app);
-                if (!app.idaProPanel.GetFunctions().empty())
-                {
-                    app.currentAddress = app.idaProPanel.GetFunctions()[0].startAddress;
-                    app.idaProPanel.SelectFunction(app, app.currentAddress);
-                }
-                std::string summary = app.GetAIContextSummary();
-                app.aiService.Send(question, nullptr, summary);
-                int timeoutMs = 35000;
-                while (app.aiService.State() == openreverse::ai::ChatState::Working && timeoutMs > 0)
-                {
-                    Sleep(100);
-                    timeoutMs -= 100;
-                }
-                std::string aiReply = "No response";
-                const auto& conv = app.aiService.Conversation();
-                if (!conv.empty() && conv.back().role == "assistant")
-                {
-                    aiReply = conv.back().content;
-                }
-                std::ofstream ofs("ai_chat_test_report.md");
-                ofs << "# OpenReverse AI Chat Test Report\n\n";
-                ofs << "## Question\n" << question << "\n\n";
-                ofs << "## AI Response\n" << aiReply << "\n\n";
-                ofs << "## Injected Context Summary\n```\n" << summary << "\n```\n";
-                ofs.close();
-                printf("[+] AI Test complete! Saved to ai_chat_test_report.md\n");
-                TerminateProcess(pi.hProcess, 0);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                return 0;
-            }
-            else
-            {
-                printf("[-] FAILED to launch executable: %s\n", exePath.c_str());
-                return 1;
-            }
-        }
         else if (arg == "--decompile-pid" && i + 1 < cmdArgs.size())
         {
             DWORD targetPid = (DWORD)atoi(cmdArgs[i + 1].c_str());
@@ -231,7 +142,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             firstArg == "models" || firstArg == "model" || firstArg == "providers" || firstArg == "auth" ||
             firstArg == "setup" || firstArg == "init" || firstArg == "install-ai" || firstArg == "session" ||
             firstArg == "sessions" || firstArg == "stats" || firstArg == "run" || firstArg == "open" ||
-            firstArg == "attach" || firstArg == "--uninstall" || firstArg == "uninstall" || firstArg == "/uninstall";
+            firstArg == "attach";
     }
     const bool isCliExe = !guiRequested && exeName.find("setup") == std::string::npos && cliRequested;
 
@@ -270,27 +181,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 std::cout << "Configured provider: " << app.aiService.Provider() << "\n"
                           << "Configured model   : " << app.aiService.Model() << "\n"
                           << "Dynamic provider model discovery is not implemented yet.\n";
-                return 0;
-            }
-            else if (arg == "--uninstall" || arg == "uninstall" || arg == "/uninstall")
-            {
-                int c = MessageBoxA(NULL,
-                    "Remove OpenReverse Studio shortcuts and uninstall registration?",
-                    "OpenReverse Studio Uninstaller",
-                    MB_YESNO | MB_ICONQUESTION);
-                if (c == IDYES)
-                {
-                    char desktopPath[MAX_PATH];
-                    if (SHGetFolderPathA(NULL, CSIDL_DESKTOPDIRECTORY, NULL, SHGFP_TYPE_CURRENT, desktopPath) == S_OK)
-                        DeleteFileA((std::string(desktopPath) + "\\OpenReverse Studio.lnk").c_str());
-                    char startMenuPath[MAX_PATH];
-                    if (SHGetFolderPathA(NULL, CSIDL_PROGRAMS, NULL, SHGFP_TYPE_CURRENT, startMenuPath) == S_OK)
-                        DeleteFileA((std::string(startMenuPath) + "\\OpenReverse Studio.lnk").c_str());
-                    RegDeleteKeyA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverseStudio");
-
-                    MessageBoxA(NULL, "Shortcuts and uninstall registration were removed. The application files were not deleted.",
-                                "Uninstall Complete", MB_ICONINFORMATION);
-                }
                 return 0;
             }
             else if (arg == "providers" || arg == "auth" || arg == "setup" || arg == "init" || arg == "install-ai")
@@ -341,7 +231,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         openreverse::CLIRepl repl;
         repl.Run(app);
-        return 0; // 100% CLI mode: ALWAYS exit when shell ends! Never switch to GUI!
+        return 0;
     }
 
     // If GUI mode was launched with a target executable argument (e.g. openreverse --gui crackme.exe), load it
@@ -357,7 +247,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // Register window class
     WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(WNDCLASSEXW);
     wc.style         = CS_CLASSDC;
@@ -369,13 +258,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.lpszClassName = L"OpenReverse_WindowClass";
     RegisterClassExW(&wc);
 
-    // Create window
+    // Create a compact borderless workstation window. The native resize frame is
+    // retained so snapping/resizing keeps behaving like a normal Windows app,
+    // while the non-client chrome is rendered by the application itself.
+    RECT workArea = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    const int workWidth = workArea.right - workArea.left;
+    const int workHeight = workArea.bottom - workArea.top;
+    const int initialWidth = (std::min)(1480, (std::max)(1040, workWidth - 80));
+    const int initialHeight = (std::min)(800, (std::max)(680, workHeight - 70));
+    const int initialX = workArea.left + (workWidth - initialWidth) / 2;
+    const int initialY = workArea.top + (workHeight - initialHeight) / 2;
+
     HWND hwnd = CreateWindowExW(
-        0,
+        WS_EX_APPWINDOW,
         wc.lpszClassName,
-        L"OpenReverse Studio - Memory Analysis & Reverse Engineering",
-        WS_OVERLAPPEDWINDOW,
-        100, 100, 1600, 1000,
+        L"OpenReverse - Reverse Engineering Workspace",
+        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
+        initialX, initialY, initialWidth, initialHeight,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -386,7 +286,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hAppIcon);
     }
 
-    // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
     {
         CleanupDeviceD3D();
@@ -394,27 +293,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+    ShowWindow(hwnd, nCmdShow == SW_SHOWMAXIMIZED ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
     UpdateWindow(hwnd);
 
-    // Enable dark title bar (Windows 10+)
+    // Keep the DWM shadow/rounded corners while the application draws its chrome.
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
+    DWORD cornerPreference = 2; // DWMWCP_ROUND on Windows 11; ignored on older builds.
+    DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */,
+        &cornerPreference, sizeof(cornerPreference));
 
-    // Initialize ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-    // Platform/Renderer backends
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     openreverse::UIManager::ApplyTheme();
 
-    // Main loop
     bool running = true;
     while (running)
     {
@@ -429,7 +328,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (!running)
             break;
 
-        // Handle resize
         if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
         {
             CleanupRenderTarget();
@@ -438,17 +336,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             CreateRenderTarget();
         }
 
-        // Start ImGui frame
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // Render OpenReverse application
         app.Render();
 
-        // Rendering
         ImGui::Render();
-        const float clear_color[4] = { 0.05f, 0.05f, 0.07f, 1.0f };
+        const float clear_color[4] = { 0.012f, 0.025f, 0.038f, 1.0f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -456,7 +351,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         g_pSwapChain->Present(1, 0); // VSync
     }
 
-    // Cleanup
     app.Shutdown();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -468,8 +362,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return 0;
 }
-
-// ─── DirectX 11 Helpers ──────────────────────────────────────────────────────
 bool CreateDeviceD3D(HWND hWnd)
 {
     DXGI_SWAP_CHAIN_DESC sd = {};
@@ -541,6 +433,62 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
+    case WM_NCCALCSIZE:
+        // Remove the standard caption while preserving WS_THICKFRAME semantics.
+        if (wParam == TRUE)
+            return 0;
+        break;
+
+    case WM_NCHITTEST:
+    {
+        const LRESULT nativeHit = DefWindowProcW(hWnd, msg, wParam, lParam);
+        if (nativeHit != HTCLIENT)
+            return nativeHit;
+
+        RECT rect = {};
+        GetWindowRect(hWnd, &rect);
+        const LONG x = GET_X_LPARAM(lParam);
+        const LONG y = GET_Y_LPARAM(lParam);
+        const int resizeBorder = IsZoomed(hWnd) ? 0 : 6;
+
+        const bool left = x < rect.left + resizeBorder;
+        const bool right = x >= rect.right - resizeBorder;
+        const bool top = y < rect.top + resizeBorder;
+        const bool bottom = y >= rect.bottom - resizeBorder;
+        if (top && left) return HTTOPLEFT;
+        if (top && right) return HTTOPRIGHT;
+        if (bottom && left) return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+
+        // The first 31 client pixels are the custom title bar. Reserve the
+        // right edge for the three real window-control buttons.
+        if (y < rect.top + 31 && x < rect.right - 108)
+            return HTCAPTION;
+        return HTCLIENT;
+    }
+
+    case WM_GETMINMAXINFO:
+    {
+        auto* minMax = reinterpret_cast<MINMAXINFO*>(lParam);
+        minMax->ptMinTrackSize.x = 1040;
+        minMax->ptMinTrackSize.y = 680;
+
+        const HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info = { sizeof(info) };
+        if (GetMonitorInfoW(monitor, &info))
+        {
+            minMax->ptMaxPosition.x = info.rcWork.left - info.rcMonitor.left;
+            minMax->ptMaxPosition.y = info.rcWork.top - info.rcMonitor.top;
+            minMax->ptMaxSize.x = info.rcWork.right - info.rcWork.left;
+            minMax->ptMaxSize.y = info.rcWork.bottom - info.rcWork.top;
+        }
+        return 0;
+    }
+
     case WM_SIZE:
         if (wParam == SIZE_MINIMIZED)
             return 0;
@@ -559,8 +507,6 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
-
-// ─── Standard Console Entry Point (for native CONSOLE subsystem) ─────────────
 int main(int argc, char** argv)
 {
     (void)argc;

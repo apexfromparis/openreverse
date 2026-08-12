@@ -7,7 +7,10 @@
 #include "core/module_analyzer.h"
 #include "core/pattern_scanner.h"
 #include "core/pe_parser.h"
+#include "core/string_scanner.h"
 #include "core/xref_scanner.h"
+#include "utils/helpers.h"
+#include "utils/logger.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -28,6 +31,38 @@
 namespace {
 
 int failures = 0;
+void Expect(bool condition, const char* message);
+
+void TestSharedUtilities()
+{
+    const auto zero = openreverse::helpers::TryParseAddress("0x0");
+    Expect(zero && *zero == 0, "address zero is accepted as a valid address");
+    Expect(!openreverse::helpers::TryParseAddress("not-an-address"),
+           "invalid address text is rejected explicitly");
+    Expect(!openreverse::helpers::TryParseAddress("0x10000000000000000"),
+           "overflowing addresses are rejected");
+
+    auto& logger = openreverse::Logger::Get();
+    logger.Clear();
+    std::thread writer([&logger]() {
+        for (int i = 0; i < 200; ++i)
+            logger.Log(openreverse::LogLevel::Debug, "snapshot-test-%d", i);
+    });
+    for (int i = 0; i < 50; ++i)
+        (void)logger.Snapshot();
+    writer.join();
+    Expect(logger.Snapshot().size() == 200, "logger snapshots remain stable during concurrent writes");
+    logger.Clear();
+
+    const char evidence[] = "https://example.com/path\0VirtualAlloc\0";
+    openreverse::StringScanner scanner;
+    const auto strings = scanner.ScanBuffer(reinterpret_cast<const uint8_t*>(evidence), sizeof(evidence),
+                                            0x1000, 4, true, false, 10);
+    Expect(strings.size() >= 2 && strings[0].category == "URL",
+           "URLs are classified as neutral URL evidence");
+    Expect(strings.size() >= 2 && strings[1].category == "Process / Memory API",
+           "memory APIs are indicators rather than injection verdicts");
+}
 
 void Expect(bool condition, const char* message)
 {
@@ -544,6 +579,12 @@ void TestPatternParsing()
     for (size_t i = 0; i < 4097; ++i) oversized += "90 ";
     Expect(openreverse::PatternScanner::ParsePattern(oversized).empty(),
            "absurdly large patterns are rejected during parsing");
+    Expect(openreverse::PatternScanner::AdvanceAfterRead(2, 8) == 2,
+           "partial reads smaller than the pattern cannot underflow scan advancement");
+    Expect(openreverse::PatternScanner::AdvanceAfterRead(8, 8) == 1,
+           "pattern-sized reads retain the required overlap");
+    Expect(openreverse::PatternScanner::AdvanceAfterRead(0, 8) == 0,
+           "zero-byte reads stop chunk scanning");
 }
 
 void TestOfflinePatternScanning()
@@ -826,6 +867,7 @@ void TestDataCandidates()
 
 int main()
 {
+    TestSharedUtilities();
     TestPEMapping();
     TestMalformedPEs();
     TestBuiltExecutablePE();

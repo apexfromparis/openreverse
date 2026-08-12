@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Automator / Headless Engine Implementation
-// ============================================================================
-
 #include "automator.h"
 #include "core/module_analyzer.h"
 #include "utils/logger.h"
@@ -54,10 +50,10 @@ AutoAnalysisResult Automator::AnalyzeProcess(Application& app, DWORD pid, const 
     res.stringsFound = analysis.strings.size();
     for (const auto& sr : analysis.strings)
     {
-        if (sr.category == "URL / C2")
-            res.c2Urls.push_back(sr.value);
-        else if (sr.category == "Registry")
-            res.registryKeys.push_back(sr.value);
+        if (sr.category == "URL")
+            res.urls.push_back(sr.value);
+        else if (sr.category == "Registry Path")
+            res.registryPaths.push_back(sr.value);
     }
 
     res.functionsDiscovered = analysis.functions.size();
@@ -103,18 +99,18 @@ std::string Automator::FormatReport(const AutoAnalysisResult& res)
     ss << "- **Cross-References (XREFs)**: `" << res.totalXrefs << "`\n";
     ss << "- **Strings Discovered**: `" << res.stringsFound << "`\n\n";
 
-    if (!res.c2Urls.empty())
+    if (!res.urls.empty())
     {
-        ss << "## [ALERT] Command & Control (C2) URLs Detected\n";
-        for (const auto& url : res.c2Urls)
+        ss << "## Observed URLs\n";
+        for (const auto& url : res.urls)
             ss << "- `" << url << "`\n";
         ss << "\n";
     }
 
-    if (!res.registryKeys.empty())
+    if (!res.registryPaths.empty())
     {
-        ss << "## [ALERT] Sensitive Registry Paths Detected\n";
-        for (const auto& reg : res.registryKeys)
+        ss << "## Observed Registry Paths\n";
+        for (const auto& reg : res.registryPaths)
             ss << "- `" << reg << "`\n";
         ss << "\n";
     }

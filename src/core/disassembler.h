@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Disassembler
 // x86/x64 disassembly using Capstone engine
-// ============================================================================
 
 #include <capstone/capstone.h>
 #include <vector>

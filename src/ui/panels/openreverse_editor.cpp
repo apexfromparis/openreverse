@@ -452,7 +452,6 @@ void OpenReverseEditorPanel::Render(Application& app, bool& p_open)
         ImGui::PopStyleColor();
     }
 
-    // 4. Status Bar
     RenderStatusBar(app);
 
     RenderModals();
@@ -489,7 +488,6 @@ void OpenReverseEditorPanel::RenderActivityBar(Application& app)
         dl->AddLine(ImVec2(pos.x + w - fold, pos.y + fold), ImVec2(pos.x + w, pos.y + fold), col, 1.8f);
     };
 
-    // --- 1. EXPLORER ICON BUTTON ---
     ImGui::SetCursorScreenPos(ImVec2(actP.x, actP.y + 10.f));
     if (ImGui::InvisibleButton("##TabExplorer", ImVec2(activityBarW, 40.f)))
     {
@@ -507,7 +505,6 @@ void OpenReverseEditorPanel::RenderActivityBar(Application& app)
         dl->AddRectFilled(ImVec2(actP.x, actP.y + 16.f), ImVec2(actP.x + 3.0f, actP.y + 44.f), IM_COL32(69, 162, 158, 255), 2.0f);
     }
 
-    // --- 2. SEARCH & REPLACE ICON BUTTON ---
     ImGui::SetCursorScreenPos(ImVec2(actP.x, actP.y + 55.f));
     if (ImGui::InvisibleButton("##TabSearch", ImVec2(activityBarW, 40.f)))
     {
@@ -528,7 +525,6 @@ void OpenReverseEditorPanel::RenderActivityBar(Application& app)
         dl->AddRectFilled(ImVec2(actP.x, actP.y + 60.f), ImVec2(actP.x + 3.0f, actP.y + 88.f), IM_COL32(69, 162, 158, 255), 2.0f);
     }
 
-    // --- 3. PROBLEMS CONSOLE ICON BUTTON ---
     ImGui::SetCursorScreenPos(ImVec2(actP.x, actP.y + 100.f));
     if (ImGui::InvisibleButton("##TabProblems", ImVec2(activityBarW, 40.f)))
     {
@@ -573,7 +569,7 @@ void OpenReverseEditorPanel::RenderExplorerTab(Application& app)
     ImGui::InputTextWithHint("##Filter", "Filter scripts...", searchBuf_, sizeof(searchBuf_));
     ImGui::Separator();
 
-    // Right-Click Context Menu on blank Explorer area (Paris-main style)
+    // Explorer background context menu
     if (ImGui::BeginPopupContextWindow("ExplorerBlankContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
     {
         if (ImGui::Selectable("  + New Script File"))
@@ -622,7 +618,7 @@ void OpenReverseEditorPanel::RenderExplorerTab(Application& app)
                     OpenFileFromDisk(f.path);
                 }
 
-                // File Context Menu (Right-Click on file, Paris-main style)
+                // Script context menu
                 if (ImGui::BeginPopupContextItem(("FileCtx_" + f.path).c_str(), ImGuiPopupFlags_MouseButtonRight))
                 {
                     if (ImGui::Selectable("  Rename File"))
@@ -755,7 +751,7 @@ void OpenReverseEditorPanel::RenderWelcomeScreen(Application& app)
     float winH = ImGui::GetContentRegionAvail().y;
 
     ImGui::SetCursorPosY(winH * 0.28f);
-    const char* t1 = "OpenReverse Studio Editor";
+    const char* t1 = "OpenReverse Editor";
     ImGui::SetCursorPosX((winW - ImGui::CalcTextSize(t1).x) * 0.5f);
     ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", t1);
 
@@ -807,11 +803,6 @@ void OpenReverseEditorPanel::RenderStatusBar(Application& app)
 
 void OpenReverseEditorPanel::RenderTopActionBar(Application& app)
 {
-    ImGui::BeginDisabled();
-    ImGui::Button("  Script execution unavailable  ");
-    ImGui::EndDisabled();
-
-    ImGui::SameLine(0.0f, 10.0f);
     if (ImGui::Button("  + New Script  "))
     {
         showNewFileModal_ = true;
@@ -841,7 +832,7 @@ void OpenReverseEditorPanel::RenderTopActionBar(Application& app)
     }
 
     ImGui::SameLine(0.0f, 10.0f);
-    if (ImGui::Button(app.isEditorFloating ? "  v  Dock to IDE  " : "  ^  Pop Out  "))
+    if (ImGui::Button(app.isEditorFloating ? "  Dock editor  " : "  Open in window  "))
     {
         app.isEditorFloating = !app.isEditorFloating;
         Logger::Get().Log(LogLevel::Info, "%s", app.isEditorFloating ? "[Editor] Opened as separate floating window." : "[Editor] Docked back into IDE.");

@@ -1,6 +1,4 @@
-// ============================================================================
 // OpenReverse - UI Panel: PE Viewer Implementation
-// ============================================================================
 #include "pe_viewer.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -35,7 +33,6 @@ void PEViewerPanel::Render(Application& app)
         }
     }
 
-    // Module selector
     const auto& modules = app.moduleManager.GetModules();
     if (ImGui::BeginCombo("Module##pe", loaded_ && loadedBase_ ? "Selected" : "Select module..."))
     {
@@ -80,7 +77,6 @@ void PEViewerPanel::Render(Application& app)
             app.NavigateToAddress(loadedBase_ + peInfo_.entryPoint);
     }
 
-    // Sections
     if (ImGui::CollapsingHeader("Sections", ImGuiTreeNodeFlags_DefaultOpen))
     {
         if (ImGui::BeginTable("SectionsTable", 5,
@@ -123,7 +119,6 @@ void PEViewerPanel::Render(Application& app)
         }
     }
 
-    // Imports
     if (ImGui::CollapsingHeader("Imports"))
     {
         for (const auto& imp : peInfo_.imports)
@@ -137,7 +132,6 @@ void PEViewerPanel::Render(Application& app)
         }
     }
 
-    // Exports
     if (ImGui::CollapsingHeader("Exports"))
     {
         if (peInfo_.exports.empty())

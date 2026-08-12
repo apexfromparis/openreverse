@@ -1,6 +1,4 @@
-// ============================================================================
 // OpenReverse - UI Panel: Bookmarks Panel Implementation
-// ============================================================================
 #include "bookmarks_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -27,11 +25,11 @@ void BookmarksPanel::Render(Application& app)
     ImGui::SameLine();
     if (ImGui::Button("Add"))
     {
-        uint64_t addr = helpers::ParseAddress(addrInput_);
-        if (addr != 0 || strlen(addrInput_) > 0)
+        const auto address = helpers::TryParseAddress(addrInput_);
+        if (address)
         {
             Bookmark bk;
-            bk.address = addr;
+            bk.address = *address;
             bk.label = strlen(labelInput_) > 0 ? labelInput_ : "Bookmark";
             bk.comment = commentInput_;
             bk.color = ImGui::GetColorU32(ImVec4(0.3f, 0.8f, 0.5f, 1.0f));

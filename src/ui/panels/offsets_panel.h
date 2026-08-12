@@ -23,9 +23,6 @@ public:
 
 private:
     std::vector<SavedOffset> offsets_;
-    char nameInput_[128] = {};
-    char addrInput_[64] = {};
-    char commentInput_[256] = {};
     char dumpSizeInput_[32] = "1000";
     int  selectedRow_ = -1;
 

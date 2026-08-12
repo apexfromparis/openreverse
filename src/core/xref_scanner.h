@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Cross-References (XREFs) Scanner & Indexer
 // Shared code/data Xref discovery and navigation engine
-// ============================================================================
 
 #include <string>
 #include <vector>

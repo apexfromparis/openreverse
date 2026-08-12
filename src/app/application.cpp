@@ -1,11 +1,8 @@
-// ============================================================================
-// OpenReverse - Application Implementation
-// ============================================================================
-
 #include "application.h"
+#include "openreverse_version.h"
 #include "utils/logger.h"
 #include "utils/helpers.h"
-#include "ui/panels/ida_pro_panel.h"
+#include "ui/panels/analysis_panel.h"
 #include "core/disassembler.h"
 
 #include <windows.h>
@@ -19,6 +16,7 @@
 #include <exception>
 #include <set>
 #include <utility>
+#include <cmath>
 
 namespace openreverse {
 
@@ -57,7 +55,6 @@ bool Application::AttachToProcess(DWORD pid)
     is64Bit = processManager.IsProcess64Bit(processHandle);
     memoryReader.SetOfflineBuffer(nullptr, 0);
 
-    // Get process name
     auto processes = processManager.ListProcesses();
     for (auto& p : processes)
     {
@@ -68,7 +65,6 @@ bool Application::AttachToProcess(DWORD pid)
         }
     }
 
-    // Initialize disassembler for correct architecture
     disassembler.Init(is64Bit);
 
     // Load memory regions and modules
@@ -85,7 +81,7 @@ void Application::DetachFromProcess()
 {
     analysisScheduler.CancelAllAndWait();
     analysisDatabase.Clear();
-    idaProPanel.ResetAnalysis();
+    analysisPanel.ResetAnalysis();
     xrefScanner.Clear();
     stringResults.clear();
     selectedBytes.clear();
@@ -327,10 +323,10 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         analysisDatabase.ReplaceModuleAnalysis(analyzedModule, is64Bit, info, discoveredFuncs,
                                                xrefScanner.GetAllEntries(), stringResults, globals, fieldAccesses,
                                                structures);
-        idaProPanel.SetPEAnalysisResult(insns, info.sections, info.imports, info.exports, is64Bit, discoveredFuncs);
+        analysisPanel.SetPEAnalysisResult(insns, info.sections, info.imports, info.exports, is64Bit, discoveredFuncs);
         if (!discoveredFuncs.empty())
         {
-            idaProPanel.SelectFunction(*this, discoveredFuncs[0].startAddress);
+            analysisPanel.SelectFunction(*this, discoveredFuncs[0].startAddress);
         }
 
         Logger::Get().Log(LogLevel::Info, "Loaded PE/Driver file: %s (%s, %zu bytes, %zu sections, %zu imports, %zu functions, %zu strings)",
@@ -363,36 +359,46 @@ void Application::NavigateToAddress(uint64_t address)
 void Application::Render()
 {
     analysisScheduler.DrainCompletions();
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O) && !ImGui::GetIO().WantTextInput)
+        ShowOpenFileDialog();
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_1))
+        SwitchToDevMode(false);
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_2))
+        SwitchToDevMode(true);
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_G) && ImGui::GetIO().KeyCtrl)
         showGotoModal_ = true;
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_I) && ImGui::GetIO().KeyCtrl)
+    {
+        showAnalysisPanel_ = true;
         ImGui::SetWindowFocus("Analysis / Functions & CFG");
+    }
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_X) && !ImGui::GetIO().WantCaptureKeyboard)
     {
-        idaProPanel.OpenXrefsForAddress(currentAddress);
-        ImGui::SetWindowFocus("Analysis / Functions & CFG");
+        analysisPanel.OpenXrefsForAddress(currentAddress);
+        ImGui::SetWindowFocus("XREFS");
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F5))
         processListPanel.ForceRefresh();
 
     RenderDockspace();
 
-    // Render all panels
     processListPanel.Render(*this);
-    memoryMapPanel.Render(*this);
     hexEditorPanel.Render(*this);
     disasmViewPanel.Render(*this);
-    idaProPanel.Render(*this);
-    openReverseEditorPanel.Render(*this, showOpenReverseEditor);
+    analysisPanel.RenderXRefsPanel(*this);
     modulesPanel.Render(*this);
-    scannerPanel.Render(*this);
-    stringsPanel.Render(*this);
-    dataInspectorPanel.Render(*this);
-    peViewerPanel.Render(*this);
-    bookmarksPanel.Render(*this);
     offsetsPanel.Render(*this);
-    consolePanel.Render(*this);
     aiCopilotPanel.Render(*this);
+    if (isDevMode || showMemoryMap_) memoryMapPanel.Render(*this);
+    if (isDevMode || showAnalysisPanel_) analysisPanel.Render(*this);
+    if (isDevMode)
+        openReverseEditorPanel.Render(*this, showOpenReverseEditor);
+    if (isDevMode || showScanner_) scannerPanel.Render(*this);
+    if (isDevMode || showStrings_) stringsPanel.Render(*this);
+    if (isDevMode || showDataInspector_) dataInspectorPanel.Render(*this);
+    if (isDevMode || showPEViewer_) peViewerPanel.Render(*this);
+    if (isDevMode || showBookmarks_) bookmarksPanel.Render(*this);
+    if (isDevMode || showConsole_) consolePanel.Render(*this);
 
     RenderStatusBar();
 }
@@ -401,16 +407,16 @@ void Application::RenderDockspace()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Reserve space for status bar (25px)
+    // Reserve space for the compact status bar.
     ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - 25.0f));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - 22.0f));
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGuiWindowFlags dockFlags =
         ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar |
+        ImGuiWindowFlags_NoNavFocus |
         ImGuiWindowFlags_NoBackground;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -420,7 +426,9 @@ void Application::RenderDockspace()
     ImGui::Begin("OpenReverse_Dockspace", nullptr, dockFlags);
     ImGui::PopStyleVar(3);
 
+    RenderBrandBar();
     RenderMenuBar();
+    RenderToolbar();
 
     ImGuiID dockspace_id = ImGui::GetID("OpenReverse_DockspaceID");
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
@@ -430,66 +438,75 @@ void Application::RenderDockspace()
     {
         ImGui::DockBuilderRemoveNode(dockspace_id);
         ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-        ImVec2 workSize(viewport->WorkSize.x, viewport->WorkSize.y - 25.0f);
+        ImVec2 workSize(viewport->WorkSize.x, viewport->WorkSize.y - 22.0f);
         ImGui::DockBuilderSetNodeSize(dockspace_id, workSize);
 
         ImGuiID main = dockspace_id;
-        ImGuiID left  = ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,  0.20f, nullptr, &main);
-        ImGuiID right = ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.24f, nullptr, &main);
-        ImGuiID bottom = ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, 0.22f, nullptr, &main);
+        ImGuiID left  = ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,  0.17f, nullptr, &main);
+        ImGuiID right = ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.27f, nullptr, &main);
 
         if (isDevMode)
         {
-            // ─── DEV STUDIO LAYOUT (OpenReverse Editor takes MAIN central screen) ───
+            ImGuiID bottom = ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, 0.22f, nullptr, &main);
+            const ImGuiDockNodeFlags chromeFlags = ImGuiDockNodeFlags_NoWindowMenuButton |
+                ImGuiDockNodeFlags_NoCloseButton;
+            for (ImGuiID nodeId : {left, main, right, bottom})
+            {
+                if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(nodeId))
+                    node->LocalFlags |= chromeFlags;
+            }
             ImGui::DockBuilderDockWindow("OpenReverse Editor", main);
 
-            ImGui::DockBuilderDockWindow("Processes", left);
-            ImGui::DockBuilderDockWindow("Modules", left);
+            ImGui::DockBuilderDockWindow("PROCESSES", left);
+            ImGui::DockBuilderDockWindow("MODULES", left);
             ImGui::DockBuilderDockWindow("Bookmarks", left);
 
             ImGui::DockBuilderDockWindow("Console", bottom);
 
             // Stack reverse engineering tools in right sidebar tabs
             ImGui::DockBuilderDockWindow("Analysis / Functions & CFG", right);
-            ImGui::DockBuilderDockWindow("Hex Editor", right);
-            ImGui::DockBuilderDockWindow("Disassembly", right);
-            ImGui::DockBuilderDockWindow("AI Copilot", right);
+            ImGui::DockBuilderDockWindow("HEX VIEW", right);
+            ImGui::DockBuilderDockWindow("DISASSEMBLY", right);
+            ImGui::DockBuilderDockWindow("AI ASSISTANT", right);
             ImGui::DockBuilderDockWindow("PE Header", right);
             ImGui::DockBuilderDockWindow("Data Inspector", right);
             ImGui::DockBuilderDockWindow("Pattern Scanner", right);
             ImGui::DockBuilderDockWindow("Strings", right);
-            ImGui::DockBuilderDockWindow("Offsets & Structures", right);
+            ImGui::DockBuilderDockWindow("STRUCTURES", right);
         }
         else
         {
-            // ─── REVERSE ENGINEERING LAYOUT ───
+            // Reference layout: navigation left, code/hex center, context and AI right.
+            ImGuiID leftTop = left;
+            ImGuiID leftBottom = ImGui::DockBuilderSplitNode(leftTop, ImGuiDir_Down, 0.58f, nullptr, &leftTop);
+            ImGuiID rightTop = right;
+            ImGuiID rightBottom = ImGui::DockBuilderSplitNode(rightTop, ImGuiDir_Down, 0.41f, nullptr, &rightTop);
+            ImGuiID rightMiddle = ImGui::DockBuilderSplitNode(rightTop, ImGuiDir_Down, 0.48f, nullptr, &rightTop);
             ImGuiID mainTop = main;
-            ImGuiID mainBottom = ImGui::DockBuilderSplitNode(mainTop, ImGuiDir_Down, 0.38f, nullptr, &mainTop);
+            ImGuiID mainBottom = ImGui::DockBuilderSplitNode(mainTop, ImGuiDir_Down, 0.36f, nullptr, &mainTop);
+
+            const ImGuiDockNodeFlags panelFlags = ImGuiDockNodeFlags_NoTabBar |
+                ImGuiDockNodeFlags_NoWindowMenuButton | ImGuiDockNodeFlags_NoCloseButton;
+            for (ImGuiID nodeId : {leftTop, leftBottom, mainTop, mainBottom, rightTop, rightMiddle, rightBottom})
+            {
+                if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(nodeId))
+                    node->LocalFlags |= panelFlags;
+            }
 
             // Left Sidebar: Navigation & Target info
-            ImGui::DockBuilderDockWindow("Processes", left);
-            ImGui::DockBuilderDockWindow("Modules", left);
-            ImGui::DockBuilderDockWindow("Memory Map", left);
-            ImGui::DockBuilderDockWindow("Bookmarks", left);
+            ImGui::DockBuilderDockWindow("PROCESSES", leftTop);
+            ImGui::DockBuilderDockWindow("MODULES", leftBottom);
 
             // Main Top (62% of center): functions, CFG, pseudocode, and disassembly
-            ImGui::DockBuilderDockWindow("Analysis / Functions & CFG", mainTop);
-            ImGui::DockBuilderDockWindow("Disassembly", mainTop);
+            ImGui::DockBuilderDockWindow("DISASSEMBLY", mainTop);
 
             // Main Bottom (38% of center): Hex Editor & Live Memory View
-            ImGui::DockBuilderDockWindow("Hex Editor", mainBottom);
-            ImGui::DockBuilderDockWindow("Data Inspector", mainBottom);
+            ImGui::DockBuilderDockWindow("HEX VIEW", mainBottom);
 
             // Right Sidebar (24%): Analysis & Automation Tools
-            ImGui::DockBuilderDockWindow("PE Header", right);
-            ImGui::DockBuilderDockWindow("Strings", right);
-            ImGui::DockBuilderDockWindow("Pattern Scanner", right);
-            ImGui::DockBuilderDockWindow("Offsets & Structures", right);
-            ImGui::DockBuilderDockWindow("AI Copilot", right);
-            ImGui::DockBuilderDockWindow("OpenReverse Editor", right);
-
-            // Bottom Console (22%): Output & Debug Logs
-            ImGui::DockBuilderDockWindow("Console", bottom);
+            ImGui::DockBuilderDockWindow("XREFS", rightTop);
+            ImGui::DockBuilderDockWindow("STRUCTURES", rightMiddle);
+            ImGui::DockBuilderDockWindow("AI ASSISTANT", rightBottom);
         }
 
         ImGui::DockBuilderFinish(dockspace_id);
@@ -497,12 +514,208 @@ void Application::RenderDockspace()
     }
 
     ImGui::End();
+
+    // A restrained blue edge defines the application frame from the black
+    // desktop without creating the heavy native Windows border.
+    const HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
+    const float rounding = hwnd && IsZoomed(hwnd) ? 0.0f : 7.0f;
+    ImGui::GetForegroundDrawList(viewport)->AddRect(
+        ImVec2(viewport->Pos.x + 0.5f, viewport->Pos.y + 0.5f),
+        ImVec2(viewport->Pos.x + viewport->Size.x - 0.5f,
+            viewport->Pos.y + viewport->Size.y - 0.5f),
+        IM_COL32(31, 93, 128, 255), rounding, 0, 1.0f);
+}
+
+void Application::RenderBrandBar()
+{
+    constexpr float barHeight = 31.0f;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.012f, 0.027f, 0.040f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.06f, 0.23f, 0.34f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 4.0f));
+    ImGui::BeginChild("##OpenReverseBrandBar", ImVec2(0.0f, barHeight), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImU32 white = IM_COL32(242, 247, 252, 255);
+    const ImU32 blue = IM_COL32(0, 132, 255, 255);
+
+    // Compact vector CR monogram inspired by the product mark.
+    const ImVec2 c(origin.x + 11.0f, origin.y + 11.0f);
+    draw->PathArcTo(c, 8.5f, 0.72f, 5.56f, 24);
+    draw->PathStroke(white, 0, 2.0f);
+    draw->AddLine(ImVec2(c.x + 2.0f, c.y - 5.5f), ImVec2(c.x + 10.0f, c.y - 5.5f), white, 2.0f);
+    draw->AddLine(ImVec2(c.x + 10.0f, c.y - 5.5f), ImVec2(c.x + 10.0f, c.y + 1.0f), white, 2.0f);
+    draw->AddLine(ImVec2(c.x + 10.0f, c.y + 1.0f), ImVec2(c.x + 1.0f, c.y + 1.0f), white, 2.0f);
+    draw->AddLine(ImVec2(c.x + 6.0f, c.y + 1.0f), ImVec2(c.x + 11.0f, c.y + 7.0f), white, 2.0f);
+    draw->AddTriangleFilled(ImVec2(c.x - 1.0f, c.y + 1.0f), ImVec2(c.x + 3.5f, c.y - 2.5f), ImVec2(c.x + 3.5f, c.y + 4.5f), white);
+
+    const ImVec2 brandPos(origin.x + 31.0f, origin.y + 3.0f);
+    draw->AddText(brandPos, white, "OPEN");
+    const float openWidth = ImGui::CalcTextSize("OPEN").x;
+    draw->AddText(ImVec2(brandPos.x + openWidth, brandPos.y), blue, "REVERSE");
+
+    // Native window actions, rendered inside the branded title bar.
+    const HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
+    const float controlWidth = 35.0f;
+    const float controlsStart = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - controlWidth * 3.0f - 1.0f;
+    const float controlsTop = ImGui::GetWindowPos().y + 1.0f;
+    auto windowButton = [&](const char* id, int kind) {
+        ImGui::SetCursorScreenPos(ImVec2(controlsStart + kind * controlWidth, controlsTop));
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton(id, ImVec2(controlWidth, barHeight - 2.0f));
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered)
+            draw->AddRectFilled(p, ImVec2(p.x + controlWidth, p.y + barHeight - 2.0f),
+                kind == 2 ? IM_COL32(188, 42, 55, 255) : IM_COL32(20, 53, 72, 255));
+
+        const ImU32 icon = IM_COL32(205, 215, 222, 255);
+        const ImVec2 center(p.x + controlWidth * 0.5f, p.y + (barHeight - 2.0f) * 0.5f);
+        if (kind == 0)
+            draw->AddLine(ImVec2(center.x - 5.0f, center.y + 3.0f),
+                ImVec2(center.x + 5.0f, center.y + 3.0f), icon, 1.0f);
+        else if (kind == 1)
+            draw->AddRect(ImVec2(center.x - 4.5f, center.y - 4.5f),
+                ImVec2(center.x + 4.5f, center.y + 4.5f), icon, 0.0f, 0, 1.0f);
+        else
+        {
+            draw->AddLine(ImVec2(center.x - 4.0f, center.y - 4.0f),
+                ImVec2(center.x + 4.0f, center.y + 4.0f), icon, 1.1f);
+            draw->AddLine(ImVec2(center.x + 4.0f, center.y - 4.0f),
+                ImVec2(center.x - 4.0f, center.y + 4.0f), icon, 1.1f);
+        }
+        return pressed;
+    };
+
+    if (windowButton("##MinimizeWindow", 0) && hwnd)
+        PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+    if (windowButton("##MaximizeWindow", 1) && hwnd)
+        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+    if (windowButton("##CloseWindow", 2) && hwnd)
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+}
+
+void Application::RenderToolbar()
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.020f, 0.039f, 0.052f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.06f, 0.18f, 0.25f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 0.0f));
+    ImGui::BeginChild("##MainToolbar", ImVec2(0.0f, 35.0f), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    auto toolButton = [&](const char* id, const char* label, int icon, bool enabled = true) {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        if (!enabled) ImGui::BeginDisabled();
+        const bool clicked = ImGui::InvisibleButton(id, ImVec2(28.0f, 25.0f));
+        const bool hovered = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (hovered && enabled)
+            dl->AddRectFilled(p, ImVec2(p.x + 28.0f, p.y + 25.0f), IM_COL32(12, 59, 91, 255), 3.0f);
+        const ImU32 col = !enabled ? IM_COL32(66, 78, 86, 255) :
+            (hovered ? IM_COL32(20, 157, 255, 255) : IM_COL32(165, 181, 192, 255));
+        const ImVec2 m(p.x + 14.0f, p.y + 12.5f);
+        if (icon == 0) { dl->AddRect(ImVec2(m.x-6,m.y-5), ImVec2(m.x+6,m.y+5), col, 1.5f); dl->AddLine(ImVec2(m.x-3,m.y-7),ImVec2(m.x+5,m.y-7),col,1.5f); }
+        if (icon == 1) { dl->AddRect(ImVec2(m.x-6,m.y-5), ImVec2(m.x+6,m.y+6), col, 1.0f, 0, 1.5f); dl->AddLine(ImVec2(m.x-3,m.y+2),ImVec2(m.x+3,m.y+2),col,1.5f); }
+        if (icon == 2) { dl->AddTriangle(ImVec2(m.x-4,m.y-7),ImVec2(m.x-4,m.y+7),ImVec2(m.x+7,m.y),col,1.5f); }
+        if (icon == 3) { dl->AddCircle(m,6.0f,col,16,1.5f); dl->AddCircleFilled(m,2.0f,col); }
+        if (icon == 4) { dl->AddLine(ImVec2(m.x-7,m.y),ImVec2(m.x+7,m.y),col,1.5f); dl->AddLine(ImVec2(m.x,m.y-7),ImVec2(m.x,m.y+7),col,1.5f); }
+        if (icon == 5) { dl->AddCircle(m,6.0f,col,16,1.5f); dl->AddLine(ImVec2(m.x+4,m.y+4),ImVec2(m.x+8,m.y+8),col,1.5f); }
+        if (icon == 6) { dl->AddCircle(m,5.0f,col,16,1.3f); dl->AddCircle(m,1.8f,col,12,1.2f); for (int i=0;i<8;++i) { const float a=0.7854f*i; dl->AddLine(ImVec2(m.x+6.0f*cosf(a),m.y+6.0f*sinf(a)),ImVec2(m.x+8.0f*cosf(a),m.y+8.0f*sinf(a)),col,1.2f); } }
+        if (icon == 7) { dl->AddRectFilled(ImVec2(m.x-5,m.y-5),ImVec2(m.x+5,m.y+5),col,1.0f); }
+        if (icon == 8) { dl->AddCircle(ImVec2(m.x-3,m.y),4.5f,col,14,1.3f); dl->AddCircle(ImVec2(m.x+3,m.y),4.5f,col,14,1.3f); }
+        if (icon == 9) { dl->AddLine(ImVec2(m.x-5,m.y+5),ImVec2(m.x,m.y-5),col,1.2f); dl->AddLine(ImVec2(m.x,m.y-5),ImVec2(m.x+6,m.y+4),col,1.2f); dl->AddCircleFilled(ImVec2(m.x-5,m.y+5),2.0f,col); dl->AddCircleFilled(ImVec2(m.x,m.y-5),2.0f,col); dl->AddCircleFilled(ImVec2(m.x+6,m.y+4),2.0f,col); }
+        if (icon == 10) { dl->AddRect(ImVec2(m.x-7,m.y-5),ImVec2(m.x+7,m.y+5),col,1.0f,0,1.3f); for (int i=-3;i<=3;i+=3) dl->AddLine(ImVec2(m.x+i,m.y-5),ImVec2(m.x+i,m.y+5),col,1.0f); }
+        if (icon == 11) { dl->AddLine(ImVec2(m.x-7,m.y-3),ImVec2(m.x-7,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x-7,m.y-7),ImVec2(m.x-3,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y-3),ImVec2(m.x+7,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y-7),ImVec2(m.x+3,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x-7,m.y+3),ImVec2(m.x-7,m.y+7),col,1.2f); dl->AddLine(ImVec2(m.x-7,m.y+7),ImVec2(m.x-3,m.y+7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y+3),ImVec2(m.x+7,m.y+7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y+7),ImVec2(m.x+3,m.y+7),col,1.2f); dl->AddCircleFilled(m,1.8f,col); }
+        if (icon == 12) { for (int i=-4;i<=4;i+=4) { dl->AddCircleFilled(ImVec2(m.x-6,m.y+i),1.0f,col); dl->AddLine(ImVec2(m.x-3,m.y+i),ImVec2(m.x+7,m.y+i),col,1.2f); } }
+        if (icon == 13) { dl->AddRect(ImVec2(m.x-6,m.y-6),ImVec2(m.x+6,m.y+6),col,1.0f,0,1.2f); dl->AddLine(ImVec2(m.x,m.y-6),ImVec2(m.x,m.y+6),col,1.0f); dl->AddLine(ImVec2(m.x-6,m.y),ImVec2(m.x+6,m.y),col,1.0f); }
+        if (icon == 14) { dl->AddRect(ImVec2(m.x-6,m.y-7),ImVec2(m.x+5,m.y+7),col,1.0f,0,1.2f); dl->AddLine(ImVec2(m.x-3,m.y-2),ImVec2(m.x+2,m.y-2),col,1.0f); dl->AddLine(ImVec2(m.x-3,m.y+2),ImVec2(m.x+2,m.y+2),col,1.0f); }
+        if (icon == 15) { const ImVec2 points[5] = {ImVec2(m.x-5,m.y-7),ImVec2(m.x+5,m.y-7),ImVec2(m.x+5,m.y+7),ImVec2(m.x,m.y+3),ImVec2(m.x-5,m.y+7)}; dl->AddPolyline(points,5,col,ImDrawFlags_Closed,1.3f); }
+        if (icon == 16) { dl->AddLine(ImVec2(m.x,m.y-8),ImVec2(m.x,m.y+8),col,1.2f); dl->AddLine(ImVec2(m.x-8,m.y),ImVec2(m.x+8,m.y),col,1.2f); dl->AddLine(ImVec2(m.x-5,m.y-5),ImVec2(m.x+5,m.y+5),col,1.0f); dl->AddLine(ImVec2(m.x+5,m.y-5),ImVec2(m.x-5,m.y+5),col,1.0f); dl->AddCircleFilled(m,2.0f,col); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", label);
+        if (!enabled) ImGui::EndDisabled();
+        ImGui::SameLine();
+        return clicked && enabled;
+    };
+
+    auto toolbarDivider = [&]() {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + 3.0f, p.y + 4.0f),
+            ImVec2(p.x + 3.0f, p.y + 21.0f), IM_COL32(35, 58, 72, 255), 1.0f);
+        ImGui::Dummy(ImVec2(7.0f, 25.0f));
+        ImGui::SameLine();
+    };
+
+    if (toolButton("##open", "Open binary", 0)) ShowOpenFileDialog();
+    if (toolButton("##attach", "Attach to a process", 1)) ImGui::SetWindowFocus("PROCESSES");
+    if (toolButton("##analyze", "Analyze active module", 2, processHandle != nullptr))
+        analysisPanel.StartAnalyzeCurrentModule(*this);
+    if (toolButton("##refresh", "Refresh current target", 5, isAttached))
+    {
+        processListPanel.ForceRefresh();
+        if (processHandle) moduleManager.RefreshModules(processHandle);
+        NavigateToAddress(currentAddress);
+    }
+    toolbarDivider();
+    if (toolButton("##detach", "Detach from process", 7, isAttached)) DetachFromProcess();
+    if (toolButton("##goto", "Go to address", 4, isAttached)) showGotoModal_ = true;
+    if (toolButton("##xrefs", "Cross-references for selection", 8, isAttached))
+    {
+        analysisPanel.OpenXrefsForAddress(currentAddress);
+        ImGui::SetWindowFocus("XREFS");
+    }
+    if (toolButton("##functions", "Functions and control-flow graph", 9, isAttached))
+    {
+        showAnalysisPanel_ = true;
+        ImGui::SetWindowFocus("Analysis / Functions & CFG");
+    }
+    toolbarDivider();
+    if (toolButton("##memorymap", "Memory map", 10, isAttached)) showMemoryMap_ = true;
+    if (toolButton("##scanner", "Pattern scanner", 11, isAttached)) showScanner_ = true;
+    if (toolButton("##strings", "Strings", 12, isAttached)) showStrings_ = true;
+    if (toolButton("##inspector", "Data inspector", 13, isAttached)) showDataInspector_ = true;
+    if (toolButton("##peheader", "PE header", 14, isAttached)) showPEViewer_ = true;
+    if (toolButton("##bookmarks", "Bookmarks", 15, isAttached)) showBookmarks_ = true;
+    if (toolButton("##assistant", "AI assistant", 16)) ImGui::SetWindowFocus("AI ASSISTANT");
+
+    // Workspace switcher and settings mirror the compact controls in the
+    // reference toolbar; both are wired to real application actions.
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 192.0f, 4.0f));
+    ImGui::SetNextItemWidth(145.0f);
+    const char* workspace = isDevMode ? "Editor workspace" : "Workspace";
+    if (ImGui::BeginCombo("##Workspace", workspace))
+    {
+        if (ImGui::Selectable("Reverse workspace", !isDevMode)) SwitchToDevMode(false);
+        if (ImGui::Selectable("Editor workspace", isDevMode)) SwitchToDevMode(true);
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (toolButton("##settings", "AI settings", 6))
+        aiCopilotPanel.OpenSettings();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
 }
 
 void Application::RenderMenuBar()
 {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.016f, 0.031f, 0.042f, 1.0f));
+    ImGui::BeginChild("##ApplicationMenu", ImVec2(0.0f, 25.0f), false,
+        ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if (!ImGui::BeginMenuBar())
+    {
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
         return;
+    }
 
     if (ImGui::BeginMenu("File"))
     {
@@ -518,91 +731,69 @@ void Application::RenderMenuBar()
         ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("Dev Section"))
-    {
-        if (ImGui::MenuItem("DEV MODE (Full Code Editor & Script Studio Layout)", "F12", isDevMode))
-        {
-            SwitchToDevMode(!isDevMode);
-        }
-        if (ImGui::MenuItem("Open Editor in Separate Floating Window ('à part')", "Ctrl+Shift+E", isEditorFloating))
-        {
-            isEditorFloating = !isEditorFloating;
-            showOpenReverseEditor = true;
-            Logger::Get().Log(LogLevel::Info, "%s", isEditorFloating ? "[Dev Section] Opened OpenReverse Editor in standalone floating window." : "[Dev Section] Docked OpenReverse Editor back into IDE.");
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Show OpenReverse Editor Panel", "Ctrl+E", showOpenReverseEditor))
-        {
-            showOpenReverseEditor = !showOpenReverseEditor;
-            if (showOpenReverseEditor)
-                ImGui::SetWindowFocus("OpenReverse Editor");
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Reload Workspace Scripts from Disk"))
-        {
-            openReverseEditorPanel.ScanWorkspaceFolder();
-            Logger::Get().Log(LogLevel::Info, "[Dev Section] Re-scanned disk workspace directory.");
-        }
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Process"))
-    {
-        if (ImGui::MenuItem("Attach...", nullptr, false, !isAttached))
-            showGotoModal_ = false; // ensure process list is used
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Open the Processes panel and double-click a process to attach.");
-        if (ImGui::MenuItem("Detach", nullptr, false, isAttached))
-            DetachFromProcess();
-        ImGui::Separator();
-        if (ImGui::MenuItem("Refresh process list"))
-            processListPanel.ForceRefresh();
-        ImGui::EndMenu();
-    }
-
     if (ImGui::BeginMenu("View"))
     {
-        if (ImGui::BeginMenu("Workspace Layout"))
-        {
-            if (ImGui::MenuItem("1. Reverse Engineering Layout", "Ctrl+1", !isDevMode))
-            {
-                SwitchToDevMode(false);
-            }
-            if (ImGui::MenuItem("2. Dev Studio & Scripting Layout (Code Editor)", "Ctrl+2", isDevMode))
-            {
-                SwitchToDevMode(true);
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Reset & Auto-Arrange All Windows"))
-            {
-                ResetLayout();
-            }
-            ImGui::EndMenu();
-        }
+        if (ImGui::MenuItem("Reverse workspace", "Ctrl+1", !isDevMode)) SwitchToDevMode(false);
+        if (ImGui::MenuItem("Editor workspace", "Ctrl+2", isDevMode)) SwitchToDevMode(true);
         ImGui::Separator();
-        if (ImGui::MenuItem("Analysis (Functions, CFG & XREFs)", "Ctrl+I"))
-            ImGui::SetWindowFocus("Analysis / Functions & CFG");
-        if (ImGui::MenuItem("OpenReverse Editor Panel", "Ctrl+E"))
-            ImGui::SetWindowFocus("OpenReverse Editor");
-        if (ImGui::MenuItem("Goto Address...", "Ctrl+G", false, isAttached))
+        ImGui::MenuItem("Functions and CFG", nullptr, &showAnalysisPanel_);
+        ImGui::MenuItem("Memory Map", nullptr, &showMemoryMap_);
+        ImGui::MenuItem("PE Header", nullptr, &showPEViewer_);
+        ImGui::MenuItem("Data Inspector", nullptr, &showDataInspector_);
+        ImGui::MenuItem("Bookmarks", nullptr, &showBookmarks_);
+        ImGui::MenuItem("Console", nullptr, &showConsole_);
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Analysis"))
+    {
+        if (ImGui::MenuItem("Analyze active module", nullptr, false, processHandle != nullptr))
+            analysisPanel.StartAnalyzeCurrentModule(*this);
+        if (ImGui::MenuItem("Functions and CFG", "Ctrl+I"))
+            showAnalysisPanel_ = true;
+        if (ImGui::MenuItem("Go to address...", "Ctrl+G", false, isAttached))
             showGotoModal_ = true;
-        if (ImGui::MenuItem("Reset layout"))
-            ResetLayout();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Dock all windows back to default arrangement");
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Debug"))
+    {
+        if (ImGui::MenuItem("Attach to process...", nullptr, false, !isAttached))
+            ImGui::SetWindowFocus("PROCESSES");
+        if (ImGui::MenuItem("Detach", nullptr, false, isAttached)) DetachFromProcess();
+        if (ImGui::MenuItem("Refresh process list", "F5")) processListPanel.ForceRefresh();
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Tools"))
+    {
+        if (ImGui::MenuItem("Pattern Scanner")) showScanner_ = true;
+        if (ImGui::MenuItem("Strings")) showStrings_ = true;
+        if (ImGui::MenuItem("AI Assistant")) ImGui::SetWindowFocus("AI ASSISTANT");
+        ImGui::Separator();
+        if (ImGui::MenuItem("AI Settings...")) aiCopilotPanel.OpenSettings();
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Window"))
+    {
+        if (ImGui::MenuItem("Reset workspace layout")) ResetLayout();
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Help"))
     {
-        if (ImGui::MenuItem("About OpenReverse Studio"))
+        if (ImGui::MenuItem("About OpenReverse"))
         {
-            ImGui::OpenPopup("About OpenReverse Studio");
+            ImGui::OpenPopup("About OpenReverse");
         }
         ImGui::EndMenu();
     }
 
     ImGui::EndMenuBar();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 
     // Goto Address modal
     if (showGotoModal_)
@@ -618,9 +809,11 @@ void Application::RenderMenuBar()
             ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue);
         if (ImGui::Button("OK", ImVec2(80, 0)) || enterPressed)
         {
-            uint64_t addr = (uint64_t)strtoull(gotoAddressBuf_, nullptr, 16);
-            NavigateToAddress(addr);
-            ImGui::CloseCurrentPopup();
+            if (const auto address = helpers::TryParseAddress(gotoAddressBuf_))
+            {
+                NavigateToAddress(*address);
+                ImGui::CloseCurrentPopup();
+            }
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0)))
@@ -628,14 +821,12 @@ void Application::RenderMenuBar()
         ImGui::EndPopup();
     }
 
-    // About popup
-    if (ImGui::BeginPopupModal("About OpenReverse Studio", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal("About OpenReverse", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("OpenReverse Studio - Memory Analysis & Reverse Engineering");
-        ImGui::Text("Version 2.0");
+        ImGui::Text("OpenReverse - Reverse Engineering Workspace");
+        ImGui::Text("Version %s", openreverse::kVersion);
         ImGui::Separator();
         ImGui::Text("Read and analyze process memory, experimental pseudocode, and optional AI context.");
-        ImGui::Text("Type '/gui' in the shell or use the menu to switch views.");
         if (ImGui::Button("OK", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -655,64 +846,51 @@ void Application::AddOffsetFromAddress(uint64_t address, const std::string& name
 void Application::RenderStatusBar()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - 25.0f));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, 25.0f));
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - 22.0f));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, 22.0f));
 
     ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoDocking |
         ImGuiWindowFlags_NoSavedSettings;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 4.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.07f, 0.10f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 3.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.045f, 0.065f, 1.0f));
 
     ImGui::Begin("##StatusBar", nullptr, flags);
 
     if (isAttached)
     {
-        ImGui::TextColored(ImVec4(0.30f, 0.90f, 0.45f, 1.0f), "●");
-        ImGui::SameLine(0, 4);
         ImGui::Text("%s", attachedProcessName.c_str());
-        ImGui::SameLine(0, 8);
-        ImGui::TextDisabled("|");
-        ImGui::SameLine(0, 8);
-        ImGui::TextDisabled("%s", is64Bit ? "x64" : "x86");
+        ImGui::SameLine(0, 7);
+        ImGui::TextDisabled("- %s", is64Bit ? "x64" : "x86");
 
         if (attachedPID != 0)
         {
-            ImGui::SameLine(0, 8);
-            ImGui::TextDisabled("|");
-            ImGui::SameLine(0, 8);
-            ImGui::TextDisabled("PID %d", attachedPID);
+            ImGui::SameLine(0, 7);
+            ImGui::TextDisabled("- PID %d", attachedPID);
         }
 
-        ImGui::SameLine(0, 8);
-        ImGui::TextDisabled("|");
-        ImGui::SameLine(0, 8);
+        ImGui::SameLine(0, 7);
         const ModuleInfo* curMod = moduleManager.FindModuleByAddress(currentAddress);
         if (curMod)
         {
             std::string offStr = helpers::FormatModuleOffset(curMod->name, curMod->baseAddress, currentAddress, is64Bit);
-            ImGui::TextColored(ImVec4(0.35f, 0.80f, 0.55f, 1.0f), "%s", offStr.c_str());
+            ImGui::TextDisabled("- %s", offStr.c_str());
         }
         else
-            ImGui::TextColored(ImVec4(0.50f, 0.65f, 0.85f, 1.0f), "%s", helpers::FormatAddress(currentAddress, is64Bit).c_str());
+            ImGui::TextDisabled("- %s", helpers::FormatAddress(currentAddress, is64Bit).c_str());
     }
     else
     {
-        ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.50f, 1.0f), "○");
-        ImGui::SameLine(0, 4);
         ImGui::TextDisabled("No target attached");
     }
 
-    // Right-aligned local configuration indicators
-    ImGui::SameLine(ImGui::GetWindowWidth() - 330.0f);
-    const std::string aiProvider = aiService.Provider();
-    ImGui::TextDisabled("AI: %s", aiProvider.c_str());
-    ImGui::SameLine(0, 12);
-    ImGui::TextDisabled("|");
-    ImGui::SameLine(0, 12);
-    ImGui::TextDisabled("v2.0");
+    const char* state = isAttached ? "Analysis ready" : "Idle";
+    const float stateWidth = ImGui::CalcTextSize(state).x;
+    ImGui::SameLine(ImGui::GetWindowWidth() - stateWidth - 14.0f);
+    ImGui::TextColored(isAttached ? ImVec4(0.20f, 0.66f, 0.96f, 1.0f)
+                                  : ImVec4(0.42f, 0.47f, 0.51f, 1.0f), "%s", state);
 
     ImGui::End();
     ImGui::PopStyleColor();
@@ -723,7 +901,7 @@ std::string Application::GetAIContextSummary()
 {
     if (!isAttached && attachedProcessName.empty())
     {
-        return "[Active Target Context: NO PROCESS OR BINARY IS CURRENTLY ATTACHED in OpenReverse Studio. CRITICAL INSTRUCTION: If the user asks to analyze 'this program' or 'this binary', do NOT give a generic refusal! Instead, tell the user in French: 'Vous n'avez pas encore rattaché de processus ou chargé de binaire dans OpenReverse Studio ! Allez dans le menu Process -> Attach (ou l'onglet Process List) pour sélectionner une cible, puis reposez votre question.']\n\n";
+        return "[Active Target Context: no process or binary is attached in OpenReverse. Ask the user to open a binary or attach to a process before analyzing the current target.]\n\n";
     }
 
     std::stringstream ss;
@@ -740,7 +918,7 @@ std::string Application::GetAIContextSummary()
     const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
     if (!analysis && !analysisDatabase.GetModules().empty())
         analysis = &analysisDatabase.GetModules().begin()->second;
-    const auto& funcs = analysis ? analysis->functions : idaProPanel.GetFunctions();
+    const auto& funcs = analysis ? analysis->functions : analysisPanel.GetFunctions();
     if (!funcs.empty())
     {
         ss << "Analyzed Functions (" << funcs.size() << " detected): ";
@@ -766,7 +944,6 @@ std::string Application::GetAIContextSummary()
         ss << "\n";
     }
 
-    // ── Live Memory Disassembly at Current Address ──
     if (currentAddress != 0 && isAttached && processHandle != nullptr)
     {
         ss << "\n--- LIVE MEMORY DISASSEMBLY AT CURRENT ADDRESS (0x" << std::hex << currentAddress << std::dec << ") ---\n";
@@ -781,15 +958,14 @@ std::string Application::GetAIContextSummary()
         }
     }
 
-    // ── Selected OpenReverse Function & Pseudocode ──
-    if (idaProPanel.GetActiveFunction().startAddress != 0)
+    if (analysisPanel.GetActiveFunction().startAddress != 0)
     {
-        const auto& fn = idaProPanel.GetActiveFunction();
+        const auto& fn = analysisPanel.GetActiveFunction();
         ss << "\n--- CURRENT ACTIVE FUNCTION IN OPENREVERSE ---\n";
         ss << "Function: " << fn.name << " at 0x" << std::hex << fn.startAddress << " (Size: " << std::dec << fn.size << " bytes)\n";
-        if (!idaProPanel.GetActivePseudocode().empty())
+        if (!analysisPanel.GetActivePseudocode().empty())
         {
-            ss << "Experimental C Pseudocode:\n```c\n" << idaProPanel.GetActivePseudocode() << "\n```\n";
+            ss << "Experimental C Pseudocode:\n```c\n" << analysisPanel.GetActivePseudocode() << "\n```\n";
         }
     }
     ss << "=== END TARGET PROGRAM CONTEXT ===\n\n";

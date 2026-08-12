@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Disassembler Implementation
-// ============================================================================
-
 #include "disassembler.h"
 #include <cstring>
 #include <utility>

@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Function Analyzer, CFG, and Pseudocode Implementation
-// ============================================================================
-
 #include "function_analyzer.h"
 #include "utils/helpers.h"
 #include <sstream>

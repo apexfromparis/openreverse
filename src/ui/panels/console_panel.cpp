@@ -1,6 +1,4 @@
-// ============================================================================
 // OpenReverse - UI Panel: Console/Log Panel Implementation
-// ============================================================================
 #include "console_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -13,6 +11,7 @@ namespace openreverse { namespace panels {
 void ConsolePanel::Render(Application& app)
 {
     ImGui::Begin("Console", nullptr, ImGuiWindowFlags_None);
+    const auto entries = Logger::Get().Snapshot();
 
     UIManager::BeginToolbar();
     if (ImGui::Button("Clear"))
@@ -21,7 +20,7 @@ void ConsolePanel::Render(Application& app)
     if (ImGui::Button("Copy all"))
     {
         std::stringstream ss;
-        for (const auto& e : Logger::Get().GetEntries())
+        for (const auto& e : entries)
         {
             const char* p = (e.level == LogLevel::Debug) ? "[DBG]" : (e.level == LogLevel::Info) ? "[INF]" : (e.level == LogLevel::Warning) ? "[WRN]" : "[ERR]";
             ss << e.timestamp << " " << p << " " << e.message << "\n";
@@ -34,14 +33,13 @@ void ConsolePanel::Render(Application& app)
     ImGui::Checkbox("WRN", &showWarning_); ImGui::SameLine();
     ImGui::Checkbox("ERR", &showError_);
     UIManager::ToolbarSeparator();
-    ImGui::Text("Entries: %zu", Logger::Get().GetEntries().size());
+    ImGui::Text("Entries: %zu", entries.size());
     UIManager::EndToolbar();
 
     ImGui::Separator();
 
     ImGui::BeginChild("LogScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-    const auto& entries = Logger::Get().GetEntries();
     for (const auto& entry : entries)
     {
         bool show = (entry.level == LogLevel::Debug && showDebug_) ||

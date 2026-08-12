@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Module Manager Implementation
-// ============================================================================
-
 #include "module_manager.h"
 #include "pe_parser.h"
 #include <algorithm>
@@ -28,7 +24,6 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
             ModuleInfo mod{};
             mod.baseAddress = (uint64_t)hMods[i];
 
-            // Get module name
             wchar_t modName[MAX_PATH];
             if (GetModuleBaseNameW(processHandle, hMods[i], modName, MAX_PATH))
             {
@@ -37,7 +32,6 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
                 mod.name = name;
             }
 
-            // Get module path
             wchar_t modPath[MAX_PATH];
             if (GetModuleFileNameExW(processHandle, hMods[i], modPath, MAX_PATH))
             {
@@ -46,7 +40,6 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
                 mod.path = path;
             }
 
-            // Get module size
             MODULEINFO mi{};
             if (GetModuleInformation(processHandle, hMods[i], &mi, sizeof(mi)))
             {
@@ -57,7 +50,6 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
         }
     }
 
-    // Sort by base address
     std::sort(modules_.begin(), modules_.end(),
         [](const ModuleInfo& a, const ModuleInfo& b) { return a.baseAddress < b.baseAddress; });
 }

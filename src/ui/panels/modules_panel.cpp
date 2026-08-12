@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - UI Panel: Modules Panel Implementation
-// ============================================================================
-
 #include "modules_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -19,7 +15,8 @@ void ModulesPanel::Reset()
 
 void ModulesPanel::Render(Application& app)
 {
-    ImGui::Begin("Modules", nullptr, ImGuiWindowFlags_None);
+    ImGui::Begin("MODULES", nullptr, ImGuiWindowFlags_None);
+    UIManager::PanelHeader("MODULES");
 
     UIManager::BeginToolbar();
     if (ImGui::Button("Refresh"))
@@ -46,64 +43,54 @@ void ModulesPanel::Render(Application& app)
     const auto& modules = app.moduleManager.GetModules();
     std::string filter = helpers::ToLower(filterText_);
 
-    // Modules table
+    // Compact module list; base/size/path remain visible in the tooltip.
     float exportHeight = showExports_ ? ImGui::GetContentRegionAvail().y * 0.4f : 0;
     float tableHeight = ImGui::GetContentRegionAvail().y - exportHeight - 30;
 
-    if (ImGui::BeginTable("ModulesTable", 4,
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_Resizable,
-        ImVec2(0, tableHeight)))
+    bool openModuleContext = false;
+    ImGui::BeginChild("##ModuleRows", ImVec2(0, tableHeight), false);
+    for (int i = 0; i < static_cast<int>(modules.size()); ++i)
     {
-        ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Base", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-        ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableHeadersRow();
+        const auto& mod = modules[i];
+        if (!filter.empty() && helpers::ToLower(mod.name).find(filter) == std::string::npos)
+            continue;
 
-        for (int i = 0; i < (int)modules.size(); ++i)
+        ImGui::PushID(i);
+        const ImVec2 marker = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRect(
+            ImVec2(marker.x + 2.0f, marker.y + 2.0f), ImVec2(marker.x + 10.0f, marker.y + 12.0f),
+            IM_COL32(137, 151, 160, 255), 1.0f);
+        ImGui::Dummy(ImVec2(14.0f, 14.0f));
+        ImGui::SameLine(0.0f, 1.0f);
+
+        const bool selected = i == selectedModule_;
+        if (ImGui::Selectable(mod.name.c_str(), selected,
+            ImGuiSelectableFlags_AllowDoubleClick))
         {
-            const auto& mod = modules[i];
-            if (!filter.empty() && helpers::ToLower(mod.name).find(filter) == std::string::npos)
-                continue;
-
-            ImGui::TableNextRow();
-
-            ImGui::TableSetColumnIndex(0);
-            bool selected = (i == selectedModule_);
-            if (ImGui::Selectable(mod.name.c_str(), selected,
-                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
-            {
-                selectedModule_ = i;
-                if (ImGui::IsMouseDoubleClicked(0))
-                {
-                    app.NavigateToAddress(mod.baseAddress);
-                }
-            }
-
-            // Right-click context menu
-            if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1))
-            {
-                selectedModule_ = i;
-                ImGui::OpenPopup("ModuleCtx");
-            }
-
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(ImVec4(0.4f, 0.6f, 0.8f, 1.0f), "%s",
-                helpers::FormatAddress(mod.baseAddress, app.is64Bit).c_str());
-
-            ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%s", helpers::FormatSize(mod.size).c_str());
-
-            ImGui::TableSetColumnIndex(3);
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.6f, 1.0f), "%s", mod.path.c_str());
+            selectedModule_ = i;
+            if (ImGui::IsMouseDoubleClicked(0))
+                app.NavigateToAddress(mod.baseAddress);
         }
-
-        ImGui::EndTable();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::Text("%s", mod.name.c_str());
+            ImGui::Text("Base: %s", helpers::FormatAddress(mod.baseAddress, app.is64Bit).c_str());
+            ImGui::Text("Size: %s", helpers::FormatSize(mod.size).c_str());
+            if (!mod.path.empty()) ImGui::TextWrapped("%s", mod.path.c_str());
+            ImGui::EndTooltip();
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1))
+        {
+            selectedModule_ = i;
+            openModuleContext = true;
+        }
+        ImGui::PopID();
     }
+    ImGui::EndChild();
+    if (openModuleContext)
+        ImGui::OpenPopup("ModuleCtx");
 
-    // Context menu
     if (ImGui::BeginPopup("ModuleCtx"))
     {
         if (selectedModule_ >= 0 && selectedModule_ < (int)modules.size())
@@ -124,7 +111,6 @@ void ModulesPanel::Render(Application& app)
         ImGui::EndPopup();
     }
 
-    // Exports sub-panel
     if (showExports_ && selectedModule_ >= 0 && selectedModule_ < static_cast<int>(modules.size()))
     {
         ImGui::Separator();

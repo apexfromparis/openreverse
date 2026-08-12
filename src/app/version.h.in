@@ -1,0 +1,9 @@
+#pragma once
+
+namespace openreverse {
+
+inline constexpr char kVersion[] = "@PROJECT_VERSION@";
+inline constexpr wchar_t kVersionWide[] = L"@PROJECT_VERSION@";
+inline constexpr char kInstallerFileName[] = "OpenReverse-@PROJECT_VERSION@-Setup.exe";
+
+} // namespace openreverse

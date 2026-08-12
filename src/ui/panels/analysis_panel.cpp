@@ -1,15 +1,10 @@
-// ============================================================================
-// OpenReverse - UI Panel: Analysis Workspace Implementation
-// ============================================================================
-
-#include "ida_pro_panel.h"
+#include "analysis_panel.h"
 #include "app/application.h"
 #include "core/module_manager.h"
 #include "core/string_scanner.h"
 #include "ui/ui_manager.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
-#include "TextEditor.h"
 
 #include <imgui.h>
 #include <cstdio>
@@ -19,30 +14,18 @@
 
 namespace openreverse { namespace panels {
 
-IDAProPanel::~IDAProPanel()
-{
-    if (textEditorPtr_) {
-        delete textEditorPtr_;
-        textEditorPtr_ = nullptr;
-    }
-}
-
-void IDAProPanel::ResetAnalysis()
+void AnalysisPanel::ResetAnalysis()
 {
     functions_.clear();
     activeFunction_ = FunctionInfo{};
     activePseudocode_.clear();
-    currentXrefs_.clear();
     hasAnalyzed_ = false;
     analysisJobId_ = 0;
     xrefTargetAddress_ = 0;
-    xrefAddressInput_[0] = '0';
-    xrefAddressInput_[1] = '\0';
-    devAiResponse_ = "Ask the configured AI provider for help drafting analysis heuristics.";
-    scriptLog_ = "[*] Editor preview initialized. Script execution and publishing are unavailable.\n";
+    lastXrefSelection_ = 0;
 }
 
-void IDAProPanel::AnalyzeCurrentModule(Application& app)
+void AnalysisPanel::AnalyzeCurrentModule(Application& app)
 {
     if (!app.isAttached)
         return;
@@ -71,7 +54,7 @@ void IDAProPanel::AnalyzeCurrentModule(Application& app)
     ApplyModuleAnalysis(app, analyzer.AnalyzeLive(app.processHandle, *mod, app.is64Bit));
 }
 
-void IDAProPanel::StartAnalyzeCurrentModule(Application& app)
+void AnalysisPanel::StartAnalyzeCurrentModule(Application& app)
 {
     if (!app.isAttached || !app.processHandle)
         return;
@@ -113,7 +96,7 @@ void IDAProPanel::StartAnalyzeCurrentModule(Application& app)
         });
 }
 
-void IDAProPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result)
+void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result)
 {
     if (!result.success)
     {
@@ -146,7 +129,7 @@ void IDAProPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult res
         SelectFunction(app, functions_[0].startAddress);
 }
 
-void IDAProPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs)
+void AnalysisPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs)
 {
     functions_.clear();
     activeFunction_ = FunctionInfo();
@@ -160,7 +143,7 @@ void IDAProPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, con
     else if (!insns.empty())
     {
         FunctionInfo fn;
-        fn.name = "DriverEntry_or_Main";
+        fn.name = "entry_point";
         fn.startAddress = insns[0].address;
         fn.size = (uint32_t)(insns.size() * 4);
         fn.cyclomaticComplexity = 5;
@@ -170,7 +153,7 @@ void IDAProPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, con
         activeFunction_ = functions_[0];
 }
 
-void IDAProPanel::SelectFunction(Application& app, uint64_t funcAddress)
+void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
 {
     if (!app.isAttached) return;
 
@@ -215,7 +198,7 @@ void IDAProPanel::SelectFunction(Application& app, uint64_t funcAddress)
     activeFunction_.xrefCount = (int)xrefs.size();
 }
 
-void IDAProPanel::Render(Application& app)
+void AnalysisPanel::Render(Application& app)
 {
     ImGui::Begin("Analysis / Functions & CFG", nullptr, ImGuiWindowFlags_None);
 
@@ -288,18 +271,24 @@ void IDAProPanel::Render(Application& app)
                 RenderXRefsTab(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Developer Workspace (Experimental)"))
-        {
-            RenderScriptEditorTab(app);
-            ImGui::EndTabItem();
-        }
         ImGui::EndTabBar();
     }
 
     ImGui::End();
 }
 
-void IDAProPanel::RenderFunctionsTab(Application& app)
+void AnalysisPanel::RenderXRefsPanel(Application& app)
+{
+    ImGui::Begin("XREFS", nullptr, ImGuiWindowFlags_None);
+    UIManager::PanelHeader("XREFS");
+    if (!app.isAttached)
+        UIManager::EmptyState("Open a binary or attach to a process to inspect cross-references.");
+    else
+        RenderXRefsTab(app);
+    ImGui::End();
+}
+
+void AnalysisPanel::RenderFunctionsTab(Application& app)
 {
     ImGui::SetNextItemWidth(250.0f);
     ImGui::InputTextWithHint("##fnfilter", "Filter functions by name/addr...", filterText_, sizeof(filterText_));
@@ -374,7 +363,7 @@ void IDAProPanel::RenderFunctionsTab(Application& app)
     }
 }
 
-void IDAProPanel::RenderCFGTab(Application& app)
+void AnalysisPanel::RenderCFGTab(Application& app)
 {
     if (activeFunction_.startAddress == 0)
     {
@@ -533,7 +522,7 @@ void IDAProPanel::RenderCFGTab(Application& app)
     ImGui::EndChild();
 }
 
-void IDAProPanel::RenderDecompilerTab(Application& app)
+void AnalysisPanel::RenderDecompilerTab(Application& app)
 {
     if (activeFunction_.startAddress == 0 || activePseudocode_.empty())
     {
@@ -551,7 +540,7 @@ void IDAProPanel::RenderDecompilerTab(Application& app)
     {
         std::string req = "Review this experimental C-like pseudocode generated for " +
                           activeFunction_.name + ":\n\n```c\n" + activePseudocode_ + "\n```";
-        app.aiService.Send(req, nullptr);
+        app.aiService.Send(req);
     }
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "OpenReverse experimental output");
@@ -569,213 +558,68 @@ void IDAProPanel::RenderDecompilerTab(Application& app)
         ImGui::PopFont();
 }
 
-void IDAProPanel::RenderXRefsTab(Application& app)
+void AnalysisPanel::RenderXRefsTab(Application& app)
 {
     if (xrefTargetAddress_ != 0)
     {
-        snprintf(xrefAddressInput_, sizeof(xrefAddressInput_), "%llX",
-                 static_cast<unsigned long long>(xrefTargetAddress_));
-        currentXrefs_ = app.xrefScanner.FindXRefsTo(xrefTargetAddress_);
-        xrefModeTo_ = true;
+        lastXrefSelection_ = xrefTargetAddress_;
         xrefTargetAddress_ = 0;
     }
-
-    ImGui::Text("Address:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::InputText("##xrefaddr", xrefAddressInput_, sizeof(xrefAddressInput_));
-    ImGui::SameLine();
-
-    auto resolveAddr = [&](const char* input) -> uint64_t {
-        if (!input || input[0] == '\0') return activeFunction_.startAddress;
-        uint64_t addr = helpers::ParseAddress(input);
-        if (addr != 0) return addr;
-
-        std::string lowerInput = helpers::ToLower(input);
-        for (const auto& s : app.stringResults)
-        {
-            if (helpers::ToLower(s.value) == lowerInput ||
-                helpers::ToLower(s.value).find(lowerInput) != std::string::npos)
-            {
-                return s.address;
-            }
-        }
-        for (const auto& fn : functions_)
-        {
-            if (helpers::ToLower(fn.name) == lowerInput ||
-                helpers::ToLower(fn.name).find(lowerInput) != std::string::npos)
-            {
-                return fn.startAddress;
-            }
-        }
-        return activeFunction_.startAddress;
-    };
-
-    if (ImGui::Button("Find XREFs TO Address"))
+    else if (app.currentAddress != 0)
     {
-        uint64_t addr = resolveAddr(xrefAddressInput_);
-        currentXrefs_ = app.xrefScanner.FindXRefsTo(addr);
-        if (currentXrefs_.empty() && xrefAddressInput_[0] != '\0')
-            currentXrefs_ = app.xrefScanner.SearchXRefsByText(xrefAddressInput_);
-        xrefModeTo_ = true;
+        lastXrefSelection_ = app.currentAddress;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Find XREFs FROM Address"))
-    {
-        uint64_t addr = resolveAddr(xrefAddressInput_);
-        currentXrefs_ = app.xrefScanner.FindXRefsFrom(addr);
-        if (currentXrefs_.empty() && xrefAddressInput_[0] != '\0')
-            currentXrefs_ = app.xrefScanner.SearchXRefsByText(xrefAddressInput_);
-        xrefModeTo_ = false;
-    }
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.70f, 0.85f, 0.95f, 1.0f), "Found %zu references", currentXrefs_.size());
 
-    ImGui::Separator();
+    const auto incoming = app.xrefScanner.FindXRefsTo(lastXrefSelection_);
+    const auto outgoing = app.xrefScanner.FindXRefsFrom(lastXrefSelection_);
+    if (lastXrefSelection_ != 0)
+        ImGui::TextDisabled("Selection %s", helpers::FormatAddress(lastXrefSelection_, app.is64Bit).c_str());
 
-    if (currentXrefs_.empty())
+    if (incoming.empty() && outgoing.empty())
     {
-        ImGui::Spacing();
-        ImGui::TextDisabled("No XREFs found. Analyze the active module or choose another address.");
+        UIManager::EmptyState("No cross-references available for the current selection.");
         return;
     }
 
-    if (ImGui::BeginTable("XRefsTable", 5,
+    if (ImGui::BeginTable("XRefsTable", 4,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_Resizable))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("Direction", ImGuiTableColumnFlags_WidthFixed, 75.0f);
-        ImGui::TableSetupColumn("From Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
-        ImGui::TableSetupColumn("To Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+        ImGui::TableSetupColumn("Direction", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+        ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
         ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-        ImGui::TableSetupColumn("Instruction", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Operand", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
-        for (const auto& xr : currentXrefs_)
-        {
+        const auto renderRow = [&](const XRefEntry& xr, bool isIncoming) {
             ImGui::TableNextRow();
-
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextColored(xrefModeTo_ ? ImVec4(0.35f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.65f, 0.35f, 1.0f),
-                               xrefModeTo_ ? "UP (To)" : "DOWN (From)");
-
+            ImGui::TextDisabled("%s", isIncoming ? "IN" : "OUT");
             ImGui::TableSetColumnIndex(1);
-            std::string fromStr = helpers::FormatAddress(xr.fromAddress, app.is64Bit);
-            if (ImGui::Selectable(fromStr.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
-            {
-                app.NavigateToAddress(xr.fromAddress);
-            }
-
+            const uint64_t navigationAddress = isIncoming ? xr.fromAddress : xr.toAddress;
+            const std::string address = helpers::FormatAddress(navigationAddress, app.is64Bit);
+            if (ImFont* mono = UIManager::GetMonoFont()) ImGui::PushFont(mono);
+            if (ImGui::Selectable(address.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
+                app.NavigateToAddress(navigationAddress);
+            if (UIManager::GetMonoFont()) ImGui::PopFont();
             ImGui::TableSetColumnIndex(2);
-            std::string toStr = helpers::FormatAddress(xr.toAddress, app.is64Bit);
-            ImGui::TextColored(ImVec4(0.60f, 0.80f, 0.95f, 1.0f), "%s", toStr.c_str());
-
-            ImGui::TableSetColumnIndex(3);
             const char* typeStr = (xr.type == XRefType::Call) ? "CALL" :
                                   (xr.type == XRefType::Jump) ? "JUMP" :
                                   (xr.type == XRefType::Lea)  ? "LEA" :
                                   (xr.type == XRefType::Read) ? "READ" :
                                   (xr.type == XRefType::ReadWrite) ? "R/W" : "WRITE";
-            ImVec4 typeColor = (xr.type == XRefType::Call) ? ImVec4(0.00f, 0.90f, 1.0f, 1.0f) :
-                               (xr.type == XRefType::Jump) ? ImVec4(1.0f, 0.67f, 0.25f, 1.0f) :
-                                                             ImVec4(0.75f, 0.85f, 0.75f, 1.0f);
-            ImGui::TextColored(typeColor, "%s", typeStr);
+            ImGui::TextColored(xr.type == XRefType::Call ? ImVec4(0.08f, 0.55f, 0.92f, 1.0f)
+                                                         : ImVec4(0.72f, 0.77f, 0.81f, 1.0f), "%s", typeStr);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::TextUnformatted(xr.instructionText.c_str());
+        };
 
-            ImGui::TableSetColumnIndex(4);
-            ImGui::TextColored(ImVec4(0.85f, 0.87f, 0.90f, 1.0f), "%s", xr.instructionText.c_str());
-        }
+        for (const auto& xr : incoming) renderRow(xr, true);
+        for (const auto& xr : outgoing) renderRow(xr, false);
 
         ImGui::EndTable();
     }
-}
-
-void IDAProPanel::RenderScriptEditorTab(Application& app)
-{
-    ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.25f, 1.0f), "[EXPERIMENTAL SCRIPT EDITOR]");
-    ImGui::SameLine();
-    ImGui::TextDisabled("| Editing and AI assistance only; execution and publishing are not implemented");
-    ImGui::Separator();
-
-    ImGui::BeginDisabled();
-    ImGui::Button("Run Script (Not Implemented)");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Ask AI (With Script & Selected Context)"))
-    {
-        scriptLog_ += "[*] Sending the script and selected analysis context to the configured AI provider...\n";
-        std::string prompt = std::string(devAiPrompt_);
-        if (prompt.empty()) prompt = "Audit this script and suggest improvement heuristics for reverse engineering.";
-        std::string fullContextPrompt = "Script Code:\n```cpp\n" + std::string(scriptBuffer_) + "\n```\nTarget Binary Functions Count: " +
-                                        std::to_string(functions_.size()) + "\nUser Request: " + prompt;
-
-        app.aiService.Send(fullContextPrompt, nullptr, app.GetAIContextSummary());
-        devAiResponse_ = "The configured AI provider is analyzing the script and selected context...";
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled();
-    ImGui::Button("Publish (Not Implemented)");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Load Sample Heuristic"))
-    {
-        snprintf(scriptBuffer_, sizeof(scriptBuffer_),
-                  "// OpenReverse Draft: Cobalt Strike / OLLVM Analysis Heuristic\n"
-                 "void OnAnalyzeModule(openreverse::Application& app, std::vector<openreverse::FunctionInfo>& funcs) {\n"
-                 "    for (auto& fn : funcs) {\n"
-                 "        if (fn.cyclomaticComplexity > 15 && fn.name.find(\"sub_\") == 0) {\n"
-                 "            fn.name = \"c2_beacon_handler_\" + helpers::FormatAddress(fn.startAddress, true);\n"
-                 "        }\n"
-                 "    }\n"
-                 "}\n");
-        if (textEditorPtr_) {
-            textEditorPtr_->SetText(scriptBuffer_);
-        }
-        scriptLog_ += "[*] Loaded Cobalt Strike / OLLVM sample heuristic into editor buffer.\n";
-    }
-
-    ImGui::Separator();
-
-    // 2-Column Split Layout: Code Editor (Left 58%) | AI Context Chat & Execution Log (Right 42%)
-    ImGui::Columns(2, "DevStudioSplit", true);
-    ImGui::SetColumnWidth(0, ImGui::GetWindowWidth() * 0.58f);
-
-    // Left Column: Script Editor Buffer (Paris-main Syntax Highlighting TextEditor)
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.0f, 1.0f), "Analysis Script Draft (Syntax Highlighted):");
-    if (!textEditorPtr_) {
-        textEditorPtr_ = new TextEditor();
-        textEditorPtr_->SetLanguageDefinition(TextEditor::LanguageDefinition::CPlusPlus());
-        textEditorPtr_->SetPalette(TextEditor::GetDarkPalette());
-        textEditorPtr_->SetText(scriptBuffer_);
-        textEditorPtr_->SetShowWhitespaces(false);
-    }
-    textEditorPtr_->Render("##ParisMainCodeEditor", ImVec2(-FLT_MIN, ImGui::GetContentRegionAvail().y - 10.0f), true);
-    std::string editorTxt = textEditorPtr_->GetText();
-    snprintf(scriptBuffer_, sizeof(scriptBuffer_), "%s", editorTxt.c_str());
-
-    ImGui::NextColumn();
-
-    // Right Column: AI Assistant Chat + Context & Execution Log
-    ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.20f, 1.0f), "AI Assistant (Script & Selected Context):");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputTextWithHint("##devprompt", "Ask AI to write heuristic or debug script...", devAiPrompt_, sizeof(devAiPrompt_));
-
-    ImGui::BeginChild("DevAiResponseBox", ImVec2(0, 180), true, ImGuiWindowFlags_HorizontalScrollbar);
-    ImGui::TextWrapped("%s", devAiResponse_.c_str());
-    const auto& conv = app.aiService.Conversation();
-    if (!conv.empty() && conv.back().role == "assistant")
-    {
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.50f, 0.95f, 0.50f, 1.0f), "%s", conv.back().content.c_str());
-    }
-    ImGui::EndChild();
-
-    ImGui::TextColored(ImVec4(0.70f, 0.85f, 0.95f, 1.0f), "Workspace Log:");
-    ImGui::BeginChild("DevScriptLogBox", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-    ImGui::TextUnformatted(scriptLog_.c_str());
-    ImGui::EndChild();
-
-    ImGui::Columns(1);
 }
 
 }} // namespace openreverse::panels

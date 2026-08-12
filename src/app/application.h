@@ -1,7 +1,5 @@
 #pragma once
-// ============================================================================
 // Main application class and shared analysis state.
-// ============================================================================
 
 #include "core/process_manager.h"
 #include "core/memory_reader.h"
@@ -27,7 +25,7 @@
 #include "ui/panels/console_panel.h"
 #include "ui/panels/offsets_panel.h"
 #include "ui/panels/ai_copilot.h"
-#include "ui/panels/ida_pro_panel.h"
+#include "ui/panels/analysis_panel.h"
 #include "ui/panels/openreverse_editor.h"
 
 #include <string>
@@ -43,7 +41,6 @@ public:
 
     void Render();
 
-    // ── Core Engines ──
     ProcessManager   processManager;
     MemoryReader     memoryReader;
     Disassembler     disassembler;
@@ -55,14 +52,13 @@ public:
     AnalysisScheduler analysisScheduler;
     AnalysisDatabase analysisDatabase;
     ai::AIService    aiService;
-    panels::IDAProPanel idaProPanel;
+    panels::AnalysisPanel analysisPanel;
     OpenReverseEditorPanel openReverseEditorPanel;
     bool showOpenReverseEditor = true;
     bool isDevMode = false;
     bool isEditorFloating = false;
     void SwitchToDevMode(bool enable);
 
-    // ── State ──
     bool             isAttached = false;
     DWORD            attachedPID = 0;
     HANDLE           processHandle = nullptr;
@@ -70,7 +66,6 @@ public:
     bool             is64Bit = false;
     uint64_t         targetGeneration = 0;
 
-    // ── Actions ──
     bool AttachToProcess(DWORD pid);
     void DetachFromProcess();
     bool OpenBinaryFile(const std::string& filePath);
@@ -82,18 +77,17 @@ public:
     std::vector<uint8_t> offlineImageBuffer;
     PEInfo            offlinePEInfo;
 
-    // ── Shared state for panels ──
     uint64_t         currentAddress = 0;
     std::vector<StringResult> stringResults;
     std::vector<uint8_t> selectedBytes;
 
     void ShowGotoAddressDialog();
     void AddOffsetFromAddress(uint64_t address, const std::string& name = "");
+    void ShowAnalysisPanel() { showAnalysisPanel_ = true; }
     void ResetLayout() { layoutInitialized_ = false; }
     std::string GetAIContextSummary();
 
 private:
-    // ── UI Panels ──
     panels::ProcessListPanel    processListPanel;
     panels::HexEditorPanel      hexEditorPanel;
     panels::DisasmViewPanel     disasmViewPanel;
@@ -112,8 +106,18 @@ private:
     char             gotoAddressBuf_[32] = "0";
     bool             layoutInitialized_ = false;
     bool             shutdown_ = false;
+    bool             showAnalysisPanel_ = false;
+    bool             showMemoryMap_ = false;
+    bool             showScanner_ = false;
+    bool             showStrings_ = false;
+    bool             showDataInspector_ = false;
+    bool             showPEViewer_ = false;
+    bool             showBookmarks_ = false;
+    bool             showConsole_ = false;
 
     void RenderMenuBar();
+    void RenderBrandBar();
+    void RenderToolbar();
     void RenderStatusBar();
     void RenderDockspace();
 };

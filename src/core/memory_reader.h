@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Memory Reader
 // Read/write process memory, enumerate memory regions
-// ============================================================================
 
 #include <windows.h>
 #include <vector>

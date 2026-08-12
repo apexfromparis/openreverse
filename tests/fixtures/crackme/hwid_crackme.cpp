@@ -98,7 +98,7 @@ int main(int argc, char** argv)
     std::string expectedKey = GenerateExpectedKey(hwid);
 
     std::cout << "[*] Detected Machine HWID: " << hwid << "\n";
-    std::cout << "[?] To activate, reverse this executable using OpenReverse Studio\n";
+    std::cout << "[?] To activate, reverse this executable using OpenReverse\n";
     std::cout << "    or attach OpenReverse to PID: " << GetCurrentProcessId() << "\n\n";
 
     for (int i = 1; i < argc; ++i)

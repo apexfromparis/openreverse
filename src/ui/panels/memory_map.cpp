@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - UI Panel: Memory Map Implementation
-// ============================================================================
-
 #include "memory_map.h"
 #include "app/application.h"
 #include "core/module_manager.h"
@@ -28,7 +24,7 @@ void MemoryMapPanel::Render(Application& app)
     ImGui::SameLine();
     ImGui::Checkbox("Exec Only (X/RWX)", &showExecOnly_);
     ImGui::SameLine();
-    ImGui::Checkbox("Injected / Private Exec", &showPrivateExec_);
+    ImGui::Checkbox("Private executable", &showPrivateExec_);
     UIManager::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##mmfilter", "Filter regions...", filterText_, sizeof(filterText_));
@@ -44,6 +40,7 @@ void MemoryMapPanel::Render(Application& app)
     }
 
     const auto& regions = app.memoryReader.GetRegions();
+    const std::string filter = helpers::ToLower(filterText_);
 
     if (ImGui::BeginTable("MemMapTable", 5,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
@@ -65,6 +62,16 @@ void MemoryMapPanel::Render(Application& app)
                 continue;
             if (showPrivateExec_ && (region.type != MEM_PRIVATE || !(region.protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))))
                 continue;
+            const std::string address = helpers::FormatAddress(region.baseAddress, app.is64Bit);
+            const std::string state = helpers::StateToString(region.state);
+            const std::string protection = helpers::ProtectionToString(region.protect);
+            const std::string type = helpers::TypeToString(region.type);
+            if (!filter.empty())
+            {
+                const std::string searchable = helpers::ToLower(address + " " + state + " " + protection + " " + type);
+                if (searchable.find(filter) == std::string::npos)
+                    continue;
+            }
 
             ImGui::TableNextRow();
 
@@ -81,7 +88,7 @@ void MemoryMapPanel::Render(Application& app)
 
             // Base Address (clickable, right-click menu)
             ImGui::TableSetColumnIndex(0);
-            std::string addrStr = helpers::FormatAddress(region.baseAddress, app.is64Bit);
+            std::string addrStr = address;
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.6f, 0.8f, 1.0f));
             if (ImGui::Selectable(addrStr.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                 app.NavigateToAddress(region.baseAddress);
@@ -127,7 +134,6 @@ void MemoryMapPanel::Render(Application& app)
 
             // State
             ImGui::TableSetColumnIndex(2);
-            std::string state = helpers::StateToString(region.state);
             ImVec4 stateColor = (region.state == MEM_COMMIT)
                 ? ImVec4(0.3f, 0.85f, 0.4f, 1.0f)
                 : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
@@ -135,7 +141,7 @@ void MemoryMapPanel::Render(Application& app)
 
             // Protection
             ImGui::TableSetColumnIndex(3);
-            std::string prot = helpers::ProtectionToString(region.protect);
+            const std::string& prot = protection;
             bool hasExec = region.protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
             ImVec4 protColor = hasExec
                 ? ImVec4(0.9f, 0.5f, 0.3f, 1.0f)
@@ -144,7 +150,7 @@ void MemoryMapPanel::Render(Application& app)
 
             // Type
             ImGui::TableSetColumnIndex(4);
-            ImGui::TextColored(rowColor, "%s", helpers::TypeToString(region.type).c_str());
+            ImGui::TextColored(rowColor, "%s", type.c_str());
         }
 
         ImGui::EndTable();

@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Process Manager Implementation
-// ============================================================================
-
 #include "process_manager.h"
 
 namespace openreverse {
@@ -36,7 +32,6 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
             HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, info.pid);
             if (hProc)
             {
-                // Get full path
                 wchar_t pathBuf[MAX_PATH];
                 DWORD pathSize = MAX_PATH;
                 if (QueryFullProcessImageNameW(hProc, 0, pathBuf, &pathSize))
@@ -46,7 +41,6 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
                     info.path = pathNarrow;
                 }
 
-                // Check architecture
                 BOOL isWow64 = FALSE;
                 if (IsWow64Process(hProc, &isWow64))
                 {
@@ -54,7 +48,6 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
                     info.is64bit = !isWow64;
                 }
 
-                // Get memory usage
                 PROCESS_MEMORY_COUNTERS pmc;
                 if (GetProcessMemoryInfo(hProc, &pmc, sizeof(pmc)))
                 {

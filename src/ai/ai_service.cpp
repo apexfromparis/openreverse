@@ -164,7 +164,7 @@ void AIService::ClearApiKey()
     if (!legacyTarget.empty()) CredDeleteA(legacyTarget.c_str(), CRED_TYPE_GENERIC, 0);
 }
 
-bool AIService::Send(const std::string& prompt, const ReverseSkill* skill, const std::string& hiddenContext)
+bool AIService::Send(const std::string& prompt, const std::string& hiddenContext)
 {
     if (prompt.empty() || prompt.size() > 32000 || hiddenContext.size() > 65536)
     {
@@ -188,12 +188,11 @@ bool AIService::Send(const std::string& prompt, const ReverseSkill* skill, const
         status_ = "Sending request...";
         conversationGeneration = conversationGeneration_;
     }
-    worker_ = std::thread(&AIService::Worker, this, prompt,
-        skill ? skill->systemPrompt : std::string(), hiddenContext, conversationGeneration);
+    worker_ = std::thread(&AIService::Worker, this, prompt, hiddenContext, conversationGeneration);
     return true;
 }
 
-void AIService::Worker(std::string prompt, std::string skillPrompt, std::string hiddenContext,
+void AIService::Worker(std::string prompt, std::string hiddenContext,
                        uint64_t conversationGeneration)
 {
     (void)prompt;
@@ -228,7 +227,7 @@ void AIService::Worker(std::string prompt, std::string skillPrompt, std::string 
         return;
     }
 
-    std::string combinedSystemPrompt = skillPrompt;
+    std::string combinedSystemPrompt;
     if (!hiddenContext.empty())
     {
         if (!combinedSystemPrompt.empty()) combinedSystemPrompt += "\n\n";

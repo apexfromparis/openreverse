@@ -1,5 +1,5 @@
 #pragma once
-#include "TextEditor.h"
+#include "ui/vendor/TextEditor.h"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -57,7 +57,7 @@ private:
     int activeTabIdx_ = -1;
     bool initialized_ = false;
 
-    // Paris-main / VS Code state
+    // Workspace state
     int activeSidebarTab_ = 0; // 0 = Explorer, 1 = Search
     bool showProblemsPanel_ = false;
 

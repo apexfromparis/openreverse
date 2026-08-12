@@ -1,6 +1,4 @@
-// ============================================================================
 // OpenReverse - UI Panel: Strings Panel Implementation
-// ============================================================================
 #include "strings_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -114,8 +112,9 @@ void StringsPanel::Render(Application& app)
                     app.NavigateToAddress(sr.address);
                 if (ImGui::MenuItem("Find XREFs to this string (X)"))
                 {
-                    app.idaProPanel.OpenXrefsForAddress(sr.address);
-                    ImGui::SetWindowFocus("Analysis / Functions & CFG");
+                    app.NavigateToAddress(sr.address);
+                    app.analysisPanel.OpenXrefsForAddress(sr.address);
+                    ImGui::SetWindowFocus("XREFS");
                 }
                 if (ImGui::MenuItem("Copy string value"))
                     ImGui::SetClipboardText(sr.value.c_str());

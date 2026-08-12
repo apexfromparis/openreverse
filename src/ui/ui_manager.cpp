@@ -1,8 +1,3 @@
-// ============================================================================
-// OpenReverse - UI Manager Implementation
-// Professional dark theme + typography
-// ============================================================================
-
 #include "ui_manager.h"
 #include "embedded_font.h"
 #include <imgui.h>
@@ -25,8 +20,8 @@ static void LoadFonts()
     config.FontDataOwnedByAtlas = false;
     config.PixelSnapH = true;
 
-    // Load Paris-main default Roboto-Medium font
-    ImFont* robotoFont = io.Fonts->AddFontFromMemoryTTF((void*)font_roboto_medium, (int)sizeof(font_roboto_medium), 16.0f, &config);
+    // The embedded font keeps typography consistent without a runtime font dependency.
+    ImFont* robotoFont = io.Fonts->AddFontFromMemoryTTF((void*)font_roboto_medium, (int)sizeof(font_roboto_medium), 13.0f, &config);
     if (robotoFont) {
         io.FontDefault = robotoFont;
     }
@@ -38,7 +33,7 @@ static void LoadFonts()
     if (!fontsPath.empty())
     {
         config.FontDataOwnedByAtlas = true;
-        ImFont* mono = io.Fonts->AddFontFromFileTTF((fontsPath + "consola.ttf").c_str(), 14.0f, &config);
+        ImFont* mono = io.Fonts->AddFontFromFileTTF((fontsPath + "consola.ttf").c_str(), 12.0f, &config);
         if (mono)
             s_monoFont = mono;
     }
@@ -61,6 +56,42 @@ bool UIManager::EmptyState(const char* message)
     ImGui::Unindent(20.0f);
     ImGui::Spacing();
     return true;
+}
+
+void UIManager::PanelHeader(const char* title, const char* context)
+{
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const float height = 26.0f;
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(start, ImVec2(start.x + width, start.y + height),
+        IM_COL32(8, 16, 22, 255));
+    draw->AddLine(ImVec2(start.x, start.y + height - 1.0f),
+        ImVec2(start.x + width, start.y + height - 1.0f), IM_COL32(27, 48, 61, 255));
+    draw->AddText(ImVec2(start.x + 8.0f, start.y + 5.0f), IM_COL32(231, 237, 242, 255), title);
+
+    if (context && context[0] != '\0')
+    {
+        const float contextWidth = ImGui::CalcTextSize(context).x;
+        draw->AddText(ImVec2(start.x + width - contextWidth - 8.0f, start.y + 5.0f),
+            IM_COL32(121, 137, 149, 255), context);
+    }
+    ImGui::Dummy(ImVec2(width, height));
+}
+
+void UIManager::SectionLabel(const char* label, const char* value)
+{
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.78f, 0.82f, 0.86f, 1.0f), "%s", label);
+    if (value && value[0] != '\0')
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", value);
+    }
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddLine(p, ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y),
+        IM_COL32(28, 43, 53, 255));
+    ImGui::Dummy(ImVec2(0.0f, 3.0f));
 }
 
 void UIManager::ToolbarSeparator()
@@ -88,54 +119,53 @@ void UIManager::ApplyTheme()
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
-    // ─── Layout: dense forensic workstation with restrained neon accents ─────
-    style.WindowRounding    = 8.0f;
-    style.ChildRounding     = 6.0f;
-    style.FrameRounding     = 6.0f;
-    style.PopupRounding     = 8.0f;
-    style.GrabRounding      = 4.0f;
-    style.TabRounding       = 4.0f;
-    style.ScrollbarRounding = 4.0f;
+    // Dense native workstation: almost square panels, like a debugger/RE suite.
+    style.WindowRounding    = 3.0f;
+    style.ChildRounding     = 2.0f;
+    style.FrameRounding     = 2.0f;
+    style.PopupRounding     = 3.0f;
+    style.GrabRounding      = 2.0f;
+    style.TabRounding       = 2.0f;
+    style.ScrollbarRounding = 2.0f;
     style.WindowBorderSize  = 1.0f;
     style.ChildBorderSize   = 1.0f;
     style.FrameBorderSize   = 1.0f;
     style.PopupBorderSize   = 1.0f;
-    style.WindowPadding     = ImVec2(14.0f, 12.0f);
-    style.FramePadding      = ImVec2(8.0f, 5.0f);
-    style.ItemSpacing       = ImVec2(8.0f, 6.0f);
-    style.ItemInnerSpacing  = ImVec2(6.0f, 4.0f);
-    style.IndentSpacing     = 18.0f;
-    style.ScrollbarSize     = 12.0f;
-    style.GrabMinSize       = 8.0f;
+    style.WindowPadding     = ImVec2(8.0f, 6.0f);
+    style.FramePadding      = ImVec2(5.0f, 3.0f);
+    style.ItemSpacing       = ImVec2(6.0f, 4.0f);
+    style.ItemInnerSpacing  = ImVec2(4.0f, 3.0f);
+    style.IndentSpacing     = 15.0f;
+    style.ScrollbarSize     = 9.0f;
+    style.GrabMinSize       = 6.0f;
     style.TabBorderSize     = 0.0f;
 
-    // ─── Paris-main Cyber Dark Theme Palette (exact RGB tokens from menu.cpp) ───
-    // C_BG = 15,15,15 | C_BOX_BG = 22,22,22 | C_BOX_BD = 35,35,35 | C_WIDGET_BG = 30,30,30
-    ImVec4 bgMain       = ImVec4(15.0f/255.0f, 15.0f/255.0f, 15.0f/255.0f, 1.00f);
-    ImVec4 bgBox        = ImVec4(22.0f/255.0f, 22.0f/255.0f, 22.0f/255.0f, 1.00f);
-    ImVec4 bgWidget     = ImVec4(30.0f/255.0f, 30.0f/255.0f, 30.0f/255.0f, 1.00f);
-    ImVec4 borderCol    = ImVec4(35.0f/255.0f, 35.0f/255.0f, 35.0f/255.0f, 1.00f);
-    ImVec4 borderWidget = ImVec4(50.0f/255.0f, 50.0f/255.0f, 50.0f/255.0f, 1.00f);
+    // Blue-black palette sampled from the target visual.
+    ImVec4 bgMain       = ImVec4(5.0f/255.0f, 9.0f/255.0f, 13.0f/255.0f, 1.00f);
+    ImVec4 bgBox        = ImVec4(8.0f/255.0f, 14.0f/255.0f, 19.0f/255.0f, 1.00f);
+    ImVec4 bgWidget     = ImVec4(12.0f/255.0f, 21.0f/255.0f, 28.0f/255.0f, 1.00f);
+    ImVec4 borderCol    = ImVec4(25.0f/255.0f, 43.0f/255.0f, 55.0f/255.0f, 1.00f);
+    ImVec4 borderWidget = ImVec4(35.0f/255.0f, 64.0f/255.0f, 82.0f/255.0f, 1.00f);
 
     ImVec4 textMain     = ImVec4(255.0f/255.0f, 255.0f/255.0f, 255.0f/255.0f, 1.00f); // Pure white C_TEXT_ACT
     ImVec4 textDim      = ImVec4(110.0f/255.0f, 110.0f/255.0f, 110.0f/255.0f, 1.00f); // C_TEXT_DIM
     ImVec4 textDisabled = ImVec4(80.0f/255.0f,  80.0f/255.0f,  80.0f/255.0f,  1.00f);
 
-    ImVec4 accentDim    = ImVec4(45.0f/255.0f,  45.0f/255.0f,  45.0f/255.0f,  1.00f);
-    ImVec4 accent       = ImVec4(65.0f/255.0f,  65.0f/255.0f,  65.0f/255.0f,  1.00f);
-    ImVec4 accentBright = ImVec4(180.0f/255.0f, 180.0f/255.0f, 180.0f/255.0f, 1.00f);
+    ImVec4 accentDim    = ImVec4(0.00f, 0.24f, 0.48f, 1.00f);
+    ImVec4 accent       = ImVec4(0.00f, 0.46f, 0.92f, 1.00f);
+    ImVec4 accentBright = ImVec4(0.10f, 0.64f, 1.00f, 1.00f);
     ImVec4 green        = ImVec4(0.000f, 0.902f, 0.463f, 1.00f);
 
     colors[ImGuiCol_Text]                  = textMain;
     colors[ImGuiCol_TextDisabled]          = textDisabled;
     colors[ImGuiCol_WindowBg]              = bgMain;
     colors[ImGuiCol_ChildBg]               = bgBox;
-    colors[ImGuiCol_PopupBg]               = ImVec4(20.0f/255.0f, 20.0f/255.0f, 20.0f/255.0f, 0.96f);
+    colors[ImGuiCol_PopupBg]               = ImVec4(7.0f/255.0f, 13.0f/255.0f, 18.0f/255.0f, 0.98f);
     colors[ImGuiCol_Border]                = borderCol;
     colors[ImGuiCol_BorderShadow]          = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     colors[ImGuiCol_FrameBg]               = bgWidget;
-    colors[ImGuiCol_FrameBgHovered]        = ImVec4(42.0f/255.0f, 42.0f/255.0f, 42.0f/255.0f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]         = ImVec4(55.0f/255.0f, 55.0f/255.0f, 55.0f/255.0f, 1.00f);
+    colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.03f, 0.17f, 0.27f, 1.00f);
+    colors[ImGuiCol_FrameBgActive]         = ImVec4(0.02f, 0.25f, 0.43f, 1.00f);
     colors[ImGuiCol_TitleBg]               = bgMain;
     colors[ImGuiCol_TitleBgActive]         = bgBox;
     colors[ImGuiCol_TitleBgCollapsed]      = bgMain;
@@ -148,11 +178,11 @@ void UIManager::ApplyTheme()
     colors[ImGuiCol_SliderGrab]            = textMain;
     colors[ImGuiCol_SliderGrabActive]      = accentBright;
     colors[ImGuiCol_Button]                = bgWidget;
-    colors[ImGuiCol_ButtonHovered]         = ImVec4(42.0f/255.0f, 42.0f/255.0f, 42.0f/255.0f, 1.00f);
-    colors[ImGuiCol_ButtonActive]          = ImVec4(55.0f/255.0f, 55.0f/255.0f, 55.0f/255.0f, 1.00f);
-    colors[ImGuiCol_Header]                = bgWidget;
-    colors[ImGuiCol_HeaderHovered]         = ImVec4(42.0f/255.0f, 42.0f/255.0f, 42.0f/255.0f, 1.00f);
-    colors[ImGuiCol_HeaderActive]          = ImVec4(55.0f/255.0f, 55.0f/255.0f, 55.0f/255.0f, 1.00f);
+    colors[ImGuiCol_ButtonHovered]         = ImVec4(0.02f, 0.24f, 0.42f, 1.00f);
+    colors[ImGuiCol_ButtonActive]          = accentDim;
+    colors[ImGuiCol_Header]                = ImVec4(0.00f, 0.18f, 0.38f, 1.00f);
+    colors[ImGuiCol_HeaderHovered]         = ImVec4(0.00f, 0.28f, 0.58f, 1.00f);
+    colors[ImGuiCol_HeaderActive]          = ImVec4(0.00f, 0.34f, 0.72f, 1.00f);
     colors[ImGuiCol_Separator]             = borderCol;
     colors[ImGuiCol_SeparatorHovered]      = borderWidget;
     colors[ImGuiCol_SeparatorActive]       = accent;
@@ -160,8 +190,8 @@ void UIManager::ApplyTheme()
     colors[ImGuiCol_ResizeGripHovered]     = borderWidget;
     colors[ImGuiCol_ResizeGripActive]      = accent;
     colors[ImGuiCol_Tab]                   = bgBox;
-    colors[ImGuiCol_TabHovered]            = ImVec4(42.0f/255.0f, 42.0f/255.0f, 42.0f/255.0f, 1.00f);
-    colors[ImGuiCol_TabSelected]           = bgWidget;
+    colors[ImGuiCol_TabHovered]            = ImVec4(0.02f, 0.24f, 0.42f, 1.00f);
+    colors[ImGuiCol_TabSelected]           = ImVec4(0.01f, 0.18f, 0.32f, 1.00f);
     colors[ImGuiCol_TabDimmed]             = bgMain;
     colors[ImGuiCol_DockingPreview]        = ImVec4(0.15f, 0.55f, 0.75f, 0.70f);
     colors[ImGuiCol_DockingEmptyBg]        = bgMain;
@@ -174,7 +204,7 @@ void UIManager::ApplyTheme()
     colors[ImGuiCol_TableBorderLight]      = borderWidget;
     colors[ImGuiCol_TableRowBg]            = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     colors[ImGuiCol_TableRowBgAlt]         = ImVec4(20.0f/255.0f, 20.0f/255.0f, 20.0f/255.0f, 0.70f);
-    colors[ImGuiCol_TextSelectedBg]        = ImVec4(65.0f/255.0f, 65.0f/255.0f, 65.0f/255.0f, 0.40f);
+    colors[ImGuiCol_TextSelectedBg]        = ImVec4(0.00f, 0.35f, 0.75f, 0.55f);
     colors[ImGuiCol_DragDropTarget]        = textMain;
     colors[ImGuiCol_NavHighlight]          = accent;
     colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 1.00f, 1.00f, 0.12f);

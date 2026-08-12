@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: String Scanner Implementation
-// ============================================================================
-
 #include "string_scanner.h"
 #include <algorithm>
 
@@ -146,38 +142,37 @@ void StringScanner::ClassifyString(StringResult& sr)
         return;
     }
 
-    // Heuristic categorization for Reverse Engineering
     if (val.find("http://") != std::string::npos || val.find("https://") != std::string::npos ||
         val.find(".com/") != std::string::npos || val.find(".net/") != std::string::npos ||
         val.find(".org/") != std::string::npos || val.find("127.0.0.1") != std::string::npos)
     {
-        sr.category = "URL / C2";
-        sr.riskLevel = 3;
+        sr.category = "URL";
+        sr.riskLevel = 1;
     }
     else if (val.find("cmd.exe") != std::string::npos || val.find("powershell") != std::string::npos ||
              val.find("CreateProcess") != std::string::npos || val.find("VirtualAlloc") != std::string::npos ||
              val.find("WriteProcessMemory") != std::string::npos || val.find("CreateRemoteThread") != std::string::npos)
     {
-        sr.category = "Command / Injection";
-        sr.riskLevel = 3;
+        sr.category = "Process / Memory API";
+        sr.riskLevel = 1;
     }
     else if (val.find("HKEY_") != std::string::npos || val.find("Software\\") != std::string::npos ||
              val.find("CurrentControlSet") != std::string::npos || val.find("RegOpenKey") != std::string::npos)
     {
-        sr.category = "Registry";
-        sr.riskLevel = 2;
+        sr.category = "Registry Path";
+        sr.riskLevel = 1;
     }
     else if (val.find("-----BEGIN") != std::string::npos || val.find("RSA") != std::string::npos ||
              val.find("AES") != std::string::npos || val.find("SHA256") != std::string::npos)
     {
-        sr.category = "Crypto / Key";
-        sr.riskLevel = 2;
+        sr.category = "Crypto Related";
+        sr.riskLevel = 1;
     }
     else if (val.find("C:\\") != std::string::npos || val.find("D:\\") != std::string::npos ||
              val.find("\\Windows\\") != std::string::npos || val.find("\\System32\\") != std::string::npos ||
              val.find(".dll") != std::string::npos || val.find(".exe") != std::string::npos || val.find(".sys") != std::string::npos)
     {
-        sr.category = "File / DLL";
+        sr.category = "Path";
         sr.riskLevel = 1;
     }
     else

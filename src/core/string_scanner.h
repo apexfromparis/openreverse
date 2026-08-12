@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: String Scanner
 // Find ASCII and Unicode strings in process memory
-// ============================================================================
 
 #include <windows.h>
 #include <vector>
@@ -19,7 +17,7 @@ struct StringResult {
     StringEncoding  encoding;
     size_t          length;
     std::string     category = "General";
-    int             riskLevel = 0; // 0=Normal, 1=Low, 2=Medium, 3=High Risk (C2/Exec)
+    int             riskLevel = 0;
 };
 
 class StringScanner {

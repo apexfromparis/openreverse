@@ -1,17 +1,10 @@
-// ============================================================================
-// OpenReverse - UI Panel: Hex Editor Implementation
-// ============================================================================
-
 #include "hex_editor.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
 #include "utils/helpers.h"
-#include "utils/logger.h"
 
 #include <imgui.h>
 #include <cstdio>
-#include <cstring>
-#include <algorithm>
 #include <cmath>
 
 namespace openreverse { namespace panels {
@@ -31,93 +24,7 @@ void HexEditorPanel::Reset()
     buffer_.clear();
     selectionStart_ = -1;
     selectionEnd_ = -1;
-    searchMatches_.clear();
-    searchMatchIndex_ = -1;
     needsRefresh_ = true;
-}
-
-bool HexEditorPanel::HasSelection() const
-{
-    return selectionStart_ >= 0 && selectionEnd_ >= 0 && selectionStart_ < (int)buffer_.size() && selectionEnd_ < (int)buffer_.size();
-}
-
-void HexEditorPanel::CopySelectionHex()
-{
-    if (!HasSelection()) return;
-    int lo = std::min(selectionStart_, selectionEnd_);
-    int hi = std::max(selectionStart_, selectionEnd_);
-    std::string hex = helpers::BytesToHex(buffer_.data() + lo, hi - lo + 1, " ");
-    ImGui::SetClipboardText(hex.c_str());
-}
-
-void HexEditorPanel::CopySelectionCArray()
-{
-    if (!HasSelection()) return;
-    int lo = std::min(selectionStart_, selectionEnd_);
-    int hi = std::max(selectionStart_, selectionEnd_);
-    std::string arr = helpers::BytesToCArray(buffer_.data() + lo, hi - lo + 1);
-    ImGui::SetClipboardText(arr.c_str());
-}
-
-void HexEditorPanel::DoSearch()
-{
-    searchMatches_.clear();
-    searchMatchIndex_ = -1;
-    if (buffer_.empty()) return;
-
-    std::vector<uint8_t> pattern;
-    if (searchHex_)
-    {
-        std::string s = searchInput_;
-        for (size_t i = 0; i < s.size(); )
-        {
-            while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
-            if (i >= s.size()) break;
-            if (i + 1 < s.size() && (s[i] == '?' || s[i] == '.') && (s[i+1] == '?' || s[i+1] == '.'))
-            {
-                pattern.push_back(0xFF);
-                i += 2;
-                if (i < s.size() && s[i] == ' ') ++i;
-                continue;
-            }
-            if (i + 2 <= s.size())
-            {
-                int byte = 0;
-                if (sscanf(s.c_str() + i, "%2X", &byte) == 1)
-                {
-                    pattern.push_back((uint8_t)byte);
-                    i += 2;
-                }
-                else
-                    ++i;
-            }
-            else
-                break;
-        }
-    }
-    else
-    {
-        for (const char* p = searchInput_; *p; ++p)
-            pattern.push_back((uint8_t)*p);
-    }
-    if (pattern.empty()) return;
-
-    for (size_t i = 0; i + pattern.size() <= buffer_.size(); ++i)
-    {
-        bool match = true;
-        for (size_t j = 0; j < pattern.size(); ++j)
-        {
-            if (pattern[j] != 0xFF && buffer_[i + j] != pattern[j])
-            {
-                match = false;
-                break;
-            }
-        }
-        if (match)
-            searchMatches_.push_back(i);
-    }
-    if (!searchMatches_.empty())
-        searchMatchIndex_ = 0;
 }
 
 void HexEditorPanel::RefreshBuffer(Application& app)
@@ -135,37 +42,11 @@ void HexEditorPanel::RefreshBuffer(Application& app)
 
 void HexEditorPanel::Render(Application& app)
 {
-    ImGui::Begin("Hex Editor", nullptr, ImGuiWindowFlags_None);
+    ImGui::Begin("HEX VIEW", nullptr, ImGuiWindowFlags_None);
+    UIManager::PanelHeader("HEX VIEW");
 
     UIManager::BeginToolbar();
-    ImGui::Text("Address");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(180.0f);
-    if (ImGui::InputText("##addr", addressInput_, sizeof(addressInput_),
-        ImGuiInputTextFlags_EnterReturnsTrue))
-    {
-        currentAddress_ = helpers::ParseAddress(addressInput_);
-        needsRefresh_ = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Go"))
-    {
-        currentAddress_ = helpers::ParseAddress(addressInput_);
-        needsRefresh_ = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh"))
-        needsRefresh_ = true;
-    UIManager::ToolbarSeparator();
-    if (ImGui::Button("<<")) { currentAddress_ -= (uint64_t)bytesPerRow_ * numRows_; needsRefresh_ = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("<")) { currentAddress_ -= bytesPerRow_; needsRefresh_ = true; }
-    ImGui::SameLine();
-    if (ImGui::Button(">")) { currentAddress_ += bytesPerRow_; needsRefresh_ = true; }
-    ImGui::SameLine();
-    if (ImGui::Button(">>")) { currentAddress_ += (uint64_t)bytesPerRow_ * numRows_; needsRefresh_ = true; }
-    UIManager::ToolbarSeparator();
-    ImGui::Text("Bytes/row");
+    ImGui::Text("Bytes");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
     const int bprOptions[] = { 8, 16, 32 };
@@ -176,108 +57,46 @@ void HexEditorPanel::Render(Application& app)
         needsRefresh_ = true;
     }
     ImGui::SameLine();
-    ImGui::Text("Rows");
+    ImGui::Text("Go to");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(50.0f);
-    if (ImGui::InputInt("##rows", &numRows_, 0, 0))
+    ImGui::SetNextItemWidth(180.0f);
+    if (ImGui::InputText("##addr", addressInput_, sizeof(addressInput_),
+        ImGuiInputTextFlags_EnterReturnsTrue))
     {
-        numRows_ = std::max(1, std::min(256, numRows_));
-        needsRefresh_ = true;
-    }
-    UIManager::ToolbarSeparator();
-    if (HasSelection())
-    {
-        if (ImGui::Button("Copy Hex"))
-            CopySelectionHex();
-        ImGui::SameLine();
-        if (ImGui::Button("Copy C"))
-            CopySelectionCArray();
-        UIManager::ToolbarSeparator();
-    }
-    if (app.isAttached && ImGui::Button("Dump view to file"))
-    {
-        size_t size = (size_t)(bytesPerRow_ * numRows_);
-        char path[1024] = {};
-        char defaultName[64];
-        snprintf(defaultName, sizeof(defaultName), "dump_%llX.bin", (unsigned long long)currentAddress_);
-        if (helpers::OpenSaveFileDialog(path, sizeof(path), defaultName))
+        if (const auto address = helpers::TryParseAddress(addressInput_))
         {
-            size_t written = app.memoryReader.DumpToFile(app.processHandle, currentAddress_, size, path);
-            if (written > 0)
-                Logger::Get().Log(LogLevel::Info, "Hex: dumped %zu bytes to %s", written, path);
-            else
-                Logger::Get().Log(LogLevel::Error, "Dump failed");
+            currentAddress_ = *address;
+            needsRefresh_ = true;
         }
     }
-    UIManager::ToolbarSeparator();
-    ImGui::Text("Search");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
-    ImGui::InputTextWithHint("##search", searchHex_ ? "Hex: 48 8B ?? ??  " : "ASCII text", searchInput_, sizeof(searchInput_));
-    ImGui::SameLine();
-    ImGui::Checkbox("Hex", &searchHex_);
-    ImGui::SameLine();
-    if (ImGui::Button("Find"))
-        DoSearch();
-    ImGui::SameLine();
-    if (!searchMatches_.empty() && ImGui::Button("Next"))
+    if (ImGui::Button("Go"))
     {
-        searchMatchIndex_ = (searchMatchIndex_ + 1) % (int)searchMatches_.size();
-        size_t off = searchMatches_[searchMatchIndex_];
-        currentAddress_ = currentAddress_ + off;
-        needsRefresh_ = true;
+        if (const auto address = helpers::TryParseAddress(addressInput_))
+        {
+            currentAddress_ = *address;
+            needsRefresh_ = true;
+        }
     }
-    if (!searchMatches_.empty())
-        ImGui::SameLine(), ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.5f, 1.0f), "%zu matches", searchMatches_.size());
     UIManager::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Attach to a process to view and edit memory.");
+        UIManager::EmptyState("Open a binary or attach to a process to inspect bytes.");
         ImGui::End();
         return;
     }
 
-    // Refresh data
     if (needsRefresh_)
         RefreshBuffer(app);
 
-    // Update address input display
     snprintf(addressInput_, sizeof(addressInput_), "0x%llX", (unsigned long long)currentAddress_);
 
-    // Real-Time Shannon Entropy Analysis of current buffer
     float currentEntropy = CalculateEntropy(buffer_.data(), buffer_.size());
-    ImVec4 entropyColor = (currentEntropy > 7.0f) ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f) :
-                          (currentEntropy > 6.0f) ? ImVec4(1.0f, 0.7f, 0.25f, 1.0f) :
-                          (currentEntropy > 4.0f) ? ImVec4(0.3f, 0.9f, 0.5f, 1.0f) :
-                                                    ImVec4(0.4f, 0.7f, 0.9f, 1.0f);
+    ImGui::TextDisabled("Entropy %.2f / 8.00", currentEntropy);
 
-    ImGui::TextColored(ImVec4(0.72f, 0.78f, 0.86f, 1.0f), "SHANNON ENTROPY: %.2f / 8.00", currentEntropy);
-    ImGui::SameLine();
-    if (currentEntropy > 7.0f)
-        ImGui::TextColored(entropyColor, "[PACKED / ENCRYPTED / COMPRESSED]");
-    else if (currentEntropy > 6.0f)
-        ImGui::TextColored(entropyColor, "[DENSE CODE / MIXED DATA]");
-    else if (currentEntropy > 4.0f)
-        ImGui::TextColored(entropyColor, "[STANDARD CODE / STRUCTURED DATA]");
-    else
-        ImGui::TextColored(entropyColor, "[LOW ENTROPY / ZERO-PADDING / PURE ASCII]");
-
-    ImVec2 barMin = ImGui::GetCursorScreenPos();
-    ImVec2 barMax = ImVec2(barMin.x + ImGui::GetContentRegionAvail().x - 12.0f, barMin.y + 10.0f);
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    float width = barMax.x - barMin.x;
-    drawList->AddRectFilled(barMin, barMax, ImGui::GetColorU32(ImVec4(0.12f, 0.14f, 0.18f, 1.0f)), 3.0f);
-
-    // Render live filled gauge proportional to Shannon Entropy (0 to 8)
-    float fillPct = std::min(1.0f, std::max(0.0f, currentEntropy / 8.0f));
-    ImVec2 fillMax = ImVec2(barMin.x + width * fillPct, barMax.y);
-    drawList->AddRectFilled(barMin, fillMax, ImGui::GetColorU32(entropyColor), 3.0f);
-    ImGui::Dummy(ImVec2(width, 11.0f));
-
-    // ── Hex Grid ──
     if (ImFont* mono = UIManager::GetMonoFont())
         ImGui::PushFont(mono);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.55f, 0.65f, 1.0f));
@@ -327,15 +146,19 @@ void HexEditorPanel::RenderHexRow(Application& app, int row, uint64_t rowAddr)
     int offset = row * bytesPerRow_;
     bool hasData = offset < (int)buffer_.size();
 
-    // Address column (highlight row containing current address)
     bool isCurrentRow = (app.currentAddress >= rowAddr && app.currentAddress < rowAddr + bytesPerRow_);
-    ImVec4 addrColor = isCurrentRow ? ImVec4(0.2f, 0.7f, 1.0f, 1.0f) : ImVec4(0.4f, 0.6f, 0.8f, 1.0f);
+    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+    if (isCurrentRow)
+        ImGui::GetWindowDrawList()->AddRectFilled(rowStart,
+            ImVec2(rowStart.x + ImGui::GetContentRegionAvail().x,
+                rowStart.y + ImGui::GetTextLineHeightWithSpacing()),
+            IM_COL32(0, 48, 105, 225));
+    ImVec4 addrColor = isCurrentRow ? ImVec4(0.76f, 0.89f, 1.0f, 1.0f) : ImVec4(0.4f, 0.6f, 0.8f, 1.0f);
     if (app.is64Bit)
         ImGui::TextColored(addrColor, "%016llX", (unsigned long long)rowAddr);
     else
         ImGui::TextColored(addrColor, "%08X        ", (unsigned int)rowAddr);
 
-    // Hex bytes
     for (int col = 0; col < bytesPerRow_; ++col)
     {
         ImGui::SameLine();
@@ -345,29 +168,24 @@ void HexEditorPanel::RenderHexRow(Application& app, int row, uint64_t rowAddr)
         {
             uint8_t byte = buffer_[idx];
 
-            // Color code by value
-            ImVec4 color;
-            if (byte == 0x00)
-                color = ImVec4(0.30f, 0.30f, 0.35f, 1.0f); // dim for nulls
-            else if (byte == 0xFF)
-                color = ImVec4(0.8f, 0.3f, 0.3f, 1.0f);    // red for 0xFF
-            else if (byte >= 0x20 && byte <= 0x7E)
-                color = ImVec4(0.3f, 0.85f, 0.5f, 1.0f);   // green for printable
-            else
-                color = ImVec4(0.85f, 0.87f, 0.90f, 1.0f);  // white for other
+            const ImVec4 color = byte == 0x00
+                ? ImVec4(0.32f, 0.36f, 0.40f, 1.0f)
+                : ImVec4(0.82f, 0.85f, 0.88f, 1.0f);
 
-            // Clickable hex byte
+            // Plain selectable text keeps the grid dense; the old framed byte
+            // buttons made every value look like an unrelated control.
             char byteLabel[16];
             snprintf(byteLabel, sizeof(byteLabel), "%02X##%d", byte, idx);
 
             ImGui::PushStyleColor(ImGuiCol_Text, color);
-            if (ImGui::SmallButton(byteLabel))
+            const bool selected = selectionStart_ >= 0 && idx >= selectionStart_ && idx <= selectionEnd_;
+            if (ImGui::Selectable(byteLabel, selected, ImGuiSelectableFlags_None,
+                ImVec2(ImGui::CalcTextSize("FF").x + 3.0f, ImGui::GetTextLineHeight())))
             {
                 selectionStart_ = idx;
                 selectionEnd_ = idx;
                 app.currentAddress = rowAddr + col;
 
-                // Update selected bytes for data inspector
                 app.selectedBytes.clear();
                 size_t remaining = buffer_.size() - idx;
                 size_t copySize = remaining < 8 ? remaining : 8;

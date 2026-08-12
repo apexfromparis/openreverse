@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - UI Panel: Process List Implementation
-// ============================================================================
-
 #include "process_list.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -14,23 +10,27 @@ namespace openreverse { namespace panels {
 
 void ProcessListPanel::Render(Application& app)
 {
-    ImGui::Begin("Processes", nullptr, ImGuiWindowFlags_None);
+    ImGui::Begin("PROCESSES", nullptr, ImGuiWindowFlags_None);
+
+    if (needsRefresh_)
+    {
+        cachedProcesses_ = app.processManager.ListProcesses();
+        std::sort(cachedProcesses_.begin(), cachedProcesses_.end(),
+            [](const ProcessInfo& a, const ProcessInfo& b) {
+                return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+            });
+        needsRefresh_ = false;
+    }
+
+    char title[64];
+    snprintf(title, sizeof(title), "PROCESSES (%zu)", cachedProcesses_.size());
+    UIManager::PanelHeader(title, app.isAttached && app.attachedPID != 0 ? "ATTACHED" : nullptr);
 
     UIManager::BeginToolbar();
     if (ImGui::Button("Refresh"))
         needsRefresh_ = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Refresh process list (F5)");
-
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.75f, 1.0f));
-    if (ImGui::Button("  Open File / Driver (.sys)...  "))
-    {
-        app.ShowOpenFileDialog();
-    }
-    ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Open Windows File Manager to analyze any PE file or kernel driver (.sys) offline");
 
     UIManager::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
@@ -39,95 +39,47 @@ void ProcessListPanel::Render(Application& app)
 
     ImGui::Separator();
 
-    // Refresh process list
-    if (needsRefresh_)
+    std::string filter = helpers::ToLower(filterText_);
+    const float actionHeight = (selectedIdx_ >= 0 || app.isAttached) ? 30.0f : 0.0f;
+    ImGui::BeginChild("##ProcessRows", ImVec2(0.0f, -actionHeight), false);
+    for (int i = 0; i < static_cast<int>(cachedProcesses_.size()); ++i)
     {
-        cachedProcesses_ = app.processManager.ListProcesses();
+        const auto& proc = cachedProcesses_[i];
+        if (!filter.empty() && helpers::ToLower(proc.name).find(filter) == std::string::npos)
+            continue;
 
-        // Sort by name
-        std::sort(cachedProcesses_.begin(), cachedProcesses_.end(),
-            [](const ProcessInfo& a, const ProcessInfo& b) {
-                return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
-            });
+        const bool selected = i == selectedIdx_;
+        const bool attached = app.isAttached && app.attachedPID == proc.pid;
+        ImGui::PushID(i);
+        const ImVec2 marker = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRect(
+            ImVec2(marker.x + 2.0f, marker.y + 3.0f), ImVec2(marker.x + 10.0f, marker.y + 11.0f),
+            attached ? IM_COL32(0, 141, 255, 255) : IM_COL32(126, 141, 151, 255), 1.0f, 0, 1.0f);
+        ImGui::Dummy(ImVec2(14.0f, 14.0f));
+        ImGui::SameLine(0.0f, 1.0f);
 
-        needsRefresh_ = false;
-    }
-
-    // Process table
-    if (ImGui::BeginTable("ProcessTable", 4,
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable))
-    {
-        ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Arch", ImGuiTableColumnFlags_WidthFixed, 45.0f);
-        ImGui::TableSetupColumn("Memory", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        ImGui::TableHeadersRow();
-
-        std::string filter = helpers::ToLower(filterText_);
-
-        for (int i = 0; i < (int)cachedProcesses_.size(); ++i)
+        char label[320];
+        snprintf(label, sizeof(label), "%s  (%u)", proc.name.c_str(), proc.pid);
+        if (ImGui::Selectable(label, selected,
+            ImGuiSelectableFlags_AllowDoubleClick))
         {
-            const auto& proc = cachedProcesses_[i];
-
-            // Filter
-            if (!filter.empty())
+            selectedIdx_ = i;
+            if (ImGui::IsMouseDoubleClicked(0))
             {
-                std::string nameLower = helpers::ToLower(proc.name);
-                if (nameLower.find(filter) == std::string::npos)
-                    continue;
+                if (app.AttachToProcess(proc.pid))
+                    app.analysisPanel.StartAnalyzeCurrentModule(app);
             }
-
-            ImGui::TableNextRow();
-
-            bool isSelected = (i == selectedIdx_);
-            bool isAttached = (app.isAttached && app.attachedPID == proc.pid);
-
-            // Highlight attached process
-            if (isAttached)
-            {
-                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
-                    ImGui::GetColorU32(ImVec4(0.1f, 0.35f, 0.2f, 0.5f)));
-            }
-
-            // PID
-            ImGui::TableSetColumnIndex(0);
-            char label[32];
-            snprintf(label, sizeof(label), "%d", proc.pid);
-            if (ImGui::Selectable(label, isSelected,
-                ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
-            {
-                selectedIdx_ = i;
-                if (ImGui::IsMouseDoubleClicked(0))
-                {
-                    if (app.AttachToProcess(proc.pid))
-                        app.idaProPanel.StartAnalyzeCurrentModule(app);
-                }
-            }
-
-            // Name
-            ImGui::TableSetColumnIndex(1);
-            if (isAttached)
-                ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), "%s", proc.name.c_str());
-            else
-                ImGui::Text("%s", proc.name.c_str());
-
-            // Architecture
-            ImGui::TableSetColumnIndex(2);
-            if (proc.is64bit)
-                ImGui::TextColored(ImVec4(0.6f, 0.7f, 1.0f, 1.0f), "x64");
-            else
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.5f, 1.0f), "x86");
-
-            // Memory
-            ImGui::TableSetColumnIndex(3);
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.6f, 1.0f), "%s",
-                helpers::FormatSize(proc.memoryUsage).c_str());
         }
-
-        ImGui::EndTable();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::Text("PID %u  |  %s", proc.pid, proc.is64bit ? "x64" : "x86");
+            ImGui::Text("Memory: %s", proc.memoryUsage ? helpers::FormatSize(proc.memoryUsage).c_str() : "Unavailable");
+            ImGui::EndTooltip();
+        }
+        ImGui::PopID();
     }
+    ImGui::EndChild();
 
     // Attach/detach buttons
     ImGui::Separator();
@@ -136,7 +88,7 @@ void ProcessListPanel::Render(Application& app)
         if (ImGui::Button("Attach", ImVec2(80, 0)))
         {
             if (app.AttachToProcess(cachedProcesses_[selectedIdx_].pid))
-                app.idaProPanel.StartAnalyzeCurrentModule(app);
+                app.analysisPanel.StartAnalyzeCurrentModule(app);
         }
         ImGui::SameLine();
     }

@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: Cross-References (XREFs) Scanner Implementation
-// ============================================================================
-
 #include "xref_scanner.h"
 #include "utils/helpers.h"
 #include <algorithm>

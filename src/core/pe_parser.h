@@ -1,8 +1,6 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: PE Parser
 // Parse PE headers from process memory (DOS, NT, sections, imports, exports)
-// ============================================================================
 
 #include <windows.h>
 #include <vector>
@@ -42,13 +40,10 @@ struct PEInfo {
     uint64_t    entryPoint = 0;
     uint64_t    imageBase = 0;
 
-    // Sections
     std::vector<PESectionInfo> sections;
 
-    // Imports
     std::vector<PEImportEntry> imports;
 
-    // Exports
     struct PEExportEntry {
         std::string name;
         uint32_t    rva = 0;

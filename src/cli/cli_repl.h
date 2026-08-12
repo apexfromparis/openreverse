@@ -1,7 +1,5 @@
 #pragma once
-// ============================================================================
 // Interactive command-line shell for analysis and GUI handover.
-// ============================================================================
 
 #include "app/application.h"
 #include <string>

@@ -1,6 +1,4 @@
-// ============================================================================
 // OpenReverse - UI Panel: Data Inspector Implementation
-// ============================================================================
 #include "data_inspector.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -63,72 +61,60 @@ void DataInspectorPanel::Render(Application& app)
 
         char buf[128];
 
-        // Int8
         if (sz >= 1) {
             int8_t v; memcpy(&v, data, 1);
             snprintf(buf, sizeof(buf), "%d", v);
             ShowValue("Int8", buf);
         }
-        // UInt8
         if (sz >= 1) {
             uint8_t v; memcpy(&v, data, 1);
             snprintf(buf, sizeof(buf), "%u (0x%02X)", v, v);
             ShowValue("UInt8", buf);
         }
-        // Int16
         if (sz >= 2) {
             int16_t v; memcpy(&v, data, 2);
             snprintf(buf, sizeof(buf), "%d", v);
             ShowValue("Int16", buf);
         }
-        // UInt16
         if (sz >= 2) {
             uint16_t v; memcpy(&v, data, 2);
             snprintf(buf, sizeof(buf), "%u (0x%04X)", v, v);
             ShowValue("UInt16", buf);
         }
-        // Int32
         if (sz >= 4) {
             int32_t v; memcpy(&v, data, 4);
             snprintf(buf, sizeof(buf), "%d", v);
             ShowValue("Int32", buf);
         }
-        // UInt32
         if (sz >= 4) {
             uint32_t v; memcpy(&v, data, 4);
             snprintf(buf, sizeof(buf), "%u (0x%08X)", v, v);
             ShowValue("UInt32", buf);
         }
-        // Int64
         if (sz >= 8) {
             int64_t v; memcpy(&v, data, 8);
             snprintf(buf, sizeof(buf), "%lld", (long long)v);
             ShowValue("Int64", buf);
         }
-        // UInt64
         if (sz >= 8) {
             uint64_t v; memcpy(&v, data, 8);
             snprintf(buf, sizeof(buf), "%llu (0x%016llX)", (unsigned long long)v, (unsigned long long)v);
             ShowValue("UInt64", buf);
         }
-        // Float
         if (sz >= 4) {
             float v; memcpy(&v, data, 4);
             snprintf(buf, sizeof(buf), "%.7g", v);
             ShowValue("Float", buf, ImVec4(0.9f, 0.8f, 0.4f, 1.0f));
         }
-        // Double
         if (sz >= 8) {
             double v; memcpy(&v, data, 8);
             snprintf(buf, sizeof(buf), "%.15g", v);
             ShowValue("Double", buf, ImVec4(0.9f, 0.8f, 0.4f, 1.0f));
         }
-        // Bool
         if (sz >= 1) {
             ShowValue("Bool", data[0] ? "true" : "false",
                 data[0] ? ImVec4(0.3f, 0.9f, 0.4f, 1.0f) : ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
         }
-        // Hex bytes
         {
             std::string hex = helpers::BytesToHex(data, sz < 8 ? sz : 8);
             ShowValue("Hex", hex.c_str(), ImVec4(0.5f, 0.8f, 0.7f, 1.0f));

@@ -8,10 +8,11 @@ class AICopilotPanel
 {
 public:
     void Render(Application& app);
+    void OpenSettings();
 
 private:
-    ai::ReverseSkillRegistry skills_;
-    int selectedSkill_ = 0;
+    void RenderSettings(Application& app);
+    bool settingsOpen_ = false;
     char provider_[64] = "Ollama";
     char baseUrl_[256] = "http://localhost:11434/v1";
     char model_[128] = "qwen2.5-coder:7b";

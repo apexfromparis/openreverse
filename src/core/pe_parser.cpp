@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - Core: PE Parser Implementation
-// ============================================================================
-
 #include "pe_parser.h"
 #include <algorithm>
 #include <cstring>

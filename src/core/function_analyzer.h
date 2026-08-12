@@ -1,7 +1,5 @@
 #pragma once
-// ============================================================================
 // OpenReverse - Core: Function Analyzer, CFG, and Experimental Pseudocode
-// ============================================================================
 
 #include <string>
 #include <vector>

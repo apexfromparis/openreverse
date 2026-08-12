@@ -1,7 +1,3 @@
-// ============================================================================
-// OpenReverse - UI Panel: Disassembly View Implementation
-// ============================================================================
-
 #include "disasm_view.h"
 #include "app/application.h"
 #include "core/module_manager.h"
@@ -10,8 +6,6 @@
 
 #include <imgui.h>
 #include <cstdio>
-#include <cstring>
-#include <algorithm>
 
 namespace openreverse { namespace panels {
 
@@ -40,8 +34,7 @@ void DisasmViewPanel::RefreshDisassembly(Application& app)
     if (!app.isAttached || !app.disassembler.IsInitialized())
         return;
 
-    // Read a chunk of memory
-    size_t readSize = (size_t)numInstructions_ * 15; // max instruction size is ~15 bytes
+    size_t readSize = (size_t)numInstructions_ * 15;
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, currentAddress_, readSize);
 
     if (!bytes.empty())
@@ -55,27 +48,31 @@ void DisasmViewPanel::RefreshDisassembly(Application& app)
 
 void DisasmViewPanel::Render(Application& app)
 {
-    ImGui::Begin("Disassembly", nullptr, ImGuiWindowFlags_None);
+    ImGui::Begin("DISASSEMBLY", nullptr, ImGuiWindowFlags_None);
+    UIManager::PanelHeader("DISASSEMBLY", app.isAttached ? (app.is64Bit ? "x64 (Windows)" : "x86 (Windows)") : nullptr);
 
     UIManager::BeginToolbar();
-    ImGui::Text("Address");
+    ImGui::Text("Function");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180.0f);
     if (ImGui::InputText("##disAddr", addressInput_, sizeof(addressInput_),
         ImGuiInputTextFlags_EnterReturnsTrue))
     {
-        currentAddress_ = helpers::ParseAddress(addressInput_);
-        needsRefresh_ = true;
+        if (const auto address = helpers::TryParseAddress(addressInput_))
+        {
+            currentAddress_ = *address;
+            needsRefresh_ = true;
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Go"))
     {
-        currentAddress_ = helpers::ParseAddress(addressInput_);
-        needsRefresh_ = true;
+        if (const auto address = helpers::TryParseAddress(addressInput_))
+        {
+            currentAddress_ = *address;
+            needsRefresh_ = true;
+        }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh"))
-        needsRefresh_ = true;
     if (!history_.empty())
     {
         ImGui::SameLine();
@@ -87,17 +84,6 @@ void DisasmViewPanel::Render(Application& app)
             needsRefresh_ = true;
         }
     }
-    UIManager::ToolbarSeparator();
-    if (ImGui::Checkbox("Intel syntax", &intelSyntax_))
-    {
-        app.disassembler.SetIntelSyntax(intelSyntax_);
-        needsRefresh_ = true;
-    }
-    UIManager::ToolbarSeparator();
-    ImGui::Text("Filter");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::InputTextWithHint("##disFilter", "Mnemonic or operands...", searchFilter_, sizeof(searchFilter_));
     UIManager::EndToolbar();
 
     ImGui::Separator();
@@ -112,7 +98,6 @@ void DisasmViewPanel::Render(Application& app)
     if (needsRefresh_)
         RefreshDisassembly(app);
 
-    // ── Disassembly Table ──
     if (ImGui::BeginTable("DisasmTable", 5,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_Resizable))
@@ -125,26 +110,19 @@ void DisasmViewPanel::Render(Application& app)
         ImGui::TableSetupColumn("Operands", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
-        std::string filterLower = helpers::ToLower(searchFilter_);
-
         for (const auto& inst : instructions_)
         {
-            std::string line = inst.mnemonic + " " + inst.operands;
-            if (!filterLower.empty() && helpers::ToLower(line).find(filterLower) == std::string::npos)
-                continue;
-
             ImGui::TableNextRow();
 
             bool isCurrent = (inst.address == app.currentAddress);
             if (isCurrent)
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
-                    ImGui::GetColorU32(ImVec4(0.00f, 0.32f, 0.38f, 0.35f)));
+                    ImGui::GetColorU32(ImVec4(0.00f, 0.22f, 0.52f, 0.78f)));
 
             // Dedicated gutter keeps future breakpoints and xrefs out of the code grid.
             ImGui::TableSetColumnIndex(0);
             ImGui::TextColored(isCurrent ? ImVec4(0.00f, 0.90f, 1.00f, 1.0f) : ImVec4(0.18f, 0.24f, 0.32f, 1.0f), "%s", isCurrent ? ">" : ".");
 
-            // Address
             ImGui::TableSetColumnIndex(1);
             char addrStr[32];
             if (app.is64Bit)
@@ -178,12 +156,14 @@ void DisasmViewPanel::Render(Application& app)
                 }
                 if (ImGui::MenuItem("Find XREFs to this address (X)"))
                 {
-                    app.idaProPanel.OpenXrefsForAddress(inst.address);
-                    ImGui::SetWindowFocus("Analysis / Functions & CFG");
+                    app.NavigateToAddress(inst.address);
+                    app.analysisPanel.OpenXrefsForAddress(inst.address);
+                    ImGui::SetWindowFocus("XREFS");
                 }
                 if (ImGui::MenuItem("Open function in Analysis"))
                 {
-                    app.idaProPanel.SelectFunction(app, inst.address);
+                    app.analysisPanel.SelectFunction(app, inst.address);
+                    app.ShowAnalysisPanel();
                     ImGui::SetWindowFocus("Analysis / Functions & CFG");
                 }
                 if (ImGui::MenuItem("Add to Offsets & Structures"))
@@ -194,7 +174,6 @@ void DisasmViewPanel::Render(Application& app)
             if (UIManager::GetMonoFont())
                 ImGui::PopFont();
 
-            // Bytes
             ImGui::TableSetColumnIndex(2);
             if (UIManager::GetMonoFont())
                 ImGui::PushFont(UIManager::GetMonoFont());

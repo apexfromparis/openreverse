@@ -1,8 +1,3 @@
-// ============================================================================
-// OpenReverse Studio v2.0 - Official Windows Setup Wizard (Win32 Native)
-// Professional, ultra-clean software installer (Visual Studio / NSIS style)
-// ============================================================================
-
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
@@ -10,10 +5,9 @@
 #include <shobjidl.h>
 #include <objbase.h>
 #include <dwmapi.h>
-#include <tchar.h>
+#include "openreverse_version.h"
+
 #include <string>
-#include <vector>
-#include <iostream>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -23,10 +17,8 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dwmapi.lib")
 
-// Enable Visual Styles (Comctl32 v6)
 #pragma comment(linker,"/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
-// Control IDs
 #define IDC_HEADER_TITLE    1001
 #define IDC_HEADER_SUB      1002
 #define IDC_BODY_TEXT       1003
@@ -46,6 +38,7 @@ enum class SetupPage
     Welcome,
     Installing,
     Complete,
+    Failed,
     UninstallConfirm,
     Uninstalling,
     UninstallComplete
@@ -56,7 +49,6 @@ struct WizardContext
     SetupPage page = SetupPage::Welcome;
     bool isUninstall = false;
 
-    // Controls
     HWND hwndTitle = nullptr;
     HWND hwndSub = nullptr;
     HWND hwndBody = nullptr;
@@ -71,22 +63,22 @@ struct WizardContext
     HWND hwndBtnInstall = nullptr;
     HWND hwndBtnCancel = nullptr;
 
-    // Fonts & Brushes
     HFONT hFontNormal = nullptr;
     HFONT hFontBold = nullptr;
     HBRUSH hBrushBg = nullptr;
     HBRUSH hBrushEdit = nullptr;
 
-    // Installation State
     int step = 0;
-    std::string programsDir;
     std::string installDir;
     std::string targetExe;
+    std::string uninstallerExe;
+    std::wstring failureMessage;
+    bool deleteSelfOnExit = false;
 };
 
 static WizardContext g_ctx;
+static void UpdatePageVisibility();
 
-// ─── Windows Shell COM Shortcut Helper ───────────────────────────────────────
 static bool CreateShortcut(const std::wstring& targetPath,
                            const std::wstring& workingDir,
                            const std::wstring& shortcutPath,
@@ -124,9 +116,72 @@ static void AppendLog(const std::wstring& line)
     SendMessageW(g_ctx.hwndLog, EM_SCROLLCARET, 0, 0);
 }
 
+static std::wstring Widen(const std::string& value)
+{
+    if (value.empty()) return {};
+    const int length = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+    if (length <= 1) return {};
+    std::wstring result(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), length);
+    result.pop_back();
+    return result;
+}
+
+static std::wstring VersionedProduct()
+{
+    return std::wstring(L"OpenReverse ") + openreverse::kVersionWide;
+}
+
+static bool WriteEmbeddedApplication()
+{
+    HMODULE module = GetModuleHandleW(nullptr);
+    HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(101), RT_RCDATA);
+    if (!resource) return false;
+
+    HGLOBAL loaded = LoadResource(module, resource);
+    const DWORD size = SizeofResource(module, resource);
+    const void* data = loaded ? LockResource(loaded) : nullptr;
+    if (!data || size == 0) return false;
+
+    HANDLE file = CreateFileA(g_ctx.targetExe.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+
+    DWORD written = 0;
+    const bool success = WriteFile(file, data, size, &written, nullptr) && written == size;
+    CloseHandle(file);
+    if (!success) DeleteFileA(g_ctx.targetExe.c_str());
+    return success;
+}
+
+static bool CopyUninstaller()
+{
+    char source[MAX_PATH] = {};
+    if (!GetModuleFileNameA(nullptr, source, MAX_PATH)) return false;
+    if (_stricmp(source, g_ctx.uninstallerExe.c_str()) == 0) return true;
+    return CopyFileA(source, g_ctx.uninstallerExe.c_str(), FALSE) != FALSE;
+}
+
+static bool SetRegistryString(HKEY key, const char* name, const std::string& value)
+{
+    return RegSetValueExA(key, name, 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(value.c_str()),
+        static_cast<DWORD>(value.size() + 1)) == ERROR_SUCCESS;
+}
+
+static void FailOperation(HWND hwnd, UINT timerId, const std::wstring& message)
+{
+    KillTimer(hwnd, timerId);
+    g_ctx.failureMessage = message;
+    AppendLog(L"Error: " + message);
+    g_ctx.page = SetupPage::Failed;
+    UpdatePageVisibility();
+}
+
 static void UpdatePageVisibility()
 {
-    // Hide all intermediate/state-dependent controls first
+    const std::wstring product = VersionedProduct();
+
     ShowWindow(g_ctx.hwndDestLabel, SW_HIDE);
     ShowWindow(g_ctx.hwndDestPath, SW_HIDE);
     ShowWindow(g_ctx.hwndChkDesktop, SW_HIDE);
@@ -135,16 +190,17 @@ static void UpdatePageVisibility()
     ShowWindow(g_ctx.hwndChkRunNow, SW_HIDE);
     ShowWindow(g_ctx.hwndProgress, SW_HIDE);
     ShowWindow(g_ctx.hwndLog, SW_HIDE);
+    SetWindowPos(g_ctx.hwndLog, nullptr, 24, 125, 470, 185, SWP_NOZORDER);
 
     if (g_ctx.page == SetupPage::Welcome)
     {
-        SetWindowTextW(g_ctx.hwndTitle, L"Welcome to OpenReverse Studio Setup");
-        SetWindowTextW(g_ctx.hwndSub, L"OpenReverse Studio 2.0.0");
-        SetWindowTextW(g_ctx.hwndBody,
-            L"Setup will install OpenReverse Studio 2.0.0 on your computer.\r\n\r\n"
+        SetWindowTextW(g_ctx.hwndTitle, L"Welcome to OpenReverse Setup");
+        SetWindowTextW(g_ctx.hwndSub, product.c_str());
+        const std::wstring body = L"Setup will install " + product + L" on your computer.\r\n\r\n"
             L"It is recommended that you close all other applications before starting Setup. "
             L"This will make it possible to update relevant system files without having to reboot your computer.\r\n\r\n"
-            L"Click Install to continue, or Cancel to exit Setup.");
+            L"Click Install to continue, or Cancel to exit Setup.";
+        SetWindowTextW(g_ctx.hwndBody, body.c_str());
 
         ShowWindow(g_ctx.hwndDestLabel, SW_SHOW);
         ShowWindow(g_ctx.hwndDestPath, SW_SHOW);
@@ -157,8 +213,8 @@ static void UpdatePageVisibility()
     }
     else if (g_ctx.page == SetupPage::Installing || g_ctx.page == SetupPage::Uninstalling)
     {
-        SetWindowTextW(g_ctx.hwndTitle, g_ctx.page == SetupPage::Installing ? L"Installing OpenReverse Studio" : L"Uninstalling OpenReverse Studio");
-        SetWindowTextW(g_ctx.hwndSub, g_ctx.page == SetupPage::Installing ? L"Please wait while OpenReverse Studio is being installed." : L"Please wait while files are being removed.");
+        SetWindowTextW(g_ctx.hwndTitle, g_ctx.page == SetupPage::Installing ? L"Installing OpenReverse" : L"Uninstalling OpenReverse");
+        SetWindowTextW(g_ctx.hwndSub, g_ctx.page == SetupPage::Installing ? L"Please wait while OpenReverse is being installed." : L"Please wait while files are being removed.");
         SetWindowTextW(g_ctx.hwndBody, L"");
 
         ShowWindow(g_ctx.hwndProgress, SW_SHOW);
@@ -169,11 +225,11 @@ static void UpdatePageVisibility()
     }
     else if (g_ctx.page == SetupPage::Complete)
     {
-        SetWindowTextW(g_ctx.hwndTitle, L"Completing OpenReverse Studio Setup");
-        SetWindowTextW(g_ctx.hwndSub, L"OpenReverse Studio 2.0.0");
-        SetWindowTextW(g_ctx.hwndBody,
-            L"OpenReverse Studio 2.0.0 has been installed on your computer.\r\n\r\n"
-            L"Click Finish to close Setup.");
+        SetWindowTextW(g_ctx.hwndTitle, L"Completing OpenReverse Setup");
+        SetWindowTextW(g_ctx.hwndSub, product.c_str());
+        const std::wstring body = product + L" has been installed on your computer.\r\n\r\n"
+            L"Click Finish to close Setup.";
+        SetWindowTextW(g_ctx.hwndBody, body.c_str());
 
         ShowWindow(g_ctx.hwndChkRunNow, SW_SHOW);
 
@@ -181,12 +237,24 @@ static void UpdatePageVisibility()
         EnableWindow(g_ctx.hwndBtnInstall, TRUE);
         EnableWindow(g_ctx.hwndBtnCancel, FALSE);
     }
+    else if (g_ctx.page == SetupPage::Failed)
+    {
+        SetWindowTextW(g_ctx.hwndTitle, L"OpenReverse Setup failed");
+        SetWindowTextW(g_ctx.hwndSub, product.c_str());
+        const std::wstring body = g_ctx.failureMessage + L"\r\n\r\nReview the activity log, then close Setup and try again.";
+        SetWindowTextW(g_ctx.hwndBody, body.c_str());
+        SetWindowPos(g_ctx.hwndLog, nullptr, 24, 205, 470, 105, SWP_NOZORDER);
+        ShowWindow(g_ctx.hwndLog, SW_SHOW);
+        SetWindowTextW(g_ctx.hwndBtnInstall, L"Close");
+        EnableWindow(g_ctx.hwndBtnInstall, TRUE);
+        EnableWindow(g_ctx.hwndBtnCancel, FALSE);
+    }
     else if (g_ctx.page == SetupPage::UninstallConfirm)
     {
-        SetWindowTextW(g_ctx.hwndTitle, L"OpenReverse Studio Uninstaller");
-        SetWindowTextW(g_ctx.hwndSub, L"OpenReverse Studio 2.0.0");
+        SetWindowTextW(g_ctx.hwndTitle, L"OpenReverse Uninstaller");
+        SetWindowTextW(g_ctx.hwndSub, product.c_str());
         SetWindowTextW(g_ctx.hwndBody,
-            L"Are you sure you want to completely remove OpenReverse Studio and all of its components?\r\n\r\n"
+            L"Are you sure you want to remove OpenReverse?\r\n\r\n"
             L"This will remove the application binary, Desktop and Start Menu shortcuts, and registry entries.");
 
         SetWindowTextW(g_ctx.hwndBtnInstall, L"Uninstall");
@@ -195,9 +263,9 @@ static void UpdatePageVisibility()
     else if (g_ctx.page == SetupPage::UninstallComplete)
     {
         SetWindowTextW(g_ctx.hwndTitle, L"Uninstallation Complete");
-        SetWindowTextW(g_ctx.hwndSub, L"OpenReverse Studio 2.0.0");
+        SetWindowTextW(g_ctx.hwndSub, product.c_str());
         SetWindowTextW(g_ctx.hwndBody,
-            L"OpenReverse Studio was successfully removed from your computer.\r\n\r\n"
+            L"OpenReverse was successfully removed from your computer.\r\n\r\n"
             L"Click Finish to exit Setup.");
 
         SetWindowTextW(g_ctx.hwndBtnInstall, L"Finish");
@@ -212,17 +280,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     {
     case WM_CREATE:
     {
-        // Dark theme brushes
-        g_ctx.hBrushBg = CreateSolidBrush(RGB(30, 30, 30));       // #1E1E1E
-        g_ctx.hBrushEdit = CreateSolidBrush(RGB(20, 20, 20));     // #141414
+        g_ctx.hBrushBg = CreateSolidBrush(RGB(30, 30, 30));
+        g_ctx.hBrushEdit = CreateSolidBrush(RGB(20, 20, 20));
 
-        // Standard fonts
         g_ctx.hFontNormal = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         g_ctx.hFontBold = CreateFontW(22, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-        // Top Header
         g_ctx.hwndTitle = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE,
             24, 20, 480, 28, hwnd, (HMENU)IDC_HEADER_TITLE, nullptr, nullptr);
         SendMessageW(g_ctx.hwndTitle, WM_SETFONT, (WPARAM)g_ctx.hFontBold, TRUE);
@@ -231,12 +296,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             24, 50, 480, 20, hwnd, (HMENU)IDC_HEADER_SUB, nullptr, nullptr);
         SendMessageW(g_ctx.hwndSub, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
 
-        // Body Text
         g_ctx.hwndBody = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE,
             24, 85, 480, 110, hwnd, (HMENU)IDC_BODY_TEXT, nullptr, nullptr);
         SendMessageW(g_ctx.hwndBody, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
 
-        // Destination Folder Section
         g_ctx.hwndDestLabel = CreateWindowW(L"STATIC", L"Destination Folder:", WS_CHILD,
             24, 195, 200, 20, hwnd, (HMENU)IDC_DEST_LABEL, nullptr, nullptr);
         SendMessageW(g_ctx.hwndDestLabel, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
@@ -248,7 +311,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             24, 218, 460, 24, hwnd, (HMENU)IDC_DEST_PATH, nullptr, nullptr);
         SendMessageW(g_ctx.hwndDestPath, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
 
-        // Checkboxes
         g_ctx.hwndChkDesktop = CreateWindowW(L"BUTTON", L"Create a desktop shortcut", WS_CHILD | BS_AUTOCHECKBOX,
             24, 255, 300, 20, hwnd, (HMENU)IDC_CHK_DESKTOP, nullptr, nullptr);
         SendMessageW(g_ctx.hwndChkDesktop, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
@@ -264,24 +326,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SendMessageW(g_ctx.hwndChkRegistry, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
         SendMessageW(g_ctx.hwndChkRegistry, BM_SETCHECK, BST_CHECKED, 0);
 
-        g_ctx.hwndChkRunNow = CreateWindowW(L"BUTTON", L"Run OpenReverse Studio now", WS_CHILD | BS_AUTOCHECKBOX,
+        g_ctx.hwndChkRunNow = CreateWindowW(L"BUTTON", L"Run OpenReverse now", WS_CHILD | BS_AUTOCHECKBOX,
             24, 200, 300, 20, hwnd, (HMENU)IDC_CHK_RUNNOW, nullptr, nullptr);
         SendMessageW(g_ctx.hwndChkRunNow, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
         SendMessageW(g_ctx.hwndChkRunNow, BM_SETCHECK, BST_CHECKED, 0);
 
-        // Progress Bar
         g_ctx.hwndProgress = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
             WS_CHILD | PBS_SMOOTH,
             24, 90, 470, 22, hwnd, (HMENU)IDC_PROGRESS, nullptr, nullptr);
         SendMessageW(g_ctx.hwndProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 
-        // Activity Log Box
         g_ctx.hwndLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
             24, 125, 470, 185, hwnd, (HMENU)IDC_LOG_TEXT, nullptr, nullptr);
         SendMessageW(g_ctx.hwndLog, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
 
-        // Buttons
         g_ctx.hwndBtnInstall = CreateWindowW(L"BUTTON", L"Install", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
             300, 335, 95, 28, hwnd, (HMENU)IDC_BTN_INSTALL, nullptr, nullptr);
         SendMessageW(g_ctx.hwndBtnInstall, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
@@ -295,56 +354,49 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
     case WM_TIMER:
     {
-        if (wParam == 1) // Install sequence
+        if (wParam == 1)
         {
             g_ctx.step++;
             if (g_ctx.step == 1)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 15, 0);
-                AppendLog(L"Create folder: " + std::wstring(g_ctx.installDir.begin(), g_ctx.installDir.end()));
-                CreateDirectoryA(g_ctx.programsDir.c_str(), nullptr);
-                CreateDirectoryA(g_ctx.installDir.c_str(), nullptr);
+                AppendLog(L"Create folder: " + Widen(g_ctx.installDir));
+                const int result = SHCreateDirectoryExA(nullptr, g_ctx.installDir.c_str(), nullptr);
+                if (result != ERROR_SUCCESS && result != ERROR_FILE_EXISTS && result != ERROR_ALREADY_EXISTS)
+                    FailOperation(hwnd, 1, L"The installation directory could not be created.");
             }
             else if (g_ctx.step == 2)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 45, 0);
-                AppendLog(L"Extract: openreverse-gui.exe...");
-                HRSRC hRes = FindResourceW(GetModuleHandle(nullptr), MAKEINTRESOURCEW(101), RT_RCDATA);
-                if (hRes)
+                AppendLog(L"Extract: OpenReverse.exe");
+                if (!WriteEmbeddedApplication())
                 {
-                    HGLOBAL hMem = LoadResource(GetModuleHandle(nullptr), hRes);
-                    DWORD resSize = SizeofResource(GetModuleHandle(nullptr), hRes);
-                    void* pData = LockResource(hMem);
-                    if (pData && resSize > 0)
-                    {
-                        HANDLE hFile = CreateFileA(g_ctx.targetExe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-                        if (hFile != INVALID_HANDLE_VALUE)
-                        {
-                            DWORD written = 0;
-                            WriteFile(hFile, pData, resSize, &written, nullptr);
-                            CloseHandle(hFile);
-                        }
-                    }
+                    FailOperation(hwnd, 1, L"OpenReverse.exe could not be extracted.");
+                    break;
                 }
+                AppendLog(L"Install: Uninstall.exe");
+                if (!CopyUninstaller())
+                    FailOperation(hwnd, 1, L"The uninstaller could not be installed.");
             }
             else if (g_ctx.step == 3)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 75, 0);
-                WCHAR wInstallDir[MAX_PATH];
-                WCHAR wTargetExe[MAX_PATH];
-                MultiByteToWideChar(CP_UTF8, 0, g_ctx.installDir.c_str(), -1, wInstallDir, MAX_PATH);
-                MultiByteToWideChar(CP_UTF8, 0, g_ctx.targetExe.c_str(), -1, wTargetExe, MAX_PATH);
+                const std::wstring installDir = Widen(g_ctx.installDir);
+                const std::wstring targetExe = Widen(g_ctx.targetExe);
+                const std::wstring description = VersionedProduct();
 
                 if (SendMessageW(g_ctx.hwndChkDesktop, BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
                     char desktopPath[MAX_PATH];
                     if (SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, desktopPath) == S_OK)
                     {
-                        std::string lnk = std::string(desktopPath) + "\\OpenReverse Studio.lnk";
-                        WCHAR wLnk[MAX_PATH];
-                        MultiByteToWideChar(CP_UTF8, 0, lnk.c_str(), -1, wLnk, MAX_PATH);
-                        CreateShortcut(wTargetExe, wInstallDir, wLnk, L"OpenReverse Studio 2.0.0");
-                        AppendLog(L"Create shortcut: Desktop\\OpenReverse Studio.lnk");
+                        const std::wstring shortcut = Widen(std::string(desktopPath) + "\\OpenReverse.lnk");
+                        if (!CreateShortcut(targetExe, installDir, shortcut, description))
+                        {
+                            FailOperation(hwnd, 1, L"The Desktop shortcut could not be created.");
+                            break;
+                        }
+                        AppendLog(L"Create shortcut: Desktop\\OpenReverse.lnk");
                     }
                 }
                 if (SendMessageW(g_ctx.hwndChkStartMenu, BM_GETCHECK, 0, 0) == BST_CHECKED)
@@ -352,11 +404,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     char startMenuPath[MAX_PATH];
                     if (SHGetFolderPathA(nullptr, CSIDL_PROGRAMS, nullptr, SHGFP_TYPE_CURRENT, startMenuPath) == S_OK)
                     {
-                        std::string lnk = std::string(startMenuPath) + "\\OpenReverse Studio.lnk";
-                        WCHAR wLnk[MAX_PATH];
-                        MultiByteToWideChar(CP_UTF8, 0, lnk.c_str(), -1, wLnk, MAX_PATH);
-                        CreateShortcut(wTargetExe, wInstallDir, wLnk, L"OpenReverse Studio 2.0.0");
-                        AppendLog(L"Create shortcut: Start Menu\\OpenReverse Studio.lnk");
+                        const std::wstring shortcut = Widen(std::string(startMenuPath) + "\\OpenReverse.lnk");
+                        if (!CreateShortcut(targetExe, installDir, shortcut, description))
+                        {
+                            FailOperation(hwnd, 1, L"The Start Menu shortcut could not be created.");
+                            break;
+                        }
+                        AppendLog(L"Create shortcut: Start Menu\\OpenReverse.lnk");
                     }
                 }
             }
@@ -366,18 +420,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (SendMessageW(g_ctx.hwndChkRegistry, BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
                     HKEY hKey;
-                    if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverseStudio",
+                    if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse",
                         0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
                     {
-                        RegSetValueExA(hKey, "DisplayName", 0, REG_SZ, (const BYTE*)"OpenReverse Studio", 19);
-                        RegSetValueExA(hKey, "DisplayVersion", 0, REG_SZ, (const BYTE*)"2.0.0", 6);
-                        RegSetValueExA(hKey, "Publisher", 0, REG_SZ, (const BYTE*)"OpenReverse Community", 22);
-                        RegSetValueExA(hKey, "InstallLocation", 0, REG_SZ, (const BYTE*)g_ctx.installDir.c_str(), (DWORD)g_ctx.installDir.size() + 1);
-                        RegSetValueExA(hKey, "DisplayIcon", 0, REG_SZ, (const BYTE*)g_ctx.targetExe.c_str(), (DWORD)g_ctx.targetExe.size() + 1);
-                        std::string uninstCmd = "\"" + g_ctx.targetExe + "\" --uninstall";
-                        RegSetValueExA(hKey, "UninstallString", 0, REG_SZ, (const BYTE*)uninstCmd.c_str(), (DWORD)uninstCmd.size() + 1);
+                        const std::string uninstallCommand = "\"" + g_ctx.uninstallerExe + "\" --uninstall";
+                        const bool registered =
+                            SetRegistryString(hKey, "DisplayName", "OpenReverse") &&
+                            SetRegistryString(hKey, "DisplayVersion", openreverse::kVersion) &&
+                            SetRegistryString(hKey, "Publisher", "OpenReverse Community") &&
+                            SetRegistryString(hKey, "InstallLocation", g_ctx.installDir) &&
+                            SetRegistryString(hKey, "DisplayIcon", g_ctx.targetExe) &&
+                            SetRegistryString(hKey, "UninstallString", uninstallCommand);
                         RegCloseKey(hKey);
-                        AppendLog(L"Write registry: Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverseStudio");
+                        if (!registered)
+                        {
+                            FailOperation(hwnd, 1, L"OpenReverse could not be registered with Windows.");
+                            break;
+                        }
+                        AppendLog(L"Write registry: Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse");
+                    }
+                    else
+                    {
+                        FailOperation(hwnd, 1, L"The Windows uninstall registry key could not be created.");
+                        break;
                     }
                 }
             }
@@ -390,32 +455,57 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 UpdatePageVisibility();
             }
         }
-        else if (wParam == 2) // Uninstall sequence
+        else if (wParam == 2)
         {
             g_ctx.step++;
             if (g_ctx.step == 1)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 35, 0);
-                AppendLog(L"Delete shortcut: Desktop\\OpenReverse Studio.lnk");
+                AppendLog(L"Delete shortcut: Desktop\\OpenReverse.lnk");
                 char desktopPath[MAX_PATH];
                 if (SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, desktopPath) == S_OK)
-                    DeleteFileA((std::string(desktopPath) + "\\OpenReverse Studio.lnk").c_str());
+                    DeleteFileA((std::string(desktopPath) + "\\OpenReverse.lnk").c_str());
             }
             else if (g_ctx.step == 2)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 70, 0);
-                AppendLog(L"Delete shortcut: Start Menu\\OpenReverse Studio.lnk");
+                AppendLog(L"Delete shortcut: Start Menu\\OpenReverse.lnk");
                 char startMenuPath[MAX_PATH];
                 if (SHGetFolderPathA(nullptr, CSIDL_PROGRAMS, nullptr, SHGFP_TYPE_CURRENT, startMenuPath) == S_OK)
-                    DeleteFileA((std::string(startMenuPath) + "\\OpenReverse Studio.lnk").c_str());
+                    DeleteFileA((std::string(startMenuPath) + "\\OpenReverse.lnk").c_str());
             }
             else if (g_ctx.step == 3)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 90, 0);
-                AppendLog(L"Delete registry key: Uninstall\\OpenReverseStudio");
-                RegDeleteKeyA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverseStudio");
+                AppendLog(L"Delete registry key: Uninstall\\OpenReverse");
+                RegDeleteKeyA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse");
             }
-            else if (g_ctx.step >= 4)
+            else if (g_ctx.step == 4)
+            {
+                AppendLog(L"Delete: OpenReverse.exe");
+                if (!DeleteFileA(g_ctx.targetExe.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+                {
+                    FailOperation(hwnd, 2, L"OpenReverse.exe is still in use and could not be removed.");
+                    break;
+                }
+
+                char self[MAX_PATH] = {};
+                GetModuleFileNameA(nullptr, self, MAX_PATH);
+                if (_stricmp(self, g_ctx.uninstallerExe.c_str()) != 0)
+                    DeleteFileA(g_ctx.uninstallerExe.c_str());
+                if (!RemoveDirectoryA(g_ctx.installDir.c_str()))
+                {
+                    const DWORD error = GetLastError();
+                    if (error == ERROR_DIR_NOT_EMPTY)
+                        AppendLog(L"Retain installation directory: it contains user-created files.");
+                    else if (error != ERROR_PATH_NOT_FOUND)
+                    {
+                        FailOperation(hwnd, 2, L"The installation directory could not be removed.");
+                        break;
+                    }
+                }
+            }
+            else if (g_ctx.step >= 5)
             {
                 KillTimer(hwnd, 2);
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 100, 0);
@@ -435,7 +525,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_ctx.page = SetupPage::Installing;
                 UpdatePageVisibility();
                 g_ctx.step = 0;
-                SetTimer(hwnd, 1, 150, nullptr); // 150ms step delay for smooth visual feedback
+                SetTimer(hwnd, 1, 150, nullptr);
             }
             else if (g_ctx.page == SetupPage::Complete)
             {
@@ -452,7 +542,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_ctx.step = 0;
                 SetTimer(hwnd, 2, 200, nullptr);
             }
-            else if (g_ctx.page == SetupPage::UninstallComplete)
+            else if (g_ctx.page == SetupPage::UninstallComplete || g_ctx.page == SetupPage::Failed)
             {
                 PostQuitMessage(0);
             }
@@ -468,10 +558,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
 
-        // Dark window background #1E1E1E
         FillRect(hdc, &ps.rcPaint, g_ctx.hBrushBg);
 
-        // Bottom separator line (x=0, y=320, width=540)
         RECT rcLine = { 0, 320, 540, 321 };
         HBRUSH hLineBrush = CreateSolidBrush(RGB(50, 50, 50));
         FillRect(hdc, &rcLine, hLineBrush);
@@ -497,6 +585,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
     case WM_DESTROY:
     {
+        if (g_ctx.deleteSelfOnExit)
+        {
+            wchar_t self[MAX_PATH] = {};
+            if (GetModuleFileNameW(nullptr, self, MAX_PATH))
+                MoveFileExW(self, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
         if (g_ctx.hFontNormal) DeleteObject(g_ctx.hFontNormal);
         if (g_ctx.hFontBold) DeleteObject(g_ctx.hFontBold);
         if (g_ctx.hBrushBg) DeleteObject(g_ctx.hBrushBg);
@@ -513,15 +607,41 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     (void)hPrevInstance;
     (void)nCmdShow;
 
-    std::string cmdLine = lpCmdLine ? lpCmdLine : "";
-    g_ctx.isUninstall = (cmdLine.find("--uninstall") != std::string::npos || cmdLine.find("/uninstall") != std::string::npos);
-    g_ctx.page = g_ctx.isUninstall ? SetupPage::UninstallConfirm : SetupPage::Welcome;
-
     char localAppData[MAX_PATH] = { 0 };
     SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localAppData);
-    g_ctx.programsDir = std::string(localAppData) + "\\Programs";
-    g_ctx.installDir = g_ctx.programsDir + "\\OpenReverse Studio";
-    g_ctx.targetExe = g_ctx.installDir + "\\openreverse-gui.exe";
+    g_ctx.installDir = std::string(localAppData) + "\\Programs\\OpenReverse";
+    g_ctx.targetExe = g_ctx.installDir + "\\OpenReverse.exe";
+    g_ctx.uninstallerExe = g_ctx.installDir + "\\Uninstall.exe";
+
+    const std::string cmdLine = lpCmdLine ? lpCmdLine : "";
+    g_ctx.isUninstall = cmdLine.find("--uninstall") != std::string::npos ||
+        cmdLine.find("/uninstall") != std::string::npos;
+    const bool fromTemporaryCopy = cmdLine.find("--from-temp") != std::string::npos;
+
+    if (g_ctx.isUninstall && !fromTemporaryCopy)
+    {
+        char self[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, self, MAX_PATH);
+        if (_stricmp(self, g_ctx.uninstallerExe.c_str()) == 0)
+        {
+            char tempDir[MAX_PATH] = {};
+            GetTempPathA(MAX_PATH, tempDir);
+            const std::string tempUninstaller = std::string(tempDir) +
+                "OpenReverse-Uninstall-" + std::to_string(GetCurrentProcessId()) + ".exe";
+            if (!CopyFileA(self, tempUninstaller.c_str(), FALSE) ||
+                reinterpret_cast<INT_PTR>(ShellExecuteA(nullptr, "open", tempUninstaller.c_str(),
+                    "--uninstall --from-temp", nullptr, SW_SHOW)) <= 32)
+            {
+                MessageBoxW(nullptr, L"The OpenReverse uninstaller could not be started.",
+                    L"OpenReverse Uninstaller", MB_OK | MB_ICONERROR);
+                return 1;
+            }
+            return 0;
+        }
+    }
+
+    g_ctx.deleteSelfOnExit = g_ctx.isUninstall && fromTemporaryCopy;
+    g_ctx.page = g_ctx.isUninstall ? SetupPage::UninstallConfirm : SetupPage::Welcome;
 
     InitCommonControls();
 
@@ -544,12 +664,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName,
-        g_ctx.isUninstall ? L"OpenReverse Studio Uninstaller" : L"OpenReverse Studio Setup",
+        g_ctx.isUninstall ? L"OpenReverse Uninstaller" : L"OpenReverse Setup",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         posX, posY, winWidth, winHeight,
         nullptr, nullptr, hInstance, nullptr);
 
-    // Dark Mode Windows Title Bar
     BOOL darkMode = TRUE;
     DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
 
