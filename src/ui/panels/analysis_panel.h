@@ -1,5 +1,4 @@
 #pragma once
-// OpenReverse - UI Panel: Function List, CFG, Experimental Pseudocode, and Xrefs
 
 #include <cstdint>
 #include <vector>
@@ -28,14 +27,15 @@ public:
     void SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs = {});
     void SelectFunction(Application& app, uint64_t funcAddress);
     void OpenXrefsForAddress(uint64_t address) { xrefTargetAddress_ = address; }
+    void ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result);
     const std::vector<FunctionInfo>& GetFunctions() const { return functions_; }
     const FunctionInfo& GetActiveFunction() const { return activeFunction_; }
-    const std::string& GetActivePseudocode() const { return activePseudocode_; }
+    const std::string& GetActiveAssemblySummary() const { return activeAssemblySummary_; }
 
 private:
     std::vector<FunctionInfo> functions_;
     FunctionInfo              activeFunction_;
-    std::string               activePseudocode_;
+    std::string               activeAssemblySummary_;
     bool                      hasAnalyzed_ = false;
     uint64_t                  analysisJobId_ = 0;
     char                      filterText_[128] = {};
@@ -45,9 +45,8 @@ private:
 
     void RenderFunctionsTab(Application& app);
     void RenderCFGTab(Application& app);
-    void RenderDecompilerTab(Application& app);
+    void RenderAssemblySummaryTab(Application& app);
     void RenderXRefsTab(Application& app);
-    void ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result);
 };
 
 }} // namespace openreverse::panels

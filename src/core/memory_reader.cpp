@@ -41,7 +41,6 @@ void MemoryReader::RefreshRegions(HANDLE processHandle)
 
         address = (uint64_t)mbi.BaseAddress + mbi.RegionSize;
 
-        // Guard against overflow
         if (address < (uint64_t)mbi.BaseAddress)
             break;
     }

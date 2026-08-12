@@ -1,4 +1,3 @@
-// OpenReverse - UI Panel: Strings Panel Implementation
 #include "strings_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -124,10 +123,9 @@ void StringsPanel::Render(Application& app)
             }
 
             ImGui::TableSetColumnIndex(1);
-            ImVec4 catColor = (sr.riskLevel == 3) ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f) :
-                              (sr.riskLevel == 2) ? ImVec4(1.0f, 0.72f, 0.28f, 1.0f) :
-                              (sr.riskLevel == 1) ? ImVec4(0.40f, 0.80f, 0.90f, 1.0f) :
-                                                    ImVec4(0.60f, 0.65f, 0.70f, 1.0f);
+            const ImVec4 catColor = sr.category == "General"
+                ? ImVec4(0.60f, 0.65f, 0.70f, 1.0f)
+                : ImVec4(0.40f, 0.80f, 0.90f, 1.0f);
             ImGui::TextColored(catColor, "%s", sr.category.c_str());
 
             ImGui::TableSetColumnIndex(2);

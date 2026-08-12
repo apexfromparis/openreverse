@@ -182,7 +182,6 @@ void DisasmViewPanel::Render(Application& app)
             if (UIManager::GetMonoFont())
                 ImGui::PopFont();
 
-            // Mnemonic (color coded)
             ImGui::TableSetColumnIndex(3);
             ImVec4 mnemonicColor;
             if (inst.isCall)
@@ -202,7 +201,6 @@ void DisasmViewPanel::Render(Application& app)
 
             ImGui::TextColored(mnemonicColor, "%s", inst.mnemonic.c_str());
 
-            // Operands with deep inline symbol/target comment resolution
             ImGui::TableSetColumnIndex(4);
             ImGui::TextColored(ImVec4(0.7f, 0.75f, 0.8f, 1.0f), "%s", inst.operands.c_str());
 
@@ -221,7 +219,6 @@ void DisasmViewPanel::Render(Application& app)
                 }
             }
 
-            // Follow jump/call on double click
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
             {
                 if ((inst.isJump || inst.isCall) && inst.targetAddress != 0)
@@ -233,13 +230,11 @@ void DisasmViewPanel::Render(Application& app)
                 }
             }
 
-            // Tooltip for jumps/calls
             if (ImGui::IsItemHovered() && (inst.isJump || inst.isCall) && inst.targetAddress != 0)
             {
                 ImGui::BeginTooltip();
                 ImGui::Text("Target: %s", helpers::FormatAddress(inst.targetAddress, app.is64Bit).c_str());
 
-                // Show which module the target belongs to
                 auto* mod = app.moduleManager.FindModuleByAddress(inst.targetAddress);
                 if (mod)
                     ImGui::Text("Module: %s", mod->name.c_str());

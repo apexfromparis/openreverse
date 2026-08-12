@@ -14,11 +14,31 @@
 
 namespace openreverse { namespace panels {
 
+namespace {
+
+const char* FunctionSourceName(FunctionSource source)
+{
+    switch (source)
+    {
+    case FunctionSource::RuntimeFunction: return "Runtime";
+    case FunctionSource::Symbol: return "Symbol";
+    case FunctionSource::Export: return "Export";
+    case FunctionSource::EntryPoint: return "Entry";
+    case FunctionSource::DirectCall: return "Call";
+    case FunctionSource::RecursiveTraversal: return "Traversal";
+    case FunctionSource::Heuristic: return "Heuristic";
+    case FunctionSource::UserDefined: return "User";
+    default: return "Unknown";
+    }
+}
+
+} // namespace
+
 void AnalysisPanel::ResetAnalysis()
 {
     functions_.clear();
     activeFunction_ = FunctionInfo{};
-    activePseudocode_.clear();
+    activeAssemblySummary_.clear();
     hasAnalyzed_ = false;
     analysisJobId_ = 0;
     xrefTargetAddress_ = 0;
@@ -37,7 +57,7 @@ void AnalysisPanel::AnalyzeCurrentModule(Application& app)
 
     functions_.clear();
     activeFunction_ = FunctionInfo();
-    activePseudocode_.clear();
+    activeAssemblySummary_.clear();
     app.xrefScanner.Clear();
     hasAnalyzed_ = false;
 
@@ -101,17 +121,18 @@ void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult r
     if (!result.success)
     {
         if (!result.cancelled)
-            Logger::Get().Log(LogLevel::Error, "Live module analysis failed: %s", result.error.c_str());
+            Logger::Get().Log(LogLevel::Error, "Module analysis failed: %s", result.error.c_str());
         return;
     }
     app.analysisDatabase.ReplaceModuleAnalysis(result.module, app.is64Bit, result.pe,
                                                result.functions, result.xrefs, result.strings,
-                                               result.globals, result.fieldAccesses, result.structures);
+                                               result.globals, result.fieldAccesses, result.structures,
+                                               result.offsets, result.signatures, result.identity);
     functions_ = std::move(result.functions);
     app.xrefScanner.ReplaceEntries(std::move(result.xrefs));
     app.stringResults = std::move(result.strings);
     activeFunction_ = FunctionInfo{};
-    activePseudocode_.clear();
+    activeAssemblySummary_.clear();
     hasAnalyzed_ = true;
     Logger::Get().Log(LogLevel::Info,
         "Module analysis: %zu functions, %zu Xrefs, %zu strings, %zu globals, %zu structures, "
@@ -133,7 +154,7 @@ void AnalysisPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, c
 {
     functions_.clear();
     activeFunction_ = FunctionInfo();
-    activePseudocode_.clear();
+    activeAssemblySummary_.clear();
     hasAnalyzed_ = true;
 
     if (!discoveredFuncs.empty())
@@ -145,8 +166,9 @@ void AnalysisPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, c
         FunctionInfo fn;
         fn.name = "entry_point";
         fn.startAddress = insns[0].address;
-        fn.size = (uint32_t)(insns.size() * 4);
-        fn.cyclomaticComplexity = 5;
+        fn.source = FunctionSource::EntryPoint;
+        fn.analyzedEndAddress = insns.back().address + insns.back().size;
+        fn.analyzedSize = static_cast<size_t>(fn.analyzedEndAddress - fn.startAddress);
         functions_.push_back(fn);
     }
     if (!functions_.empty())
@@ -166,34 +188,22 @@ void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
     }
 
     activeFunction_ = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), funcAddress, funcAddress, app.disassembler, app.is64Bit, 65536);
-    if (!activeFunction_.name.empty() && activeFunction_.name[0] != 's')
+    for (const auto& f : functions_)
     {
-        // Preserve existing meaningful name from function list
-        for (const auto& f : functions_)
+        if (f.startAddress == funcAddress && !f.name.empty())
         {
-            if (f.startAddress == funcAddress && !f.name.empty())
-            {
-                activeFunction_.name = f.name;
-                break;
-            }
-        }
-    }
-    else
-    {
-        for (const auto& f : functions_)
-        {
-            if (f.startAddress == funcAddress && !f.name.empty())
-            {
-                activeFunction_.name = f.name;
-                break;
-            }
+            activeFunction_.name = f.name;
+            activeFunction_.source = f.source;
+            activeFunction_.boundaryKnown = f.boundaryKnown;
+            activeFunction_.endAddress = f.endAddress;
+            activeFunction_.size = f.size;
+            break;
         }
     }
 
-    activePseudocode_ = app.functionAnalyzer.GeneratePseudocode(activeFunction_, app.is64Bit);
+    activeAssemblySummary_ = app.functionAnalyzer.GenerateAssemblySummary(activeFunction_, app.is64Bit);
     app.NavigateToAddress(funcAddress);
 
-    // Update XREF counts for active function
     auto xrefs = app.xrefScanner.FindXRefsTo(funcAddress);
     activeFunction_.xrefCount = (int)xrefs.size();
 }
@@ -255,12 +265,12 @@ void AnalysisPanel::Render(Application& app)
                 RenderCFGTab(app);
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Experimental Pseudocode"))
+        if (ImGui::BeginTabItem("Assembly Summary"))
         {
             if (!app.isAttached)
-                UIManager::EmptyState("Attach to a process to generate pseudocode.");
+                UIManager::EmptyState("Open a binary or attach to inspect decoded control-flow evidence.");
             else
-                RenderDecompilerTab(app);
+                RenderAssemblySummaryTab(app);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("XREFs (Cross-References)"))
@@ -303,13 +313,14 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
         return;
     }
 
-    if (ImGui::BeginTable("FunctionsTable", 6,
+    if (ImGui::BeginTable("FunctionsTable", 7,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
         ImGui::TableSetupColumn("Function Name", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 75.0f);
         ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 70.0f);
         ImGui::TableSetupColumn("Blocks", ImGuiTableColumnFlags_WidthFixed, 65.0f);
         ImGui::TableSetupColumn("V(G)", ImGuiTableColumnFlags_WidthFixed, 55.0f);
@@ -344,18 +355,27 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
             ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.95f, 1.0f), "%s", fn.name.c_str());
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%zu B", fn.size);
+            ImGui::TextUnformatted(FunctionSourceName(fn.source));
 
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%zu", fn.cfg.basicBlocks.size());
+            if (fn.boundaryKnown) ImGui::Text("%zu B", fn.size);
+            else ImGui::TextDisabled("Unknown");
 
             ImGui::TableSetColumnIndex(4);
-            ImVec4 compColor = (fn.cyclomaticComplexity >= 10) ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) :
-                               (fn.cyclomaticComplexity >= 5)  ? ImVec4(1.0f, 0.75f, 0.3f, 1.0f) :
-                                                                 ImVec4(0.7f, 0.85f, 0.7f, 1.0f);
-            ImGui::TextColored(compColor, "%d", fn.cyclomaticComplexity);
+            ImGui::Text("%zu", fn.cfg.basicBlocks.size());
 
             ImGui::TableSetColumnIndex(5);
+            if (fn.cfg.basicBlocks.empty())
+                ImGui::TextDisabled("Unknown");
+            else
+            {
+                ImVec4 compColor = (fn.cyclomaticComplexity >= 10) ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) :
+                                   (fn.cyclomaticComplexity >= 5)  ? ImVec4(1.0f, 0.75f, 0.3f, 1.0f) :
+                                                                     ImVec4(0.7f, 0.85f, 0.7f, 1.0f);
+                ImGui::TextColored(compColor, "%d", fn.cyclomaticComplexity);
+            }
+
+            ImGui::TableSetColumnIndex(6);
             ImGui::TextColored(ImVec4(0.85f, 0.65f, 0.95f, 1.0f), "%d", fn.xrefCount);
         }
 
@@ -522,36 +542,38 @@ void AnalysisPanel::RenderCFGTab(Application& app)
     ImGui::EndChild();
 }
 
-void AnalysisPanel::RenderDecompilerTab(Application& app)
+void AnalysisPanel::RenderAssemblySummaryTab(Application& app)
 {
-    if (activeFunction_.startAddress == 0 || activePseudocode_.empty())
+    if (activeFunction_.startAddress == 0 || activeAssemblySummary_.empty())
     {
         ImGui::Spacing();
-        ImGui::TextDisabled("No experimental pseudocode is available. Select a function from the Functions tab.");
+        ImGui::TextDisabled("No decoded summary is available. Select a function from the Functions tab.");
         return;
     }
 
-    if (ImGui::Button("Copy Pseudocode"))
+    if (ImGui::Button("Copy Summary"))
     {
-        ImGui::SetClipboardText(activePseudocode_.c_str());
+        ImGui::SetClipboardText(activeAssemblySummary_.c_str());
     }
     ImGui::SameLine();
-    if (ImGui::Button("Send to AI Copilot for Complete Refinement"))
+    if (ImGui::Button("Ask AI to Review"))
     {
-        std::string req = "Review this experimental C-like pseudocode generated for " +
-                          activeFunction_.name + ":\n\n```c\n" + activePseudocode_ + "\n```";
+        std::string req = "Review this decoded control-flow evidence for " + activeFunction_.name +
+                          ". Separate observations from inferences:\n\n```asm\n" +
+                          activeAssemblySummary_ + "\n```";
         app.aiService.Send(req);
     }
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "OpenReverse experimental output");
+    ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "Decoded CFG evidence");
 
     ImGui::Separator();
 
     if (UIManager::GetMonoFont())
         ImGui::PushFont(UIManager::GetMonoFont());
 
-    ImGui::BeginChild("PseudocodeTextWindow", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-    ImGui::TextUnformatted(activePseudocode_.c_str());
+    ImGui::BeginChild("AssemblySummaryTextWindow", ImVec2(0, 0), true,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::TextUnformatted(activeAssemblySummary_.c_str());
     ImGui::EndChild();
 
     if (UIManager::GetMonoFont())
@@ -606,9 +628,13 @@ void AnalysisPanel::RenderXRefsTab(Application& app)
             ImGui::TableSetColumnIndex(2);
             const char* typeStr = (xr.type == XRefType::Call) ? "CALL" :
                                   (xr.type == XRefType::Jump) ? "JUMP" :
-                                  (xr.type == XRefType::Lea)  ? "LEA" :
+                                  (xr.type == XRefType::Address)  ? "ADDRESS" :
                                   (xr.type == XRefType::Read) ? "READ" :
-                                  (xr.type == XRefType::ReadWrite) ? "R/W" : "WRITE";
+                                  (xr.type == XRefType::ReadWrite) ? "R/W" :
+                                  (xr.type == XRefType::Write) ? "WRITE" :
+                                  (xr.type == XRefType::String) ? "STRING" :
+                                  (xr.type == XRefType::Import) ? "IMPORT" :
+                                  (xr.type == XRefType::Global) ? "GLOBAL" : "DATA";
             ImGui::TextColored(xr.type == XRefType::Call ? ImVec4(0.08f, 0.55f, 0.92f, 1.0f)
                                                          : ImVec4(0.72f, 0.77f, 0.81f, 1.0f), "%s", typeStr);
             ImGui::TableSetColumnIndex(3);

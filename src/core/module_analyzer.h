@@ -5,6 +5,7 @@
 #include "core/function_analyzer.h"
 #include "core/module_manager.h"
 #include "core/pe_parser.h"
+#include "core/offset_model.h"
 #include "core/string_scanner.h"
 #include "core/xref_scanner.h"
 
@@ -41,6 +42,9 @@ struct ModuleAnalysisResult {
     std::vector<GlobalCandidate> globals;
     std::vector<FieldAccessCandidate> fieldAccesses;
     std::vector<StructureCandidate> structures;
+    std::vector<OffsetRecord> offsets;
+    std::vector<SignatureRecord> signatures;
+    ModuleIdentity identity;
     size_t codeBytesAnalyzed = 0;
     size_t stringBytesAnalyzed = 0;
     std::chrono::milliseconds peDuration{0};
@@ -57,6 +61,12 @@ public:
                                      const ModuleAnalysisOptions& options = {},
                                      const CancellationToken* cancellation = nullptr,
                                      const ProgressCallback& progress = {}) const;
+    ModuleAnalysisResult AnalyzeMappedImage(const std::vector<uint8_t>& mappedImage,
+                                            size_t sourceFileSize,
+                                            const ModuleInfo& module, const PEInfo& pe,
+                                            const ModuleAnalysisOptions& options = {},
+                                            const CancellationToken* cancellation = nullptr,
+                                            const ProgressCallback& progress = {}) const;
 };
 
 } // namespace openreverse

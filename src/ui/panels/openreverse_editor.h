@@ -57,17 +57,14 @@ private:
     int activeTabIdx_ = -1;
     bool initialized_ = false;
 
-    // Workspace state
     int activeSidebarTab_ = 0; // 0 = Explorer, 1 = Search
     bool showProblemsPanel_ = false;
 
-    // Search & Replace
     char searchBuf_[128] = {};
     char searchQueryBuf_[256] = "";
     char replaceQueryBuf_[256] = "";
     std::vector<SearchResult> searchResults_;
 
-    // Modals & Context Menus
     char newFilenameBuf_[128] = "new_script.cpp";
     char newFolderBuf_[128] = "user_scripts";
     char renameBuf_[128] = "";

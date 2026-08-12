@@ -1,8 +1,30 @@
 #include "disassembler.h"
 #include <cstring>
+#include <limits>
 #include <utility>
 
 namespace openreverse {
+
+namespace {
+
+bool AddDisplacement(uint64_t base, int64_t displacement, uint64_t& target)
+{
+    if (displacement >= 0)
+    {
+        const uint64_t value = static_cast<uint64_t>(displacement);
+        if (value > (std::numeric_limits<uint64_t>::max)() - base)
+            return false;
+        target = base + value;
+        return true;
+    }
+    const uint64_t magnitude = static_cast<uint64_t>(-(displacement + 1)) + 1;
+    if (magnitude > base)
+        return false;
+    target = base - magnitude;
+    return true;
+}
+
+} // namespace
 
 Disassembler::Disassembler()
 {
@@ -88,6 +110,7 @@ void Disassembler::PopulateInstruction(cs_insn* source, Instruction& instruction
     if (!source)
         return;
     instruction.address = source->address;
+    instruction.instructionId = source->id;
     instruction.size = static_cast<uint8_t>(source->size);
     memcpy(instruction.bytes, source->bytes, source->size);
     instruction.mnemonic = source->mnemonic;
@@ -95,6 +118,28 @@ void Disassembler::PopulateInstruction(cs_insn* source, Instruction& instruction
     instruction.isJump = IsJumpMnemonic(source->mnemonic);
     instruction.isCall = IsCallMnemonic(source->mnemonic);
     instruction.isRet = IsRetMnemonic(source->mnemonic);
+    if (source->detail)
+    {
+        instruction.displacementOffset = source->detail->x86.encoding.disp_offset;
+        instruction.displacementSize = source->detail->x86.encoding.disp_size;
+        instruction.immediateOffset = source->detail->x86.encoding.imm_offset;
+        instruction.immediateSize = source->detail->x86.encoding.imm_size;
+        for (uint8_t index = 0; index < source->detail->groups_count; ++index)
+            instruction.groups.push_back(source->detail->groups[index]);
+
+        cs_regs readRegisters{};
+        cs_regs writtenRegisters{};
+        uint8_t readCount = 0;
+        uint8_t writtenCount = 0;
+        if (cs_regs_access(handle_, source, readRegisters, &readCount,
+                           writtenRegisters, &writtenCount) == CS_ERR_OK)
+        {
+            for (uint8_t index = 0; index < readCount; ++index)
+                instruction.registersRead.emplace_back(cs_reg_name(handle_, readRegisters[index]));
+            for (uint8_t index = 0; index < writtenCount; ++index)
+                instruction.registersWritten.emplace_back(cs_reg_name(handle_, writtenRegisters[index]));
+        }
+    }
     ExtractTarget(source, instruction);
 }
 
@@ -129,15 +174,32 @@ void Disassembler::ExtractTarget(cs_insn* insn, Instruction& instruction)
     for (int i = 0; i < x86->op_count; ++i)
     {
         const cs_x86_op& operand = x86->operands[i];
+        DecodedOperand decoded;
+        decoded.index = static_cast<uint8_t>(i);
+        decoded.size = operand.size;
+        decoded.read = (operand.access & CS_AC_READ) != 0;
+        decoded.write = (operand.access & CS_AC_WRITE) != 0;
         if ((instruction.isCall || instruction.isJump) && operand.type == X86_OP_IMM &&
             instruction.targetKind == InstructionTargetKind::None)
         {
             instruction.targetAddress = static_cast<uint64_t>(operand.imm);
             instruction.targetKind = InstructionTargetKind::Immediate;
         }
+        if (operand.type == X86_OP_REG)
+        {
+            decoded.type = OperandType::Register;
+            decoded.registerName = cs_reg_name(handle_, operand.reg);
+        }
+        else if (operand.type == X86_OP_IMM)
+        {
+            decoded.type = OperandType::Immediate;
+            decoded.immediate = operand.imm;
+        }
         if (operand.type == X86_OP_MEM)
         {
+            decoded.type = OperandType::Memory;
             MemoryOperand memory;
+            memory.operandIndex = static_cast<uint8_t>(i);
             if (operand.mem.base != X86_REG_INVALID)
                 memory.baseRegister = cs_reg_name(handle_, operand.mem.base);
             if (operand.mem.index != X86_REG_INVALID)
@@ -148,29 +210,31 @@ void Disassembler::ExtractTarget(cs_insn* insn, Instruction& instruction)
             memory.read = (operand.access & CS_AC_READ) != 0;
             memory.write = (operand.access & CS_AC_WRITE) != 0;
             memory.ripRelative = operand.mem.base == X86_REG_RIP || operand.mem.base == X86_REG_EIP;
-            instruction.memoryOperands.push_back(std::move(memory));
-
             uint64_t target = 0;
-            // In x64 RIP-relative addressing: [rip + disp]
             if (operand.mem.base == X86_REG_RIP)
             {
-                target = static_cast<uint64_t>(insn->address + insn->size + operand.mem.disp);
+                AddDisplacement(insn->address + insn->size, operand.mem.disp, target);
             }
-            // Absolute memory address without base/index register
             else if (operand.mem.base == X86_REG_INVALID &&
                      operand.mem.index == X86_REG_INVALID && operand.mem.disp != 0)
             {
                 target = static_cast<uint64_t>(operand.mem.disp);
             }
 
-            if (target == 0 || instruction.targetKind != InstructionTargetKind::None)
-                continue;
+            memory.resolved = target != 0;
+            memory.resolvedAddress = target;
+            decoded.memory = memory;
+            instruction.memoryOperands.push_back(std::move(memory));
 
-            instruction.targetAddress = target;
-            instruction.targetKind = InstructionTargetKind::Memory;
-            instruction.memoryRead = (operand.access & CS_AC_READ) != 0;
-            instruction.memoryWrite = (operand.access & CS_AC_WRITE) != 0;
+            if (target != 0 && instruction.targetKind == InstructionTargetKind::None)
+            {
+                instruction.targetAddress = target;
+                instruction.targetKind = InstructionTargetKind::Memory;
+                instruction.memoryRead = decoded.read;
+                instruction.memoryWrite = decoded.write;
+            }
         }
+        instruction.decodedOperands.push_back(std::move(decoded));
     }
 }
 

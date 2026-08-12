@@ -1,5 +1,4 @@
 #pragma once
-// Coordinates bounded headless analysis through the shared application state.
 
 #include "app/application.h"
 #include <string>
@@ -20,10 +19,10 @@ struct AutoAnalysisResult {
     struct FunctionSummary {
         uint64_t    address = 0;
         std::string name;
-        size_t      size = 0;
-        int         complexity = 1;
+        size_t      analyzedSize = 0;
+        int         complexity = 0;
         int         xrefCount = 0;
-        std::string pseudocode;
+        std::string assemblySummary;
     };
 
     std::vector<FunctionSummary> keyFunctions;

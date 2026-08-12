@@ -1,6 +1,4 @@
 #pragma once
-// OpenReverse - Core: Pattern Scanner
-// AOB (Array of Bytes) scanner with wildcard support
 
 #include <windows.h>
 #include <atomic>
@@ -25,7 +23,7 @@ struct ScanResult {
 
 struct PatternByte {
     uint8_t value;
-    bool    wildcard; // true = '??' = match anything
+    bool    wildcard;
 };
 
 enum class OfflinePatternScanScope {
@@ -52,7 +50,6 @@ struct PatternScanReport {
 
 class PatternScanner {
 public:
-    // Parse pattern string like "48 8B ?? ?? 74 0A" into bytes + mask
     static std::vector<PatternByte> ParsePattern(const std::string& pattern);
     static size_t AdvanceAfterRead(size_t bytesRead, size_t patternSize);
 
@@ -65,14 +62,12 @@ public:
                                   const CancellationToken* cancellation = nullptr,
                                   const std::function<void(float)>& progress = {});
 
-    // Scan memory for pattern, returns list of matching addresses
     std::vector<ScanResult> Scan(HANDLE processHandle,
                                    const std::vector<PatternByte>& pattern,
                                    uint64_t startAddress, uint64_t endAddress,
                                    size_t maxResults = 1000,
                                    const CancellationToken* cancellation = nullptr);
 
-    // Scan within specific regions
     std::vector<ScanResult> ScanRegions(HANDLE processHandle,
                                          const std::vector<PatternByte>& pattern,
                                          const std::vector<struct MemoryRegion>& regions,
@@ -80,7 +75,6 @@ public:
                                          const CancellationToken* cancellation = nullptr,
                                          const std::function<void(float)>& progress = {});
 
-    // Scan progress (0.0 - 1.0)
     float GetProgress() const { return progress_.load(std::memory_order_relaxed); }
     bool  IsScanning() const { return scanning_.load(std::memory_order_relaxed); }
     void  StopScan() { stopRequested_.store(true, std::memory_order_relaxed); }

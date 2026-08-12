@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <exception>
+#include <cstring>
+#include <stdexcept>
 #include <set>
 #include <utility>
 #include <cmath>
@@ -46,12 +48,15 @@ bool Application::AttachToProcess(DWORD pid)
     processHandle = processManager.OpenProcess(pid);
     if (!processHandle)
     {
-        Logger::Get().Log(LogLevel::Error, "Failed to open process PID %d", pid);
+        const DWORD error = GetLastError();
+        const std::string message = ProcessOpenFailureMessage(error);
+        Logger::Get().Log(LogLevel::Error, "%s", message.c_str());
         return false;
     }
 
     attachedPID = pid;
     isAttached = true;
+    targetKind = AnalysisTargetKind::LiveProcess;
     is64Bit = processManager.IsProcess64Bit(processHandle);
     memoryReader.SetOfflineBuffer(nullptr, 0);
 
@@ -67,7 +72,6 @@ bool Application::AttachToProcess(DWORD pid)
 
     disassembler.Init(is64Bit);
 
-    // Load memory regions and modules
     memoryReader.RefreshRegions(processHandle);
     moduleManager.RefreshModules(processHandle);
 
@@ -80,6 +84,7 @@ bool Application::AttachToProcess(DWORD pid)
 void Application::DetachFromProcess()
 {
     analysisScheduler.CancelAllAndWait();
+    offlineAnalysisJobId = 0;
     analysisDatabase.Clear();
     analysisPanel.ResetAnalysis();
     xrefScanner.Clear();
@@ -97,6 +102,7 @@ void Application::DetachFromProcess()
         Logger::Get().Log(LogLevel::Info, "Detached from %s", attachedProcessName.c_str());
     }
     isAttached = false;
+    targetKind = AnalysisTargetKind::None;
     attachedPID = 0;
     processHandle = nullptr;
     attachedProcessName.clear();
@@ -127,224 +133,266 @@ void Application::ShowOpenFileDialog()
     }
 }
 
+void Application::ShowOpenDumpDialog()
+{
+    OPENFILENAMEA dialog{};
+    char fileName[MAX_PATH] = "";
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = nullptr;
+    dialog.lpstrFilter = "Memory dumps (*.dmp;*.mdmp;*.bin)\0*.dmp;*.mdmp;*.bin\0All Files (*.*)\0*.*\0";
+    dialog.lpstrFile = fileName;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    dialog.lpstrTitle = "Open a mapped image, raw snapshot, or Windows minidump";
+    if (GetOpenFileNameA(&dialog))
+    {
+        DumpLoader loader;
+        const auto detected = loader.Load(fileName);
+        if (detected.success)
+        {
+            OpenDumpFile(fileName);
+            return;
+        }
+
+        pendingDumpPath_ = fileName;
+        pendingDumpModules_ = detected.availableModules;
+        pendingDumpModuleIndex_ = 0;
+        dumpImportError_.clear();
+        if (pendingDumpModules_.empty())
+        {
+            WIN32_FILE_ATTRIBUTE_DATA fileData{};
+            if (GetFileAttributesExA(fileName, GetFileExInfoStandard, &fileData))
+            {
+                const uint64_t size = (static_cast<uint64_t>(fileData.nFileSizeHigh) << 32) |
+                    fileData.nFileSizeLow;
+                snprintf(dumpModuleSizeBuf_, sizeof(dumpModuleSizeBuf_), "%llu",
+                         static_cast<unsigned long long>(size));
+            }
+        }
+        showDumpImportModal_ = true;
+        requestDumpImportPopup_ = true;
+    }
+}
+
 bool Application::OpenBinaryFile(const std::string& filePath)
 {
-    try {
+    try
+    {
         DetachFromProcess();
-        std::cout << "[*] Reading and parsing PE headers from disk..." << std::endl;
+        std::cout << "[*] Parsing PE headers and mapping sections..." << std::endl;
 
         std::vector<uint8_t> rawFile;
         std::vector<uint8_t> mappedImage;
         PEInfo info = peParser.ParseFile(filePath, rawFile);
         if (!info.valid || rawFile.empty())
         {
-            std::cout << "\033[1;31m[-] Failed to parse PE binary or driver file: " << filePath << "\033[0m" << std::endl;
-            Logger::Get().Log(LogLevel::Error, "Failed to parse PE binary or driver file: %s", filePath.c_str());
+            std::cout << "\033[1;31m[-] Failed to parse PE binary: " << filePath << "\033[0m" << std::endl;
+            Logger::Get().Log(LogLevel::Error, "Failed to parse PE binary: %s", filePath.c_str());
             return false;
         }
         if (!PEParser::BuildMappedImage(rawFile, info, mappedImage))
         {
-            Logger::Get().Log(LogLevel::Error, "Failed to map PE sections for offline analysis: %s", filePath.c_str());
+            Logger::Get().Log(LogLevel::Error, "Failed to build the RVA-mapped image: %s", filePath.c_str());
             return false;
         }
+
         offlineFileBuffer = std::move(rawFile);
         offlineImageBuffer = std::move(mappedImage);
         offlinePEInfo = info;
-
         loadedFilePath = filePath;
         is64Bit = info.is64bit;
-        attachedProcessName = filePath.substr(filePath.find_last_of("/\\") + 1);
+        const size_t separator = filePath.find_last_of("/\\");
+        attachedProcessName = separator == std::string::npos ? filePath : filePath.substr(separator + 1);
         isAttached = true;
-        attachedPID = 0; // 0 indicates offline PE / kernel driver file analysis
+        targetKind = AnalysisTargetKind::PEFile;
+        attachedPID = 0;
         currentAddress = info.imageBase + info.entryPoint;
 
         memoryReader.SetOfflineBuffer(&offlineImageBuffer, info.imageBase);
         disassembler.Init(is64Bit);
-
         moduleManager.Clear();
         moduleManager.AddModule(attachedProcessName, info.imageBase, info.sizeOfImage, loadedFilePath);
 
-        std::cout << "[*] Discovering PE entry point and exported functions..." << std::endl;
-        std::vector<FunctionInfo> discoveredFuncs;
-        const auto isExecutableRva = [&](uint32_t rva) {
-            for (const auto& section : info.sections)
-            {
-                const uint64_t span = std::max<uint64_t>(section.virtualSize, section.rawDataSize);
-                if ((section.characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 && rva >= section.virtualAddress &&
-                    static_cast<uint64_t>(rva) - section.virtualAddress < span)
-                    return true;
-            }
+        if (ImGui::GetCurrentContext())
+        {
+            const uint64_t generation = targetGeneration;
+            const auto mapped = offlineImageBuffer;
+            const auto raw = offlineFileBuffer;
+            const ModuleInfo module{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage};
+            Application* application = this;
+            offlineAnalysisJobId = analysisScheduler.Submit("Offline PE analysis",
+                [application, generation, mapped, raw, module, info](
+                    const CancellationToken& cancellation,
+                    const AnalysisScheduler::ProgressCallback& progress) mutable {
+                    ModuleAnalysisOptions options;
+                    options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
+                    options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
+                    ModuleAnalyzer analyzer;
+                    auto result = analyzer.AnalyzeMappedImage(
+                        mapped, raw.size(), module, info, options, &cancellation, progress);
+                    std::string identityError;
+                    ModuleIdentity identity;
+                    if (result.success && ComputeModuleIdentity(raw, info, module.name,
+                                                                 identity, identityError))
+                        result.identity = std::move(identity);
+                    return [application, generation, result = std::move(result)]() mutable {
+                        if (application->targetGeneration != generation) return;
+                        application->offlineAnalysisJobId = 0;
+                        if (!result.success)
+                        {
+                            if (!result.cancelled)
+                                Logger::Get().Log(LogLevel::Error,
+                                    "Offline analysis failed: %s", result.error.c_str());
+                            return;
+                        }
+                        application->analysisPanel.ApplyModuleAnalysis(
+                            *application, std::move(result));
+                    };
+                });
+            Logger::Get().Log(LogLevel::Info, "Offline analysis queued: %s",
+                attachedProcessName.c_str());
+            return true;
+        }
+
+        std::cout << "[*] Running deterministic mapped-image analysis..." << std::endl;
+        ModuleInfo module{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage};
+        ModuleAnalysisOptions options;
+        options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
+        options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
+        ModuleAnalyzer analyzer;
+        auto result = analyzer.AnalyzeMappedImage(
+            offlineImageBuffer, offlineFileBuffer.size(), module, info, options);
+        if (!result.success)
+        {
+            const std::string error = result.error.empty() ? "Offline analysis was cancelled" : result.error;
+            Logger::Get().Log(LogLevel::Error, "Offline analysis failed: %s", error.c_str());
+            std::cout << "\033[1;31m[-] " << error << "\033[0m" << std::endl;
+            DetachFromProcess();
             return false;
-        };
-
-        if (info.entryPoint != 0 && isExecutableRva(static_cast<uint32_t>(info.entryPoint)))
-        {
-            FunctionInfo entryFn;
-            entryFn.name = "entry_point";
-            entryFn.startAddress = info.imageBase + info.entryPoint;
-            entryFn.size = 128;
-            entryFn.endAddress = entryFn.startAddress + entryFn.size;
-            discoveredFuncs.push_back(entryFn);
         }
 
-        for (const auto& exp : info.exports)
-        {
-            if (exp.isForwarder || !isExecutableRva(exp.rva))
-                continue;
-            FunctionInfo fn;
-            fn.name = exp.name.empty() ? ("sub_" + helpers::FormatAddress(info.imageBase + exp.rva, false)) : exp.name;
-            fn.startAddress = info.imageBase + exp.rva;
-            fn.size = 64;
-            fn.endAddress = fn.startAddress + fn.size;
-            fn.isExported = true;
-            discoveredFuncs.push_back(fn);
-        }
+        std::string identityError;
+        ModuleIdentity fileIdentity;
+        if (ComputeModuleIdentity(offlineFileBuffer, info, attachedProcessName,
+                                  fileIdentity, identityError))
+            result.identity = std::move(fileIdentity);
+        else
+            Logger::Get().Log(LogLevel::Warning, "%s", identityError.c_str());
 
-        std::cout << "[*] Decoding executable sections for function and Xref discovery..." << std::endl;
-        constexpr size_t kAutomaticCodeAnalysisLimit = 16ULL * 1024ULL * 1024ULL;
-        constexpr size_t kAutomaticInstructionLimit = 250000;
-        constexpr size_t kAutomaticFunctionLimit = 10000;
-        size_t remainingCodeBudget = kAutomaticCodeAnalysisLimit;
-        size_t remainingInstructionBudget = kAutomaticInstructionLimit;
-        std::vector<std::pair<uint64_t, uint64_t>> analyzedCodeRanges;
-        std::vector<FieldAccessCandidate> fieldAccesses;
-        std::set<uint64_t> discoveredFunctionAddresses;
-        for (const auto& function : discoveredFuncs)
-            discoveredFunctionAddresses.insert(function.startAddress);
-        xrefScanner.Clear();
-        for (const auto& section : info.sections)
-        {
-            if (remainingCodeBudget == 0 || remainingInstructionBudget == 0)
-                break;
-            if ((section.characteristics & IMAGE_SCN_MEM_EXECUTE) == 0 ||
-                section.virtualAddress >= offlineImageBuffer.size())
-                continue;
-
-            const size_t sectionSize = std::min<size_t>({section.rawDataSize,
-                offlineImageBuffer.size() - section.virtualAddress, remainingCodeBudget});
-            if (sectionSize == 0)
-                continue;
-
-            const uint8_t* sectionData = offlineImageBuffer.data() + section.virtualAddress;
-            const uint64_t sectionBase = info.imageBase + section.virtualAddress;
-            analyzedCodeRanges.push_back({sectionBase, sectionBase + sectionSize});
-            remainingCodeBudget -= sectionSize;
-            if (discoveredFuncs.size() < kAutomaticFunctionLimit)
-            {
-                auto scanFuncs = functionAnalyzer.DiscoverFunctions(sectionData, sectionSize, sectionBase, is64Bit,
-                    kAutomaticFunctionLimit - discoveredFuncs.size(), 0);
-                for (const auto& fn : scanFuncs)
-                {
-                    if (discoveredFunctionAddresses.insert(fn.startAddress).second)
-                        discoveredFuncs.push_back(fn);
-                }
-            }
-
-            const auto instructions = disassembler.Disassemble(sectionData, sectionSize, sectionBase,
-                std::min(remainingInstructionBudget, sectionSize));
-            remainingInstructionBudget -= std::min(remainingInstructionBudget, instructions.size());
-            xrefScanner.ScanInstructions(instructions, attachedProcessName);
-            auto sectionFields = FindFieldAccesses(
-                instructions, 100000 - std::min<size_t>(fieldAccesses.size(), 100000));
-            fieldAccesses.insert(fieldAccesses.end(), sectionFields.begin(), sectionFields.end());
-        }
-
-        std::vector<uint64_t> decodedCallTargets;
-        for (const auto& xref : xrefScanner.GetAllEntries())
-            if (xref.type == XRefType::Call)
-                decodedCallTargets.push_back(xref.toAddress);
-        for (const auto& range : analyzedCodeRanges)
-        {
-            discoveredFuncs = functionAnalyzer.DiscoverFunctionsFromXRefs(
-                discoveredFuncs, decodedCallTargets, range.first, range.second, is64Bit,
-                kAutomaticFunctionLimit);
-        }
-        if (discoveredFuncs.size() > kAutomaticFunctionLimit)
-            discoveredFuncs.resize(kAutomaticFunctionLimit);
-        if (remainingCodeBudget == 0)
-            Logger::Get().Log(LogLevel::Warning, "Automatic code analysis reached the 16 MB safety limit.");
-        if (remainingInstructionBudget == 0)
-            Logger::Get().Log(LogLevel::Warning, "Automatic code analysis reached the instruction limit.");
-        if (discoveredFuncs.size() >= kAutomaticFunctionLimit)
-            Logger::Get().Log(LogLevel::Warning, "Automatic code analysis reached the function limit.");
-
-        std::sort(discoveredFuncs.begin(), discoveredFuncs.end(), [](const FunctionInfo& a, const FunctionInfo& b) {
-            return a.startAddress < b.startAddress;
-        });
-        AssignFieldFunctions(fieldAccesses, discoveredFuncs);
-        const auto structures = InferStructures(fieldAccesses);
-
-        std::cout << "[*] Scanning offline binary strings..." << std::endl;
-        constexpr size_t kAutomaticStringScanLimit = 64ULL * 1024ULL * 1024ULL;
-        size_t remainingStringBudget = kAutomaticStringScanLimit;
-        stringResults.clear();
-        for (const auto& section : info.sections)
-        {
-            if (stringResults.size() >= 5000 || remainingStringBudget == 0)
-                break;
-            if (section.rawDataSize == 0 || section.virtualAddress >= offlineImageBuffer.size())
-                continue;
-            const size_t sectionSize = std::min<size_t>({section.rawDataSize,
-                offlineImageBuffer.size() - section.virtualAddress, remainingStringBudget});
-            remainingStringBudget -= sectionSize;
-            auto sectionStrings = stringScanner.ScanBuffer(
-                offlineImageBuffer.data() + section.virtualAddress, sectionSize,
-                info.imageBase + section.virtualAddress, 5, true, true, 5000 - stringResults.size());
-            stringResults.insert(stringResults.end(), sectionStrings.begin(), sectionStrings.end());
-        }
-
-        std::cout << "[*] Disassembling entry point instructions..." << std::endl;
-        std::vector<Instruction> insns;
-        size_t entrySize = 0;
-        if (info.entryPoint < offlineImageBuffer.size())
-        {
-            for (const auto& section : info.sections)
-            {
-                if (info.entryPoint < section.virtualAddress)
-                    continue;
-                const uint64_t delta = info.entryPoint - section.virtualAddress;
-                if (delta < section.rawDataSize)
-                {
-                    entrySize = std::min<size_t>(section.rawDataSize - static_cast<size_t>(delta),
-                                                 offlineImageBuffer.size() - static_cast<size_t>(info.entryPoint));
-                    break;
-                }
-            }
-        }
-
-        if (entrySize != 0)
-        {
-            insns = disassembler.Disassemble(offlineImageBuffer.data() + info.entryPoint, entrySize, currentAddress, 500);
-        }
-
-        std::cout << "[*] Updating OpenReverse analysis panels..." << std::endl;
-        ModuleInfo analyzedModule{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage};
-        const auto globals = FindGlobalCandidates(analyzedModule, info, xrefScanner.GetAllEntries());
-        analysisDatabase.ReplaceModuleAnalysis(analyzedModule, is64Bit, info, discoveredFuncs,
-                                               xrefScanner.GetAllEntries(), stringResults, globals, fieldAccesses,
-                                               structures);
-        analysisPanel.SetPEAnalysisResult(insns, info.sections, info.imports, info.exports, is64Bit, discoveredFuncs);
-        if (!discoveredFuncs.empty())
-        {
-            analysisPanel.SelectFunction(*this, discoveredFuncs[0].startAddress);
-        }
-
-        Logger::Get().Log(LogLevel::Info, "Loaded PE/Driver file: %s (%s, %zu bytes, %zu sections, %zu imports, %zu functions, %zu strings)",
-            attachedProcessName.c_str(), is64Bit ? "x64" : "x86", offlineFileBuffer.size(), info.sections.size(), info.imports.size(), discoveredFuncs.size(), stringResults.size());
-
+        analysisPanel.ApplyModuleAnalysis(*this, std::move(result));
+        Logger::Get().Log(LogLevel::Info,
+            "Loaded offline PE: %s (%s, %zu bytes, %zu sections)",
+            attachedProcessName.c_str(), is64Bit ? "x64" : "x86",
+            offlineFileBuffer.size(), info.sections.size());
         std::cout << "[+] Analysis completed successfully!" << std::endl;
         return true;
     }
-    catch (const std::exception& e)
+    catch (const std::exception& exception)
     {
         DetachFromProcess();
-        std::cout << "\033[1;31m[-] Exception during OpenBinaryFile: " << e.what() << "\033[0m" << std::endl;
+        Logger::Get().Log(LogLevel::Error, "Offline analysis exception: %s", exception.what());
+        std::cout << "\033[1;31m[-] Offline analysis failed: " << exception.what()
+                  << "\033[0m" << std::endl;
         return false;
     }
     catch (...)
     {
         DetachFromProcess();
-        std::cout << "\033[1;31m[-] Unknown exception/crash during OpenBinaryFile\033[0m" << std::endl;
+        Logger::Get().Log(LogLevel::Error, "Offline analysis failed with an unknown error");
+        std::cout << "\033[1;31m[-] Offline analysis failed with an unknown error\033[0m" << std::endl;
+        return false;
+    }
+}
+
+bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOptions& options)
+{
+    try
+    {
+        DumpLoader loader;
+        auto dump = loader.Load(filePath, options);
+        if (!dump.success)
+        {
+            Logger::Get().Log(LogLevel::Error, "Dump import failed: %s", dump.error.c_str());
+            if (!dump.availableModules.empty())
+                Logger::Get().Log(LogLevel::Info,
+                    "The minidump contains %zu modules; select one by base address",
+                    dump.availableModules.size());
+            return false;
+        }
+
+        DetachFromProcess();
+
+        loadedFilePath = filePath;
+        attachedProcessName = dump.module.name;
+        is64Bit = dump.architecture == DumpArchitecture::X64;
+        isAttached = true;
+        targetKind = dump.representation == DumpRepresentation::Minidump
+            ? AnalysisTargetKind::MinidumpModule
+            : dump.representation == DumpRepresentation::RawSnapshot
+                ? AnalysisTargetKind::RawDump : AnalysisTargetKind::MappedDump;
+        attachedPID = 0;
+        offlineFileBuffer.clear();
+        offlineImageBuffer = std::move(dump.imageBytes);
+        offlinePEInfo = dump.pe;
+        currentAddress = dump.pe.imageBase + dump.pe.entryPoint;
+        memoryReader.SetOfflineBuffer(&offlineImageBuffer, dump.pe.imageBase);
+        disassembler.Init(is64Bit);
+        moduleManager.Clear();
+        moduleManager.AddModule(dump.module.name, dump.module.baseAddress,
+                                dump.module.size, filePath);
+
+        if (ImGui::GetCurrentContext())
+        {
+            const uint64_t generation = targetGeneration;
+            const auto mapped = offlineImageBuffer;
+            const ModuleInfo module = dump.module;
+            const PEInfo pe = dump.pe;
+            Application* application = this;
+            offlineAnalysisJobId = analysisScheduler.Submit("Static dump analysis",
+                [application, generation, mapped, module, pe](
+                    const CancellationToken& cancellation,
+                    const AnalysisScheduler::ProgressCallback& progress) mutable {
+                    ModuleAnalyzer analyzer;
+                    auto result = analyzer.AnalyzeMappedImage(
+                        mapped, 0, module, pe, {}, &cancellation, progress);
+                    return [application, generation, result = std::move(result)]() mutable {
+                        if (application->targetGeneration != generation) return;
+                        application->offlineAnalysisJobId = 0;
+                        if (!result.success)
+                        {
+                            if (!result.cancelled)
+                                Logger::Get().Log(LogLevel::Error,
+                                    "Dump analysis failed: %s", result.error.c_str());
+                            return;
+                        }
+                        application->analysisPanel.ApplyModuleAnalysis(
+                            *application, std::move(result));
+                    };
+                });
+            Logger::Get().Log(LogLevel::Info, "Static dump analysis queued: %s",
+                attachedProcessName.c_str());
+            return true;
+        }
+
+        ModuleAnalyzer analyzer;
+        auto analysis = analyzer.AnalyzeMappedImage(
+            offlineImageBuffer, 0, dump.module, dump.pe);
+        if (!analysis.success)
+        {
+            const std::string error = analysis.error.empty() ? "Dump analysis was cancelled" : analysis.error;
+            Logger::Get().Log(LogLevel::Error, "Dump analysis failed: %s", error.c_str());
+            DetachFromProcess();
+            return false;
+        }
+        analysisPanel.ApplyModuleAnalysis(*this, std::move(analysis));
+        Logger::Get().Log(LogLevel::Info, "Loaded static dump: %s (%s, %zu bytes)",
+            attachedProcessName.c_str(), is64Bit ? "x64" : "x86", offlineImageBuffer.size());
+        return true;
+    }
+    catch (const std::exception& exception)
+    {
+        DetachFromProcess();
+        Logger::Get().Log(LogLevel::Error, "Dump import exception: %s", exception.what());
         return false;
     }
 }
@@ -381,6 +429,7 @@ void Application::Render()
         processListPanel.ForceRefresh();
 
     RenderDockspace();
+    RenderDumpImportDialog();
 
     processListPanel.Render(*this);
     hexEditorPanel.Render(*this);
@@ -403,11 +452,110 @@ void Application::Render()
     RenderStatusBar();
 }
 
+void Application::RenderDumpImportDialog()
+{
+    if (requestDumpImportPopup_)
+    {
+        ImGui::OpenPopup("Configure static dump import");
+        requestDumpImportPopup_ = false;
+    }
+    if (!showDumpImportModal_) return;
+
+    if (!ImGui::BeginPopupModal("Configure static dump import", &showDumpImportModal_,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextWrapped("OpenReverse could not identify this file as a complete mapped PE image. "
+                       "The file will only be read as static data and will never be executed.");
+    ImGui::Separator();
+    if (!pendingDumpModules_.empty())
+    {
+        ImGui::TextUnformatted("Select a captured minidump module:");
+        const auto moduleLabel = [](const DumpModuleMetadata& module) {
+            std::ostringstream stream;
+            stream << module.name << " @ 0x" << std::hex << std::uppercase << module.imageBase
+                   << " (" << std::dec << module.imageSize << " bytes)";
+            return stream.str();
+        };
+        const std::string preview = moduleLabel(pendingDumpModules_[pendingDumpModuleIndex_]);
+        if (ImGui::BeginCombo("Module", preview.c_str()))
+        {
+            for (int index = 0; index < static_cast<int>(pendingDumpModules_.size()); ++index)
+            {
+                const std::string label = moduleLabel(pendingDumpModules_[index]);
+                if (ImGui::Selectable(label.c_str(), index == pendingDumpModuleIndex_))
+                    pendingDumpModuleIndex_ = index;
+            }
+            ImGui::EndCombo();
+        }
+    }
+    else
+    {
+        ImGui::TextUnformatted("Raw snapshots require explicit metadata:");
+        ImGui::Combo("Architecture", &dumpArchitectureIndex_, "x86\0x64\0");
+        ImGui::InputText("Image base", dumpImageBaseBuf_, sizeof(dumpImageBaseBuf_));
+        ImGui::InputText("Module size", dumpModuleSizeBuf_, sizeof(dumpModuleSizeBuf_));
+        ImGui::TextDisabled("Values may be decimal or 0x-prefixed. Module size cannot exceed the file size.");
+    }
+    if (!dumpImportError_.empty())
+        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.38f, 1.0f), "%s", dumpImportError_.c_str());
+
+    if (ImGui::Button("Analyze statically"))
+    {
+        DumpImportOptions options;
+        if (!pendingDumpModules_.empty())
+        {
+            options.representation = DumpRepresentation::Minidump;
+            options.minidumpModuleBase = pendingDumpModules_[pendingDumpModuleIndex_].imageBase;
+        }
+        else
+        {
+            options.representation = DumpRepresentation::RawSnapshot;
+            options.architecture = dumpArchitectureIndex_ == 0
+                ? DumpArchitecture::X86 : DumpArchitecture::X64;
+            try
+            {
+                size_t baseParsed = 0;
+                size_t sizeParsed = 0;
+                options.imageBase = std::stoull(dumpImageBaseBuf_, &baseParsed, 0);
+                options.moduleSize = std::stoull(dumpModuleSizeBuf_, &sizeParsed, 0);
+                if (baseParsed != std::strlen(dumpImageBaseBuf_) ||
+                    sizeParsed != std::strlen(dumpModuleSizeBuf_) ||
+                    options.imageBase == 0 || options.moduleSize == 0)
+                    throw std::invalid_argument("metadata");
+            }
+            catch (...)
+            {
+                dumpImportError_ = "Enter a non-zero image base and module size.";
+                ImGui::EndPopup();
+                return;
+            }
+        }
+        if (OpenDumpFile(pendingDumpPath_, options))
+        {
+            showDumpImportModal_ = false;
+            pendingDumpPath_.clear();
+            pendingDumpModules_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        else
+            dumpImportError_ = "Import failed. Check the metadata and the Console for the exact reason.";
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel"))
+    {
+        showDumpImportModal_ = false;
+        pendingDumpPath_.clear();
+        pendingDumpModules_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void Application::RenderDockspace()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Reserve space for the compact status bar.
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - 22.0f));
     ImGui::SetNextWindowViewport(viewport->ID);
@@ -433,7 +581,6 @@ void Application::RenderDockspace()
     ImGuiID dockspace_id = ImGui::GetID("OpenReverse_DockspaceID");
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
-    // Default layout: all windows docked, none floating
     if (!layoutInitialized_)
     {
         ImGui::DockBuilderRemoveNode(dockspace_id);
@@ -463,7 +610,6 @@ void Application::RenderDockspace()
 
             ImGui::DockBuilderDockWindow("Console", bottom);
 
-            // Stack reverse engineering tools in right sidebar tabs
             ImGui::DockBuilderDockWindow("Analysis / Functions & CFG", right);
             ImGui::DockBuilderDockWindow("HEX VIEW", right);
             ImGui::DockBuilderDockWindow("DISASSEMBLY", right);
@@ -476,7 +622,6 @@ void Application::RenderDockspace()
         }
         else
         {
-            // Reference layout: navigation left, code/hex center, context and AI right.
             ImGuiID leftTop = left;
             ImGuiID leftBottom = ImGui::DockBuilderSplitNode(leftTop, ImGuiDir_Down, 0.58f, nullptr, &leftTop);
             ImGuiID rightTop = right;
@@ -493,17 +638,13 @@ void Application::RenderDockspace()
                     node->LocalFlags |= panelFlags;
             }
 
-            // Left Sidebar: Navigation & Target info
             ImGui::DockBuilderDockWindow("PROCESSES", leftTop);
             ImGui::DockBuilderDockWindow("MODULES", leftBottom);
 
-            // Main Top (62% of center): functions, CFG, pseudocode, and disassembly
             ImGui::DockBuilderDockWindow("DISASSEMBLY", mainTop);
 
-            // Main Bottom (38% of center): Hex Editor & Live Memory View
             ImGui::DockBuilderDockWindow("HEX VIEW", mainBottom);
 
-            // Right Sidebar (24%): Analysis & Automation Tools
             ImGui::DockBuilderDockWindow("XREFS", rightTop);
             ImGui::DockBuilderDockWindow("STRUCTURES", rightMiddle);
             ImGui::DockBuilderDockWindow("AI ASSISTANT", rightBottom);
@@ -515,8 +656,6 @@ void Application::RenderDockspace()
 
     ImGui::End();
 
-    // A restrained blue edge defines the application frame from the black
-    // desktop without creating the heavy native Windows border.
     const HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
     const float rounding = hwnd && IsZoomed(hwnd) ? 0.0f : 7.0f;
     ImGui::GetForegroundDrawList(viewport)->AddRect(
@@ -541,7 +680,6 @@ void Application::RenderBrandBar()
     const ImU32 white = IM_COL32(242, 247, 252, 255);
     const ImU32 blue = IM_COL32(0, 132, 255, 255);
 
-    // Compact vector CR monogram inspired by the product mark.
     const ImVec2 c(origin.x + 11.0f, origin.y + 11.0f);
     draw->PathArcTo(c, 8.5f, 0.72f, 5.56f, 24);
     draw->PathStroke(white, 0, 2.0f);
@@ -556,7 +694,6 @@ void Application::RenderBrandBar()
     const float openWidth = ImGui::CalcTextSize("OPEN").x;
     draw->AddText(ImVec2(brandPos.x + openWidth, brandPos.y), blue, "REVERSE");
 
-    // Native window actions, rendered inside the branded title bar.
     const HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
     const float controlWidth = 35.0f;
     const float controlsStart = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - controlWidth * 3.0f - 1.0f;
@@ -683,8 +820,6 @@ void Application::RenderToolbar()
     if (toolButton("##bookmarks", "Bookmarks", 15, isAttached)) showBookmarks_ = true;
     if (toolButton("##assistant", "AI assistant", 16)) ImGui::SetWindowFocus("AI ASSISTANT");
 
-    // Workspace switcher and settings mirror the compact controls in the
-    // reference toolbar; both are wired to real application actions.
     ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 192.0f, 4.0f));
     ImGui::SetNextItemWidth(145.0f);
     const char* workspace = isDevMode ? "Editor workspace" : "Workspace";
@@ -725,6 +860,10 @@ void Application::RenderMenuBar()
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Open Windows File Manager to analyze any PE file or kernel driver (.sys) offline");
+        if (ImGui::MenuItem("Open Dump (.dmp, .mdmp, .bin)..."))
+            ShowOpenDumpDialog();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Static analysis only; mapped PE images and Windows minidumps are never executed");
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
             PostQuitMessage(0);
@@ -795,7 +934,6 @@ void Application::RenderMenuBar()
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
 
-    // Goto Address modal
     if (showGotoModal_)
     {
         ImGui::OpenPopup("Goto Address");
@@ -826,7 +964,7 @@ void Application::RenderMenuBar()
         ImGui::Text("OpenReverse - Reverse Engineering Workspace");
         ImGui::Text("Version %s", openreverse::kVersion);
         ImGui::Separator();
-        ImGui::Text("Read and analyze process memory, experimental pseudocode, and optional AI context.");
+        ImGui::Text("Read and analyze process memory, decoded control flow, and optional AI context.");
         if (ImGui::Button("OK", ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
@@ -886,11 +1024,18 @@ void Application::RenderStatusBar()
         ImGui::TextDisabled("No target attached");
     }
 
-    const char* state = isAttached ? "Analysis ready" : "Idle";
-    const float stateWidth = ImGui::CalcTextSize(state).x;
+    const AnalysisJobSnapshot offlineJob = offlineAnalysisJobId != 0
+        ? analysisScheduler.GetJob(offlineAnalysisJobId) : AnalysisJobSnapshot{};
+    std::string state = isAttached ? "Analysis ready" : "Idle";
+    if (offlineAnalysisJobId != 0 &&
+        (offlineJob.state == AnalysisJobState::Queued || offlineJob.state == AnalysisJobState::Running))
+    {
+        state = offlineJob.name + " " + std::to_string(static_cast<int>(offlineJob.progress * 100.0f)) + "%";
+    }
+    const float stateWidth = ImGui::CalcTextSize(state.c_str()).x;
     ImGui::SameLine(ImGui::GetWindowWidth() - stateWidth - 14.0f);
     ImGui::TextColored(isAttached ? ImVec4(0.20f, 0.66f, 0.96f, 1.0f)
-                                  : ImVec4(0.42f, 0.47f, 0.51f, 1.0f), "%s", state);
+                                  : ImVec4(0.42f, 0.47f, 0.51f, 1.0f), "%s", state.c_str());
 
     ImGui::End();
     ImGui::PopStyleColor();
@@ -944,6 +1089,34 @@ std::string Application::GetAIContextSummary()
         ss << "\n";
     }
 
+    if (analysis)
+    {
+        ss << "Detected Xrefs: " << analysis->xrefs.size()
+           << " | inferred globals: " << analysis->globals.size()
+           << " | inferred structures: " << analysis->structures.size()
+           << " | typed offsets: " << analysis->offsets.size()
+           << " | signatures: " << analysis->signatures.size() << "\n";
+        const size_t globalLimit = std::min<size_t>(analysis->globals.size(), 6);
+        for (size_t index = 0; index < globalLimit; ++index)
+        {
+            const auto& global = analysis->globals[index];
+            ss << "Inferred global RVA 0x" << std::hex << global.rva << std::dec
+               << " in " << global.sectionName << ": reads=" << global.readCount
+               << ", writes=" << global.writeCount
+               << ", address refs=" << global.addressCount
+               << ", evidence score=" << global.evidenceScore << "\n";
+        }
+        const size_t structureLimit = std::min<size_t>(analysis->structures.size(), 4);
+        for (size_t index = 0; index < structureLimit; ++index)
+        {
+            const auto& structure = analysis->structures[index];
+            ss << "Inferred structure candidate " << structure.name << " at function 0x"
+               << std::hex << structure.functionAddress << std::dec << ": "
+               << structure.fields.size() << " fields, evidence score="
+               << structure.evidenceScore << "\n";
+        }
+    }
+
     if (currentAddress != 0 && isAttached && processHandle != nullptr)
     {
         ss << "\n--- LIVE MEMORY DISASSEMBLY AT CURRENT ADDRESS (0x" << std::hex << currentAddress << std::dec << ") ---\n";
@@ -962,10 +1135,15 @@ std::string Application::GetAIContextSummary()
     {
         const auto& fn = analysisPanel.GetActiveFunction();
         ss << "\n--- CURRENT ACTIVE FUNCTION IN OPENREVERSE ---\n";
-        ss << "Function: " << fn.name << " at 0x" << std::hex << fn.startAddress << " (Size: " << std::dec << fn.size << " bytes)\n";
-        if (!analysisPanel.GetActivePseudocode().empty())
+        ss << "Function: " << fn.name << " at 0x" << std::hex << fn.startAddress << "\n";
+        if (fn.boundaryKnown)
+            ss << "Known boundary size: " << std::dec << fn.size << " bytes\n";
+        else
+            ss << "Boundary unknown; analyzed extent: " << std::dec << fn.analyzedSize << " bytes\n";
+        if (!analysisPanel.GetActiveAssemblySummary().empty())
         {
-            ss << "Experimental C Pseudocode:\n```c\n" << analysisPanel.GetActivePseudocode() << "\n```\n";
+            ss << "Decoded control-flow evidence:\n```asm\n"
+               << analysisPanel.GetActiveAssemblySummary() << "\n```\n";
         }
     }
     ss << "=== END TARGET PROGRAM CONTEXT ===\n\n";

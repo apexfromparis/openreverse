@@ -1,4 +1,3 @@
-// OpenReverse - UI Panel: PE Viewer Implementation
 #include "pe_viewer.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"
@@ -62,7 +61,6 @@ void PEViewerPanel::Render(Application& app)
 
     ImGui::Separator();
 
-    // NT Headers
     if (ImGui::CollapsingHeader("NT Headers", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::Text("Machine:    0x%04X (%s)", peInfo_.machine,

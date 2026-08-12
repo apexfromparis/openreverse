@@ -13,6 +13,7 @@ constexpr size_t kMaxMappedImageSize = 256ULL * 1024ULL * 1024ULL;
 constexpr uint16_t kMaxSections = 96;
 constexpr uint32_t kMaxImports = 4096;
 constexpr uint32_t kMaxExports = 10000;
+constexpr uint32_t kMaxRuntimeFunctions = 100000;
 constexpr size_t kMaxNameLength = 4096;
 
 bool CheckedRange(size_t offset, size_t size, size_t total)
@@ -84,6 +85,30 @@ bool ReadImageString(HANDLE processHandle, uint64_t baseAddress, uint64_t mapped
     return true;
 }
 
+void NormalizeRuntimeFunctions(std::vector<PERuntimeFunction>& candidates, PEInfo& info)
+{
+    std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+        return left.beginRva < right.beginRva ||
+            (left.beginRva == right.beginRva && left.endRva < right.endRva);
+    });
+    for (const auto& candidate : candidates)
+    {
+        if (candidate.beginRva >= candidate.endRva || candidate.endRva > info.sizeOfImage ||
+            candidate.unwindInfoRva == 0 || candidate.unwindInfoRva >= info.sizeOfImage)
+        {
+            ++info.rejectedRuntimeFunctionCount;
+            continue;
+        }
+        if (!info.runtimeFunctions.empty() &&
+            candidate.beginRva < info.runtimeFunctions.back().endRva)
+        {
+            ++info.rejectedRuntimeFunctionCount;
+            continue;
+        }
+        info.runtimeFunctions.push_back(candidate);
+    }
+}
+
 } // namespace
 
 PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mappedImageSize)
@@ -139,6 +164,8 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
     uint32_t importDirRVA = 0;
     uint32_t exportDirRVA = 0;
     uint32_t exportDirSize = 0;
+    uint32_t exceptionDirRVA = 0;
+    uint32_t exceptionDirSize = 0;
 
     if (info.is64bit)
     {
@@ -160,6 +187,11 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
         {
             exportDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
             exportDirSize = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+        }
+        if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXCEPTION)
+        {
+            exceptionDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress;
+            exceptionDirSize = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
         }
     }
     else
@@ -195,6 +227,35 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
     if (!ParseSections(processHandle, baseAddress, mappedImageSize, sectionTableRva,
                        info.numberOfSections, info))
         return info;
+
+    info.exceptionDirectoryRva = exceptionDirRVA;
+    info.exceptionDirectorySize = exceptionDirSize;
+    info.importDirectoryRva = importDirRVA;
+    info.exportDirectoryRva = exportDirRVA;
+    info.exportDirectorySize = exportDirSize;
+    if (info.is64bit && exceptionDirRVA != 0 && exceptionDirSize != 0)
+    {
+        const size_t entrySize = sizeof(RUNTIME_FUNCTION);
+        info.runtimeFunctionDirectoryComplete = exceptionDirSize % entrySize == 0;
+        const size_t declaredCount = exceptionDirSize / entrySize;
+        const size_t count = std::min<size_t>(declaredCount, kMaxRuntimeFunctions);
+        if (declaredCount > kMaxRuntimeFunctions)
+            info.runtimeFunctionDirectoryComplete = false;
+        std::vector<PERuntimeFunction> candidates;
+        candidates.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+        {
+            RUNTIME_FUNCTION entry{};
+            const uint64_t rva = static_cast<uint64_t>(exceptionDirRVA) + i * entrySize;
+            if (!ReadImageExact(processHandle, baseAddress, mappedImageSize, rva, &entry, sizeof(entry)))
+            {
+                info.runtimeFunctionDirectoryComplete = false;
+                break;
+            }
+            candidates.push_back({entry.BeginAddress, entry.EndAddress, entry.UnwindInfoAddress});
+        }
+        NormalizeRuntimeFunctions(candidates, info);
+    }
 
     if (importDirRVA != 0)
         ParseImports(processHandle, baseAddress, mappedImageSize, importDirRVA, info.is64bit, info);
@@ -270,7 +331,6 @@ void PEParser::ParseImports(HANDLE processHandle, uint64_t baseAddress, uint64_t
             if (thunkValue == 0)
                 break;
 
-            // Check if import by ordinal
             bool byOrdinal = is64bit
                 ? (thunkValue & 0x8000000000000000ULL) != 0
                 : (thunkValue & 0x80000000ULL) != 0;
@@ -282,7 +342,6 @@ void PEParser::ParseImports(HANDLE processHandle, uint64_t baseAddress, uint64_t
             }
             else
             {
-                // Import by name - read hint/name
                 const uint64_t hintNameRva = is64bit
                     ? (thunkValue & ~IMAGE_ORDINAL_FLAG64)
                     : (thunkValue & ~static_cast<uint64_t>(IMAGE_ORDINAL_FLAG32));
@@ -439,6 +498,8 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
     uint32_t importDirRVA = 0;
     uint32_t exportDirRVA = 0;
     uint32_t exportDirSize = 0;
+    uint32_t exceptionDirRVA = 0;
+    uint32_t exceptionDirSize = 0;
     if (info.is64bit)
     {
         if (fileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
@@ -456,6 +517,11 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
         {
             exportDirRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
             exportDirSize = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+        }
+        if (optionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_EXCEPTION)
+        {
+            exceptionDirRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress;
+            exceptionDirSize = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
         }
     }
     else
@@ -519,6 +585,12 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
     }
 
     info.valid = true;
+    info.exceptionDirectoryRva = exceptionDirRVA;
+    info.exceptionDirectorySize = exceptionDirSize;
+    info.importDirectoryRva = importDirRVA;
+    info.exportDirectoryRva = exportDirRVA;
+    info.exportDirectorySize = exportDirSize;
+    ParseRuntimeFunctionsRaw(data, fileSize, info);
     if (importDirRVA != 0)
         ParseImportsOffline(data, fileSize, importDirRVA, info.is64bit, info);
     if (exportDirRVA != 0)
@@ -589,6 +661,209 @@ bool PEParser::BuildMappedImage(const std::vector<uint8_t>& rawBuffer, const PEI
                     rawBuffer.data() + section.rawDataOffset, section.rawDataSize);
     }
     return true;
+}
+
+PEInfo PEParser::ParseMappedImage(const uint8_t* data, size_t mappedImageSize,
+                                  uint64_t imageBaseOverride)
+{
+    PEInfo info = ParseBuffer(data, mappedImageSize);
+    if (!info.valid || mappedImageSize < info.sizeOfImage)
+        return {};
+
+    info.imports.clear();
+    info.exports.clear();
+    info.runtimeFunctions.clear();
+    info.rejectedRuntimeFunctionCount = 0;
+    if (imageBaseOverride != 0)
+    {
+        if (imageBaseOverride > (std::numeric_limits<uint64_t>::max)() - info.sizeOfImage)
+            return {};
+        info.imageBase = imageBaseOverride;
+    }
+    ParseRuntimeFunctionsMapped(data, mappedImageSize, info);
+    ParseImportsMapped(data, mappedImageSize, info);
+    ParseExportsMapped(data, mappedImageSize, info);
+    return info;
+}
+
+void PEParser::ParseRuntimeFunctionsRaw(const uint8_t* data, size_t fileSize, PEInfo& info)
+{
+    if (!info.valid || !info.is64bit || info.exceptionDirectoryRva == 0 ||
+        info.exceptionDirectorySize == 0)
+        return;
+
+    const size_t entrySize = sizeof(RUNTIME_FUNCTION);
+    info.runtimeFunctionDirectoryComplete = info.exceptionDirectorySize % entrySize == 0;
+    const size_t declaredCount = info.exceptionDirectorySize / entrySize;
+    const size_t count = std::min<size_t>(declaredCount, kMaxRuntimeFunctions);
+    if (declaredCount > kMaxRuntimeFunctions)
+        info.runtimeFunctionDirectoryComplete = false;
+
+    std::vector<PERuntimeFunction> candidates;
+    candidates.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const uint64_t entryRva = static_cast<uint64_t>(info.exceptionDirectoryRva) + i * entrySize;
+        if (entryRva > (std::numeric_limits<uint32_t>::max)())
+        {
+            info.runtimeFunctionDirectoryComplete = false;
+            break;
+        }
+        size_t fileOffset = 0;
+        RUNTIME_FUNCTION entry{};
+        if (!RvaToFileOffset(static_cast<uint32_t>(entryRva), sizeof(entry), info, fileSize, fileOffset) ||
+            !ReadObject(data, fileSize, fileOffset, entry))
+        {
+            info.runtimeFunctionDirectoryComplete = false;
+            break;
+        }
+        candidates.push_back({entry.BeginAddress, entry.EndAddress, entry.UnwindInfoAddress});
+    }
+    NormalizeRuntimeFunctions(candidates, info);
+}
+
+void PEParser::ParseRuntimeFunctionsMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info)
+{
+    if (!info.valid || !info.is64bit || info.exceptionDirectoryRva == 0 ||
+        info.exceptionDirectorySize == 0)
+        return;
+
+    const size_t entrySize = sizeof(RUNTIME_FUNCTION);
+    info.runtimeFunctionDirectoryComplete = info.exceptionDirectorySize % entrySize == 0;
+    const size_t declaredCount = info.exceptionDirectorySize / entrySize;
+    const size_t count = std::min<size_t>(declaredCount, kMaxRuntimeFunctions);
+    if (declaredCount > kMaxRuntimeFunctions)
+        info.runtimeFunctionDirectoryComplete = false;
+
+    std::vector<PERuntimeFunction> candidates;
+    candidates.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const uint64_t offset = static_cast<uint64_t>(info.exceptionDirectoryRva) + i * entrySize;
+        RUNTIME_FUNCTION entry{};
+        if (!CheckedRange(static_cast<size_t>(offset), sizeof(entry), mappedImageSize) ||
+            !ReadObject(data, mappedImageSize, static_cast<size_t>(offset), entry))
+        {
+            info.runtimeFunctionDirectoryComplete = false;
+            break;
+        }
+        candidates.push_back({entry.BeginAddress, entry.EndAddress, entry.UnwindInfoAddress});
+    }
+    NormalizeRuntimeFunctions(candidates, info);
+}
+
+void PEParser::ParseImportsMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info)
+{
+    if (info.importDirectoryRva == 0) return;
+    for (uint32_t index = 0; index < kMaxImports; ++index)
+    {
+        const uint64_t descriptorOffset = static_cast<uint64_t>(info.importDirectoryRva) +
+            static_cast<uint64_t>(index) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
+        IMAGE_IMPORT_DESCRIPTOR descriptor{};
+        if (descriptorOffset > (std::numeric_limits<size_t>::max)() ||
+            !ReadObject(data, mappedImageSize, static_cast<size_t>(descriptorOffset), descriptor))
+            break;
+        if (descriptor.Name == 0 && descriptor.OriginalFirstThunk == 0 && descriptor.FirstThunk == 0)
+            break;
+        PEImportEntry imported;
+        if (!ReadBoundedString(data, mappedImageSize, descriptor.Name, imported.dllName) ||
+            imported.dllName.empty())
+            continue;
+        const uint32_t thunkRva = descriptor.OriginalFirstThunk
+            ? descriptor.OriginalFirstThunk : descriptor.FirstThunk;
+        const size_t thunkSize = info.is64bit ? sizeof(uint64_t) : sizeof(uint32_t);
+        for (uint32_t thunkIndex = 0; thunkIndex < kMaxImports && thunkRva != 0; ++thunkIndex)
+        {
+            const uint64_t thunkOffset = static_cast<uint64_t>(thunkRva) +
+                static_cast<uint64_t>(thunkIndex) * thunkSize;
+            if (thunkOffset > (std::numeric_limits<size_t>::max)()) break;
+            uint64_t thunkValue = 0;
+            if (info.is64bit)
+            {
+                if (!ReadObject(data, mappedImageSize, static_cast<size_t>(thunkOffset), thunkValue)) break;
+            }
+            else
+            {
+                uint32_t value = 0;
+                if (!ReadObject(data, mappedImageSize, static_cast<size_t>(thunkOffset), value)) break;
+                thunkValue = value;
+            }
+            if (thunkValue == 0) break;
+            const bool ordinal = info.is64bit
+                ? (thunkValue & IMAGE_ORDINAL_FLAG64) != 0
+                : (thunkValue & IMAGE_ORDINAL_FLAG32) != 0;
+            if (ordinal)
+            {
+                imported.functions.push_back(
+                    "Ordinal#" + std::to_string(static_cast<uint16_t>(thunkValue & 0xFFFF)));
+                continue;
+            }
+            const uint64_t hintRva = info.is64bit
+                ? (thunkValue & ~IMAGE_ORDINAL_FLAG64)
+                : (thunkValue & ~static_cast<uint64_t>(IMAGE_ORDINAL_FLAG32));
+            if (hintRva > (std::numeric_limits<size_t>::max)() ||
+                hintRva >= mappedImageSize || sizeof(uint16_t) > mappedImageSize - hintRva)
+                continue;
+            std::string name;
+            if (ReadBoundedString(data, mappedImageSize,
+                                  static_cast<size_t>(hintRva) + sizeof(uint16_t), name) &&
+                !name.empty())
+                imported.functions.push_back(std::move(name));
+        }
+        info.imports.push_back(std::move(imported));
+    }
+}
+
+void PEParser::ParseExportsMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info)
+{
+    if (info.exportDirectoryRva == 0) return;
+    IMAGE_EXPORT_DIRECTORY directory{};
+    if (!ReadObject(data, mappedImageSize, info.exportDirectoryRva, directory) ||
+        directory.NumberOfFunctions == 0 || directory.NumberOfFunctions > kMaxExports ||
+        directory.NumberOfNames > kMaxExports)
+        return;
+    if (!CheckedArrayRange(directory.AddressOfFunctions, directory.NumberOfFunctions,
+                           sizeof(uint32_t), mappedImageSize) ||
+        !CheckedArrayRange(directory.AddressOfNames, directory.NumberOfNames,
+                           sizeof(uint32_t), mappedImageSize) ||
+        !CheckedArrayRange(directory.AddressOfNameOrdinals, directory.NumberOfNames,
+                           sizeof(uint16_t), mappedImageSize))
+        return;
+
+    std::vector<uint32_t> functions(directory.NumberOfFunctions);
+    std::vector<uint32_t> names(directory.NumberOfNames);
+    std::vector<uint16_t> ordinals(directory.NumberOfNames);
+    std::memcpy(functions.data(), data + directory.AddressOfFunctions,
+                functions.size() * sizeof(uint32_t));
+    if (!names.empty())
+    {
+        std::memcpy(names.data(), data + directory.AddressOfNames, names.size() * sizeof(uint32_t));
+        std::memcpy(ordinals.data(), data + directory.AddressOfNameOrdinals,
+                    ordinals.size() * sizeof(uint16_t));
+    }
+    for (uint32_t index = 0; index < directory.NumberOfFunctions; ++index)
+    {
+        if (functions[index] == 0) continue;
+        PEInfo::PEExportEntry exported;
+        exported.rva = functions[index];
+        exported.ordinal = directory.Base + index;
+        exported.name = "Ordinal#" + std::to_string(exported.ordinal);
+        if (info.exportDirectorySize != 0 && exported.rva >= info.exportDirectoryRva &&
+            exported.rva - info.exportDirectoryRva < info.exportDirectorySize)
+        {
+            if (ReadBoundedString(data, mappedImageSize, exported.rva, exported.forwarder))
+                exported.isForwarder = true;
+        }
+        for (size_t nameIndex = 0; nameIndex < names.size(); ++nameIndex)
+        {
+            if (ordinals[nameIndex] != index) continue;
+            std::string name;
+            if (ReadBoundedString(data, mappedImageSize, names[nameIndex], name) && !name.empty())
+                exported.name = std::move(name);
+            break;
+        }
+        info.exports.push_back(std::move(exported));
+    }
 }
 
 void PEParser::ParseImportsOffline(const uint8_t* data, size_t fileSize,

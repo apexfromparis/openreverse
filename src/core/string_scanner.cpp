@@ -66,7 +66,6 @@ void StringScanner::ScanUnicodeStrings(const uint8_t* data, size_t dataSize, uin
                 sr.encoding = StringEncoding::Unicode;
                 sr.length = charCount;
 
-                // Convert to narrow string for display
                 sr.value.reserve(charCount);
                 for (size_t j = start; j < i; j += 2)
                     sr.value += (char)data[j];
@@ -138,7 +137,6 @@ void StringScanner::ClassifyString(StringResult& sr)
     if (val.size() < 3)
     {
         sr.category = "General";
-        sr.riskLevel = 0;
         return;
     }
 
@@ -147,38 +145,32 @@ void StringScanner::ClassifyString(StringResult& sr)
         val.find(".org/") != std::string::npos || val.find("127.0.0.1") != std::string::npos)
     {
         sr.category = "URL";
-        sr.riskLevel = 1;
     }
     else if (val.find("cmd.exe") != std::string::npos || val.find("powershell") != std::string::npos ||
              val.find("CreateProcess") != std::string::npos || val.find("VirtualAlloc") != std::string::npos ||
              val.find("WriteProcessMemory") != std::string::npos || val.find("CreateRemoteThread") != std::string::npos)
     {
         sr.category = "Process / Memory API";
-        sr.riskLevel = 1;
     }
     else if (val.find("HKEY_") != std::string::npos || val.find("Software\\") != std::string::npos ||
              val.find("CurrentControlSet") != std::string::npos || val.find("RegOpenKey") != std::string::npos)
     {
         sr.category = "Registry Path";
-        sr.riskLevel = 1;
     }
     else if (val.find("-----BEGIN") != std::string::npos || val.find("RSA") != std::string::npos ||
              val.find("AES") != std::string::npos || val.find("SHA256") != std::string::npos)
     {
         sr.category = "Crypto Related";
-        sr.riskLevel = 1;
     }
     else if (val.find("C:\\") != std::string::npos || val.find("D:\\") != std::string::npos ||
              val.find("\\Windows\\") != std::string::npos || val.find("\\System32\\") != std::string::npos ||
              val.find(".dll") != std::string::npos || val.find(".exe") != std::string::npos || val.find(".sys") != std::string::npos)
     {
         sr.category = "Path";
-        sr.riskLevel = 1;
     }
     else
     {
         sr.category = "General";
-        sr.riskLevel = 0;
     }
 }
 

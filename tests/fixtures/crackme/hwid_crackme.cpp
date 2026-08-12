@@ -1,8 +1,3 @@
-// ============================================================================
-// OpenReverse TARGET: HWID & KEY CRACKME
-// Standalone Windows Console Target for testing OpenReverse Reverse Engineering Studio
-// ============================================================================
-
 #include <windows.h>
 #include <iostream>
 #include <string>
@@ -10,12 +5,10 @@
 #include <sstream>
 #include <iomanip>
 
-// Secret C2 & Registry strings to be discovered via OpenReverse String Scanner & XREFs
 const char* g_c2Url = "http://c2.openreverse-security.local/verify_hwid_license";
 const char* g_regPath = "Software\\OpenReverse\\License\\ActivationKey";
 const char* g_xorSecret = "OpenReverse_SECRET_XOR_KEY_2026";
 
-// Compute Hardware ID (HWID) using Windows Volume Serial Number & Computer Name
 std::string GetMachineHWID()
 {
     char computerName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
@@ -25,7 +18,6 @@ std::string GetMachineHWID()
     DWORD volumeSerialNumber = 0;
     GetVolumeInformationA("C:\\", nullptr, 0, &volumeSerialNumber, nullptr, nullptr, nullptr, 0);
 
-    // Hash Computer Name + Volume Serial Number
     uint32_t hash = 0x539;
     for (size_t i = 0; i < strlen(computerName); ++i)
     {
@@ -38,7 +30,6 @@ std::string GetMachineHWID()
     return ss.str();
 }
 
-// Generate the expected activation key for a given HWID
 std::string GenerateExpectedKey(const std::string& hwid)
 {
     std::string expected;
@@ -53,7 +44,6 @@ std::string GenerateExpectedKey(const std::string& hwid)
     return expected;
 }
 
-// Secret payload executed only after successful HWID license verification
 void __declspec(noinline) SecretPayload()
 {
     std::cout << "\n==========================================================\n";
@@ -63,11 +53,8 @@ void __declspec(noinline) SecretPayload()
     std::cout << "==========================================================\n\n";
 }
 
-// Verification function (Target for Basic Block CFG & Decompiler analysis)
 bool __declspec(noinline) VerifyLicenseKey(const std::string& userKey, const std::string& expectedKey)
 {
-    // Simulate checking remote C2 server or Registry
-    // In OpenReverse Analysis, look at the basic blocks of this function.
     if (userKey.length() != expectedKey.length())
     {
         return false;

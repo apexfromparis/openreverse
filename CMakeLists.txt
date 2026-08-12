@@ -80,6 +80,8 @@ target_link_libraries(OpenReverse PRIVATE
     comdlg32
     winhttp
     advapi32
+    bcrypt
+    dbghelp
 )
 
 target_compile_definitions(OpenReverse PRIVATE
@@ -153,15 +155,21 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(OpenReverseCoreTests
         tests/core_tests.cpp
+        src/core/address_space.cpp
         src/core/analysis_database.cpp
         src/core/analysis_scheduler.cpp
+        src/core/binary_diff.cpp
         src/core/data_analyzer.cpp
         src/core/disassembler.cpp
+        src/core/dump_loader.cpp
         src/core/function_analyzer.cpp
         src/core/memory_reader.cpp
         src/core/module_analyzer.cpp
         src/core/pattern_scanner.cpp
         src/core/pe_parser.cpp
+        src/core/process_manager.cpp
+        src/core/signature_engine.cpp
+        src/core/offset_model.cpp
         src/core/string_scanner.cpp
         src/core/xref_scanner.cpp
         src/utils/helpers.cpp
@@ -171,7 +179,13 @@ if(BUILD_TESTING)
         src
         ${capstone_SOURCE_DIR}/include
     )
-    target_link_libraries(OpenReverseCoreTests PRIVATE capstone psapi)
+    target_link_libraries(OpenReverseCoreTests PRIVATE
+        capstone
+        nlohmann_json::nlohmann_json
+        psapi
+        bcrypt
+        dbghelp
+    )
     target_compile_definitions(OpenReverseCoreTests PRIVATE
         UNICODE
         _UNICODE

@@ -2,6 +2,17 @@
 
 namespace openreverse {
 
+std::string ProcessOpenFailureMessage(DWORD error)
+{
+    if (error == ERROR_ACCESS_DENIED)
+        return "Access to the target process was denied by Windows or another protection mechanism. "
+               "Open the binary from disk, analyze a user-provided dump, or open a saved OpenReverse project.";
+    if (error == ERROR_INVALID_PARAMETER)
+        return "The target process does not exist or has already exited.";
+    return "Windows could not open the target process for read-only analysis (error " +
+        std::to_string(error) + ").";
+}
+
 std::vector<ProcessInfo> ProcessManager::ListProcesses()
 {
     std::vector<ProcessInfo> result;
@@ -20,7 +31,6 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
             ProcessInfo info;
             info.pid = pe.th32ProcessID;
 
-            // Convert wide string to narrow
             char name[MAX_PATH];
             WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, name, MAX_PATH, nullptr, nullptr);
             info.name = name;
@@ -28,7 +38,6 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
             info.memoryUsage = 0;
             info.path.clear();
 
-            // Try to get more info by opening the process
             HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, info.pid);
             if (hProc)
             {
@@ -44,7 +53,6 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
                 BOOL isWow64 = FALSE;
                 if (IsWow64Process(hProc, &isWow64))
                 {
-                    // If running in WoW64, it's 32-bit on 64-bit OS
                     info.is64bit = !isWow64;
                 }
 

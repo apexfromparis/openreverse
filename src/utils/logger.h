@@ -1,6 +1,4 @@
 #pragma once
-// OpenReverse - Utils: Logger
-// Thread-safe logging system with severity levels and ring buffer
 
 #include <string>
 #include <vector>
@@ -35,7 +33,6 @@ public:
         vsnprintf(buf, sizeof(buf), fmt, args);
         va_end(args);
 
-        // Timestamp
         SYSTEMTIME st;
         GetLocalTime(&st);
         char ts[64];
@@ -44,7 +41,6 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         entries_.push_back({ level, std::string(buf), std::string(ts) });
 
-        // Keep max 2000 entries
         if (entries_.size() > 2000)
             entries_.erase(entries_.begin());
     }

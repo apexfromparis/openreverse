@@ -20,7 +20,6 @@ static void LoadFonts()
     config.FontDataOwnedByAtlas = false;
     config.PixelSnapH = true;
 
-    // The embedded font keeps typography consistent without a runtime font dependency.
     ImFont* robotoFont = io.Fonts->AddFontFromMemoryTTF((void*)font_roboto_medium, (int)sizeof(font_roboto_medium), 13.0f, &config);
     if (robotoFont) {
         io.FontDefault = robotoFont;
@@ -119,7 +118,6 @@ void UIManager::ApplyTheme()
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
 
-    // Dense native workstation: almost square panels, like a debugger/RE suite.
     style.WindowRounding    = 3.0f;
     style.ChildRounding     = 2.0f;
     style.FrameRounding     = 2.0f;
@@ -140,15 +138,14 @@ void UIManager::ApplyTheme()
     style.GrabMinSize       = 6.0f;
     style.TabBorderSize     = 0.0f;
 
-    // Blue-black palette sampled from the target visual.
     ImVec4 bgMain       = ImVec4(5.0f/255.0f, 9.0f/255.0f, 13.0f/255.0f, 1.00f);
     ImVec4 bgBox        = ImVec4(8.0f/255.0f, 14.0f/255.0f, 19.0f/255.0f, 1.00f);
     ImVec4 bgWidget     = ImVec4(12.0f/255.0f, 21.0f/255.0f, 28.0f/255.0f, 1.00f);
     ImVec4 borderCol    = ImVec4(25.0f/255.0f, 43.0f/255.0f, 55.0f/255.0f, 1.00f);
     ImVec4 borderWidget = ImVec4(35.0f/255.0f, 64.0f/255.0f, 82.0f/255.0f, 1.00f);
 
-    ImVec4 textMain     = ImVec4(255.0f/255.0f, 255.0f/255.0f, 255.0f/255.0f, 1.00f); // Pure white C_TEXT_ACT
-    ImVec4 textDim      = ImVec4(110.0f/255.0f, 110.0f/255.0f, 110.0f/255.0f, 1.00f); // C_TEXT_DIM
+    ImVec4 textMain     = ImVec4(255.0f/255.0f, 255.0f/255.0f, 255.0f/255.0f, 1.00f);
+    ImVec4 textDim      = ImVec4(110.0f/255.0f, 110.0f/255.0f, 110.0f/255.0f, 1.00f);
     ImVec4 textDisabled = ImVec4(80.0f/255.0f,  80.0f/255.0f,  80.0f/255.0f,  1.00f);
 
     ImVec4 accentDim    = ImVec4(0.00f, 0.24f, 0.48f, 1.00f);

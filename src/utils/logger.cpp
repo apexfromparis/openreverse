@@ -1,2 +1,1 @@
-// OpenReverse - Utils: Logger (empty cpp - header-only implementation)
 #include "logger.h"

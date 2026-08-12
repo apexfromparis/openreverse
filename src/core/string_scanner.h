@@ -1,6 +1,4 @@
 #pragma once
-// OpenReverse - Core: String Scanner
-// Find ASCII and Unicode strings in process memory
 
 #include <windows.h>
 #include <vector>
@@ -17,12 +15,10 @@ struct StringResult {
     StringEncoding  encoding;
     size_t          length;
     std::string     category = "General";
-    int             riskLevel = 0;
 };
 
 class StringScanner {
 public:
-    // Scan for strings in memory region
     std::vector<StringResult> Scan(HANDLE processHandle,
                                     uint64_t startAddress, uint64_t endAddress,
                                     size_t minLength = 4,

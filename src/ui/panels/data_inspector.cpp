@@ -1,4 +1,3 @@
-// OpenReverse - UI Panel: Data Inspector Implementation
 #include "data_inspector.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"

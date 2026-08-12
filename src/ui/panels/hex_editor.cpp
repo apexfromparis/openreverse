@@ -198,7 +198,6 @@ void HexEditorPanel::RenderHexRow(Application& app, int row, uint64_t rowAddr)
             ImGui::TextColored(ImVec4(0.2f, 0.2f, 0.2f, 1.0f), "??");
         }
 
-        // Separator between 8-byte groups
         if (col == 7)
         {
             ImGui::SameLine();
@@ -206,7 +205,6 @@ void HexEditorPanel::RenderHexRow(Application& app, int row, uint64_t rowAddr)
         }
     }
 
-    // ASCII column
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.35f, 1.0f), " |");
     ImGui::SameLine();

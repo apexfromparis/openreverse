@@ -81,7 +81,6 @@ void ProcessListPanel::Render(Application& app)
     }
     ImGui::EndChild();
 
-    // Attach/detach buttons
     ImGui::Separator();
     if (selectedIdx_ >= 0 && selectedIdx_ < (int)cachedProcesses_.size())
     {

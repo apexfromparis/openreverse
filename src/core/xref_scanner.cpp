@@ -1,6 +1,9 @@
 #include "xref_scanner.h"
+#include "core/function_analyzer.h"
 #include "utils/helpers.h"
 #include <algorithm>
+#include <set>
+#include <tuple>
 #include <utility>
 
 namespace openreverse {
@@ -43,47 +46,80 @@ void XRefScanner::ScanInstructions(const std::vector<Instruction>& insts, const 
 
     for (const auto& ins : insts)
     {
-        uint64_t targetAddr = 0;
-        XRefType type = XRefType::Read;
-
-        if (ins.isCall && ins.targetAddress != 0)
-        {
-            targetAddr = ins.targetAddress;
-            type = XRefType::Call;
-        }
-        else if (ins.isJump && ins.targetAddress != 0)
-        {
-            targetAddr = ins.targetAddress;
-            type = XRefType::Jump;
-        }
-        else if (ins.mnemonic == "lea" && ins.targetKind == InstructionTargetKind::Memory)
-        {
-            targetAddr = ins.targetAddress;
-            type = XRefType::Lea;
-        }
-        else if (ins.targetKind == InstructionTargetKind::Memory && ins.targetAddress != 0)
-        {
-            targetAddr = ins.targetAddress;
-            type = ins.memoryRead && ins.memoryWrite ? XRefType::ReadWrite :
-                (ins.memoryWrite ? XRefType::Write : XRefType::Read);
-        }
-
-        if (targetAddr != 0)
-        {
-            if (entries_.size() >= kMaxIndexedXRefs)
-                break;
+        std::set<std::tuple<uint64_t, XRefType, uint8_t>> emitted;
+        const auto emit = [&](uint64_t target, XRefType type, uint8_t operandIndex, uint8_t operandSize) {
+            if (target == 0 || entries_.size() >= kMaxIndexedXRefs ||
+                !emitted.emplace(target, type, operandIndex).second)
+                return;
             size_t idx = entries_.size();
             XRefEntry entry;
             entry.fromAddress = ins.address;
-            entry.toAddress = targetAddr;
+            entry.toAddress = target;
             entry.type = type;
+            entry.operandIndex = operandIndex;
+            entry.operandSize = operandSize;
             entry.instructionText = ins.mnemonic + " " + ins.operands;
             entry.moduleName = moduleName;
-
             entries_.push_back(entry);
-            toIndex_[targetAddr].push_back(idx);
+            toIndex_[target].push_back(idx);
             fromIndex_[ins.address].push_back(idx);
+        };
+
+        for (const auto& operand : ins.decodedOperands)
+        {
+            if (operand.type == OperandType::Immediate && (ins.isCall || ins.isJump))
+            {
+                emit(static_cast<uint64_t>(operand.immediate),
+                     ins.isCall ? XRefType::Call : XRefType::Jump,
+                     operand.index, operand.size);
+            }
+            else if (operand.type == OperandType::Memory && operand.memory.resolved)
+            {
+                XRefType type = XRefType::Data;
+                if (ins.mnemonic == "lea")
+                    type = XRefType::Address;
+                else if (operand.read && operand.write)
+                    type = XRefType::ReadWrite;
+                else if (operand.write)
+                    type = XRefType::Write;
+                else if (operand.read)
+                    type = XRefType::Read;
+                emit(operand.memory.resolvedAddress, type, operand.index, operand.size);
+            }
         }
+
+        if (emitted.empty() && ins.targetAddress != 0 && (ins.isCall || ins.isJump))
+            emit(ins.targetAddress, ins.isCall ? XRefType::Call : XRefType::Jump, 0, 0);
+        if (entries_.size() >= kMaxIndexedXRefs)
+            break;
+    }
+}
+
+void AssignXRefFunctions(std::vector<XRefEntry>& xrefs,
+                         const std::vector<FunctionInfo>& functions)
+{
+    std::vector<const FunctionInfo*> sorted;
+    sorted.reserve(functions.size());
+    for (const auto& function : functions)
+        sorted.push_back(&function);
+    std::sort(sorted.begin(), sorted.end(), [](const auto* left, const auto* right) {
+        return left->startAddress < right->startAddress;
+    });
+
+    for (auto& xref : xrefs)
+    {
+        const auto next = std::upper_bound(sorted.begin(), sorted.end(), xref.fromAddress,
+            [](uint64_t address, const FunctionInfo* function) {
+                return address < function->startAddress;
+            });
+        if (next == sorted.begin())
+            continue;
+        const auto* function = *std::prev(next);
+        uint64_t limit = function->boundaryKnown ? function->endAddress : function->analysisLimit;
+        if (limit == 0 && next != sorted.end())
+            limit = (*next)->startAddress;
+        if (limit == 0 || xref.fromAddress < limit)
+            xref.functionAddress = function->startAddress;
     }
 }
 

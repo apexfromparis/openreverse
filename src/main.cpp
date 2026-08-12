@@ -20,7 +20,6 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
-// Forward declare message handler from imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static ID3D11Device*            g_pd3dDevice           = nullptr;
 static ID3D11DeviceContext*     g_pd3dDeviceContext    = nullptr;
@@ -53,7 +52,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     openreverse::Application app;
 
-    // Handle headless analysis commands before starting the graphical shell.
     for (size_t i = 1; i < cmdArgs.size(); ++i)
     {
         std::string arg = cmdArgs[i];
@@ -125,7 +123,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // Determine whether this executable was launched as the CLI.
     char exePathBuf[MAX_PATH] = { 0 };
     GetModuleFileNameA(NULL, exePathBuf, MAX_PATH);
     std::string fullExePath = exePathBuf;
@@ -142,7 +139,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             firstArg == "models" || firstArg == "model" || firstArg == "providers" || firstArg == "auth" ||
             firstArg == "setup" || firstArg == "init" || firstArg == "install-ai" || firstArg == "session" ||
             firstArg == "sessions" || firstArg == "stats" || firstArg == "run" || firstArg == "open" ||
-            firstArg == "attach";
+            firstArg == "attach" || firstArg == "dump";
     }
     const bool isCliExe = !guiRequested && exeName.find("setup") == std::string::npos && cliRequested;
 
@@ -221,6 +218,49 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 fflush(stdout);
                 return opened ? 0 : 1;
             }
+            else if (arg == "dump" && i + 1 < cmdArgs.size())
+            {
+                openreverse::DumpImportOptions options;
+                try
+                {
+                    for (size_t option = i + 2; option < cmdArgs.size(); ++option)
+                    {
+                        if (cmdArgs[option] == "--mapped")
+                            options.representation = openreverse::DumpRepresentation::MappedPEImage;
+                        else if (cmdArgs[option] == "--base" && option + 1 < cmdArgs.size())
+                            options.imageBase = std::stoull(cmdArgs[++option], nullptr, 0);
+                        else if (cmdArgs[option] == "--size" && option + 1 < cmdArgs.size())
+                            options.moduleSize = std::stoull(cmdArgs[++option], nullptr, 0);
+                        else if (cmdArgs[option] == "--module" && option + 1 < cmdArgs.size())
+                            options.minidumpModuleBase = std::stoull(cmdArgs[++option], nullptr, 0);
+                        else if (cmdArgs[option] == "--arch" && option + 1 < cmdArgs.size())
+                        {
+                            const std::string architecture = cmdArgs[++option];
+                            options.architecture = architecture == "x64" ? openreverse::DumpArchitecture::X64 :
+                                architecture == "x86" ? openreverse::DumpArchitecture::X86 :
+                                openreverse::DumpArchitecture::Unknown;
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    std::cerr << "Invalid dump metadata. Addresses and sizes accept decimal or 0x-prefixed values.\n";
+                    return 1;
+                }
+                if (options.representation == openreverse::DumpRepresentation::AutoDetect &&
+                    (options.imageBase != 0 || options.moduleSize != 0 ||
+                     options.architecture != openreverse::DumpArchitecture::Unknown))
+                    options.representation = openreverse::DumpRepresentation::RawSnapshot;
+                const bool opened = app.OpenDumpFile(cmdArgs[i + 1], options);
+                if (opened)
+                {
+                    const auto& analysis = app.analysisDatabase.GetModules().begin()->second;
+                    std::cout << "[+] Static dump analysis completed: " << analysis.functions.size()
+                              << " functions, " << analysis.xrefs.size() << " Xrefs, "
+                              << analysis.offsets.size() << " offsets\n";
+                }
+                return opened ? 0 : 1;
+            }
             else if (arg == "attach" && i + 1 < cmdArgs.size())
             {
                 openreverse::CLIRepl repl;
@@ -234,7 +274,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
 
-    // If GUI mode was launched with a target executable argument (e.g. openreverse --gui crackme.exe), load it
     for (size_t i = 1; i < cmdArgs.size(); ++i)
     {
         std::string arg = cmdArgs[i];

@@ -1,6 +1,4 @@
 #pragma once
-// OpenReverse - Core: Process Manager
-// Enumerate, open, close Windows processes
 
 #include <windows.h>
 #include <psapi.h>
@@ -11,26 +9,24 @@
 
 namespace openreverse {
 
+std::string ProcessOpenFailureMessage(DWORD error);
+
 struct ProcessInfo {
     DWORD       pid;
     std::string name;
     std::string path;
     bool        is64bit;
-    size_t      memoryUsage; // in bytes
+    size_t      memoryUsage;
 };
 
 class ProcessManager {
 public:
-    // List all running processes
     std::vector<ProcessInfo> ListProcesses();
 
-    // Open a process for reading
     HANDLE OpenProcess(DWORD pid);
 
-    // Close a process handle
     void CloseProcess(HANDLE handle);
 
-    // Check if process is 64-bit
     bool IsProcess64Bit(HANDLE handle);
 };
 

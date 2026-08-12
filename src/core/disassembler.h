@@ -1,6 +1,4 @@
 #pragma once
-// OpenReverse - Core: Disassembler
-// x86/x64 disassembly using Capstone engine
 
 #include <capstone/capstone.h>
 #include <vector>
@@ -16,6 +14,7 @@ enum class InstructionTargetKind {
 };
 
 struct MemoryOperand {
+    uint8_t operandIndex = 0;
     std::string baseRegister;
     std::string indexRegister;
     int64_t displacement = 0;
@@ -24,6 +23,26 @@ struct MemoryOperand {
     bool read = false;
     bool write = false;
     bool ripRelative = false;
+    bool resolved = false;
+    uint64_t resolvedAddress = 0;
+};
+
+enum class OperandType {
+    Register,
+    Immediate,
+    Memory,
+    Invalid
+};
+
+struct DecodedOperand {
+    OperandType type = OperandType::Invalid;
+    uint8_t index = 0;
+    uint8_t size = 0;
+    bool read = false;
+    bool write = false;
+    std::string registerName;
+    int64_t immediate = 0;
+    MemoryOperand memory;
 };
 
 struct Instruction {
@@ -40,6 +59,15 @@ struct Instruction {
     bool        memoryRead = false;
     bool        memoryWrite = false;
     std::vector<MemoryOperand> memoryOperands;
+    std::vector<DecodedOperand> decodedOperands;
+    std::vector<std::string> registersRead;
+    std::vector<std::string> registersWritten;
+    std::vector<uint8_t> groups;
+    unsigned int instructionId = 0;
+    uint8_t displacementOffset = 0;
+    uint8_t displacementSize = 0;
+    uint8_t immediateOffset = 0;
+    uint8_t immediateSize = 0;
 };
 
 class Disassembler {
@@ -47,10 +75,8 @@ public:
     Disassembler();
     ~Disassembler();
 
-    // Initialize for architecture (true = x64, false = x86)
     bool Init(bool is64bit);
 
-    // Disassemble raw bytes
     std::vector<Instruction> Disassemble(const uint8_t* code, size_t codeSize,
                                           uint64_t baseAddress, size_t maxInstructions = 100);
 
@@ -58,7 +84,6 @@ public:
     bool DecodeInstruction(const uint8_t* code, size_t codeSize,
                            uint64_t address, Instruction& instruction);
 
-    // Get/set syntax
     void SetIntelSyntax(bool intel);
     bool IsInitialized() const { return initialized_; }
 

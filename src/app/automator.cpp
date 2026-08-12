@@ -76,11 +76,11 @@ AutoAnalysisResult Automator::AnalyzeProcess(Application& app, DWORD pid, const 
             AutoAnalysisResult::FunctionSummary fs;
             fs.address = fi.startAddress;
             fs.name = fi.name;
-            fs.size = fi.size;
+            fs.analyzedSize = fi.analyzedSize;
             fs.complexity = fi.cyclomaticComplexity;
             fs.xrefCount = static_cast<int>(std::count_if(analysis.xrefs.begin(), analysis.xrefs.end(),
                 [&fi](const XRefEntry& xref) { return xref.toAddress == fi.startAddress; }));
-            fs.pseudocode = functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
+            fs.assemblySummary = functionAnalyzer.GenerateAssemblySummary(fi, app.is64Bit);
             res.keyFunctions.push_back(fs);
         }
     }
@@ -115,12 +115,12 @@ std::string Automator::FormatReport(const AutoAnalysisResult& res)
         ss << "\n";
     }
 
-    ss << "## Experimental C-like Pseudocode (Key Functions)\n\n";
+    ss << "## Decoded control-flow evidence (key functions)\n\n";
     for (const auto& fn : res.keyFunctions)
     {
         ss << "### Function `" << fn.name << "` (0x" << std::uppercase << std::hex << fn.address << ")\n";
-        ss << "- **Size**: `" << std::dec << fn.size << " bytes` | **Complexity V(G)**: `" << fn.complexity << "` | **Incoming XREFs**: `" << fn.xrefCount << "`\n\n";
-        ss << "```c\n" << fn.pseudocode << "```\n\n";
+        ss << "- **Analyzed extent**: `" << std::dec << fn.analyzedSize << " bytes` | **Complexity V(G)**: `" << fn.complexity << "` | **Incoming XREFs**: `" << fn.xrefCount << "`\n\n";
+        ss << "```asm\n" << fn.assemblySummary << "```\n\n";
     }
 
     return ss.str();

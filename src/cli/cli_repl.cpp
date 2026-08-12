@@ -91,6 +91,9 @@ void CLIRepl::PrintCLIHelp()
     std::cout << "  openreverse [binary]            start the GUI and optionally open a binary\n";
     std::cout << "  openreverse --cli               start the interactive command shell\n";
     std::cout << "  openreverse attach <pid>        attach to a running target or PID\n";
+    std::cout << "  openreverse dump <file>         analyze a mapped PE image or minidump statically\n";
+    std::cout << "    --base <va> --size <bytes> --arch <x86|x64>  required for raw snapshots\n";
+    std::cout << "    --module <va>                 select a module from a multi-module minidump\n";
     std::cout << "  openreverse run [message..]     run openreverse with a message / prompt\n";
     std::cout << "  openreverse providers           manage AI providers and credentials [aliases: auth]\n";
     std::cout << "  openreverse models              show the currently configured model\n";
@@ -107,7 +110,7 @@ void CLIRepl::PrintHelp()
     std::cout << "  open <path.exe>       Open a binary and run OpenReverse analysis\n";
     std::cout << "  attach <PID>          Attach to a PID and run OpenReverse analysis\n";
     std::cout << "  functions [filter]    List discovered functions (Addr, Name, Size, V(G), XREFs)\n";
-    std::cout << "  decompile <addr|name> Generate experimental C-like pseudocode\n";
+    std::cout << "  decompile <addr|name> Show decoded instructions grouped by basic block\n";
     std::cout << "  cfg <addr|name>       Display basic block control flow graph & branching\n";
     std::cout << "  xrefs <addr|name>     Show Cross-References (CALL, JUMP, READ, WRITE) to/from addr\n";
     std::cout << "  strings [filter]      Display strings with neutral evidence categories\n";
@@ -123,9 +126,9 @@ void CLIRepl::PrintHelp()
     std::cout << "  ai-model <model_name> Change active AI model (e.g. gpt-4o, qwen2.5-coder:7b)\n";
     std::cout << "  ai-status             Display current AI connection status and configuration\n";
     std::cout << "  ai-ask <question>     Ask AI Copilot any reverse engineering question\n";
-    std::cout << "  ai-explain <func>     Ask AI to analyze experimental function pseudocode\n";
+    std::cout << "  ai-explain <func>     Ask AI to review decoded function evidence\n";
     std::cout << "  ai-rename <func>      Ask AI to suggest meaningful variable & function names\n";
-    std::cout << "  ai-vuln <func>        Ask AI to audit experimental function pseudocode\n";
+    std::cout << "  ai-vuln <func>        Ask AI to audit decoded function evidence\n";
     std::cout << "---------------------------------------------------------------------------------\n";
     std::cout << "  gui                   Switch immediately to Graphical User Interface\n";
     std::cout << "  exit / quit           Exit OpenReverse\n\n";
@@ -246,12 +249,17 @@ void CLIRepl::HandleFunctions(Application& app, const std::vector<std::string>& 
             continue;
 
         std::string addrStr = helpers::FormatAddress(fn.startAddress, app.is64Bit);
+        std::ostringstream sizeText;
+        if (fn.boundaryKnown) sizeText << std::dec << fn.size << " B";
+        else sizeText << "?";
         std::cout << "\033[1;36m" << addrStr << "\033[0m  "
                   << std::left << std::setw(28) << fn.name
-                  << std::right << std::setw(5) << std::dec << fn.size << " B  "
+                  << std::right << std::setw(7) << sizeText.str() << "  "
                   << std::setw(6) << fn.cfg.basicBlocks.size() << "  ";
 
-        if (fn.cyclomaticComplexity >= 10)
+        if (fn.cfg.basicBlocks.empty())
+            std::cout << std::setw(4) << "?" << "  ";
+        else if (fn.cyclomaticComplexity >= 10)
             std::cout << "\033[1;31m" << std::setw(4) << fn.cyclomaticComplexity << "\033[0m  ";
         else
             std::cout << "\033[1;32m" << std::setw(4) << fn.cyclomaticComplexity << "\033[0m  ";
@@ -287,13 +295,8 @@ void CLIRepl::HandleDecompile(Application& app, const std::vector<std::string>& 
     }
 
     auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
-    std::string pseudo = app.functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
-
-    std::cout << "\n\033[1;32m// ============================================================================\n";
-    std::cout << "// OpenReverse Experimental Pseudocode | Address: " << helpers::FormatAddress(addr, app.is64Bit) << "\n";
-    std::cout << "// Function: " << fi.name << " | Size: " << fi.size << " B | V(G): " << fi.cyclomaticComplexity << "\n";
-    std::cout << "// ============================================================================\033[0m\n\n";
-    std::cout << "\033[1;36m" << pseudo << "\033[0m\n";
+    const std::string summary = app.functionAnalyzer.GenerateAssemblySummary(fi, app.is64Bit);
+    std::cout << "\n\033[1;36m" << summary << "\033[0m\n";
 }
 
 void CLIRepl::HandleCFG(Application& app, const std::vector<std::string>& args)
@@ -345,7 +348,11 @@ void CLIRepl::HandleXRefs(Application& app, const std::vector<std::string>& args
         case XRefType::Jump: typeStr = "JUMP"; break;
         case XRefType::Write: typeStr = "WRITE"; break;
         case XRefType::ReadWrite: typeStr = "R/W"; break;
-        case XRefType::Lea: typeStr = "LEA"; break;
+        case XRefType::Address: typeStr = "ADDRESS"; break;
+        case XRefType::String: typeStr = "STRING"; break;
+        case XRefType::Import: typeStr = "IMPORT"; break;
+        case XRefType::Global: typeStr = "GLOBAL"; break;
+        case XRefType::Data: typeStr = "DATA"; break;
         default: break;
         }
         std::cout << "  [" << typeStr << "] From: \033[1;36m" << helpers::FormatAddress(xr.fromAddress, app.is64Bit) << "\033[0m -> " << xr.instructionText << "\n";
@@ -475,10 +482,10 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
             AutoAnalysisResult::FunctionSummary summary;
             summary.address = analyzed.startAddress;
             summary.name = analyzed.name;
-            summary.size = analyzed.size;
+            summary.analyzedSize = analyzed.analyzedSize;
             summary.complexity = analyzed.cyclomaticComplexity;
             summary.xrefCount = static_cast<int>(app.xrefScanner.FindXRefsTo(analyzed.startAddress).size());
-            summary.pseudocode = app.functionAnalyzer.GeneratePseudocode(analyzed, app.is64Bit);
+            summary.assemblySummary = app.functionAnalyzer.GenerateAssemblySummary(analyzed, app.is64Bit);
             res.keyFunctions.push_back(std::move(summary));
         }
     }
@@ -788,8 +795,8 @@ void CLIRepl::HandleAIExplain(Application& app, const std::vector<std::string>& 
         std::cout << "[-] Function not found: " << args[1] << "\n";
         return;
     }
-    std::string pseudo = DecompileHelper(app, addr);
-    std::string prompt = "Analyze this experimental C-like pseudocode from an x64 binary and explain what it does:\n```c\n" + pseudo + "\n```";
+    const std::string evidence = AssemblySummaryFor(app, addr);
+    std::string prompt = "Review this decoded control-flow and assembly evidence. Separate observations from inferences:\n```asm\n" + evidence + "\n```";
 
     std::cout << "[*] Explaining function 0x" << std::hex << addr << std::dec << " via AI Copilot...\n";
     app.aiService.Send(prompt, app.GetAIContextSummary());
@@ -825,8 +832,8 @@ void CLIRepl::HandleAIRename(Application& app, const std::vector<std::string>& a
         std::cout << "[-] Function not found: " << args[1] << "\n";
         return;
     }
-    std::string pseudo = DecompileHelper(app, addr);
-    std::string prompt = "Analyze this experimental C-like pseudocode and suggest descriptive names as a markdown table:\n```c\n" + pseudo + "\n```";
+    const std::string evidence = AssemblySummaryFor(app, addr);
+    std::string prompt = "Review this decoded assembly evidence and suggest descriptive names as hypotheses in a markdown table:\n```asm\n" + evidence + "\n```";
 
     std::cout << "[*] Asking AI Copilot for renaming suggestions for 0x" << std::hex << addr << std::dec << "...\n";
     app.aiService.Send(prompt, app.GetAIContextSummary());
@@ -856,12 +863,12 @@ void CLIRepl::HandleAITriage(Application& app, const std::vector<std::string>& a
     std::string exeName = app.attachedProcessName.empty() ? "Target Binary" : app.attachedProcessName;
     size_t fnCount = app.analysisPanel.GetFunctions().size();
     
-    std::string prompt = "Generate a threat assessment and MITRE ATT&CK mapping for reverse engineering target: `" + exeName + "` (" + std::to_string(fnCount) + " functions discovered).\n"
+    std::string prompt = "Review the deterministic analysis context for target: `" + exeName + "` (" + std::to_string(fnCount) + " functions discovered).\n"
                          "Include:\n"
-                         "1. **Threat Score**: (0-100 severity assessment)\n"
-                         "2. **Executive Summary**: What this binaire appears to do based on strings/imports.\n"
-                         "3. **MITRE ATT&CK Matrix**: Map observed behaviors to TTPs (e.g. T1055 Process Injection, T1056 Input Capture, T1027 Obfuscation).\n"
-                         "4. **Key Functions of Interest**: Top 3 suspicious addresses/entry points to audit first.";
+                         "1. **Observed evidence**: only strings, imports, Xrefs, and instructions present in the context.\n"
+                         "2. **Hypotheses**: clearly label interpretations and uncertainty.\n"
+                         "3. **MITRE ATT&CK candidates**: include a technique only when evidence supports review.\n"
+                         "4. **Functions to review**: cite only addresses present in the context.";
 
     app.aiService.Send(prompt, app.GetAIContextSummary());
 
@@ -904,9 +911,9 @@ void CLIRepl::HandleAIAutoRename(Application& app, const std::vector<std::string
         if (++count >= 15) break;
     }
 
-    std::string prompt = "Perform Global AI Semantic Type & Name Inference on this target binary.\n"
+    std::string prompt = "Propose optional names for this target binary. Treat every proposal as an AI hypothesis.\n"
                          "Functions sample: " + sampleList + "\n\n"
-                         "Generate a markdown table proposing clean, descriptive C/C++ function signatures and inferred struct types for the core routines of this executable.";
+                         "Generate a markdown table with the observed address, proposed name, supporting evidence, and uncertainty. Do not invent source types or signatures.";
 
     app.aiService.Send(prompt, app.GetAIContextSummary());
 
@@ -943,8 +950,8 @@ void CLIRepl::HandleAIVuln(Application& app, const std::vector<std::string>& arg
         std::cout << "[-] Function not found: " << args[1] << "\n";
         return;
     }
-    std::string pseudo = DecompileHelper(app, addr);
-    std::string prompt = "Audit this experimental C-like pseudocode for security vulnerabilities and report severity:\n```c\n" + pseudo + "\n```";
+    const std::string evidence = AssemblySummaryFor(app, addr);
+    std::string prompt = "Audit this decoded assembly evidence for potential security issues. Mark uncertainty explicitly:\n```asm\n" + evidence + "\n```";
 
     std::cout << "[*] Auditing function 0x" << std::hex << addr << std::dec << " for vulnerabilities via AI Copilot...\n";
     app.aiService.Send(prompt, app.GetAIContextSummary());
@@ -978,10 +985,10 @@ static const std::vector<SlashCommandItemInfo> g_interactiveCommands = {
     {"/open",      "Open binary file and launch OpenReverse analysis"},
     {"/attach",    "Attach to running Windows process PID for dynamic analysis"},
     {"/functions", "List discovered functions & entry points in target binary"},
-    {"/decompile", "Generate experimental C-like pseudocode from assembly"},
+    {"/decompile", "Show decoded instructions grouped by basic block"},
     {"/explain",   "Ask AI Copilot to explain current function logic in detail"},
     {"/rename",    "Ask AI to suggest descriptive variable & function names"},
-    {"/vuln",      "Audit experimental pseudocode for vulnerabilities"},
+    {"/vuln",      "Audit decoded function evidence for vulnerabilities"},
     {"/xrefs",     "Show all cross-references (CALL, JUMP, MEM) to/from address"},
     {"/strings",   "List extracted ASCII/UTF-16 strings and evidence categories"},
     {"/sessions",  "Manage OpenReverse interactive RE & multi-session workspaces"},
@@ -1147,7 +1154,6 @@ bool CLIRepl::Run(Application& app)
         }
         line = ReadInteractiveLine(app, targetLabel);
 
-        // Trim leading and trailing spaces
         line.erase(0, line.find_first_not_of(" \t\r\n"));
         line.erase(line.find_last_not_of(" \t\r\n") + 1);
 
@@ -1287,7 +1293,7 @@ void CLIRepl::PrintSlashHelp()
     std::cout << "  \033[1;32m/new-session\033[0m [name] Create a new clean session workspace\n";
     std::cout << "  \033[1;32m/switch\033[0m <id>        Switch to another active session ID\n";
     std::cout << "  \033[1;32m/functions\033[0m [filt]   List discovered functions in current binary\n";
-    std::cout << "  \033[1;32m/decompile\033[0m <addr>   Generate experimental C-like pseudocode\n";
+    std::cout << "  \033[1;32m/decompile\033[0m <addr>   Show decoded control-flow evidence\n";
     std::cout << "  \033[1;32m/xrefs\033[0m <addr>       Show all cross-references (CALL, JUMP, MEM) to/from address\n";
     std::cout << "  \033[1;32m/strings\033[0m [filt]     List extracted strings and evidence categories\n";
     std::cout << "  \033[1;32m/explain\033[0m <addr>     Ask AI to decompile & explain a function in detail\n";
@@ -1523,12 +1529,12 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
     }
 }
 
-std::string CLIRepl::DecompileHelper(Application& app, uint64_t addr)
+std::string CLIRepl::AssemblySummaryFor(Application& app, uint64_t addr)
 {
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, 4096);
     if (bytes.empty()) return "";
     auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
-    return app.functionAnalyzer.GeneratePseudocode(fi, app.is64Bit);
+    return app.functionAnalyzer.GenerateAssemblySummary(fi, app.is64Bit);
 }
 
 } // namespace openreverse

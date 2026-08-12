@@ -1,4 +1,3 @@
-// OpenReverse - UI Panel: Bookmarks Panel Implementation
 #include "bookmarks_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"

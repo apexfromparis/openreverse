@@ -1,4 +1,9 @@
 #include "core/disassembler.h"
+#include "core/address_space.h"
+#include "core/binary_diff.h"
+#include "core/dump_loader.h"
+#include "core/offset_model.h"
+#include "core/signature_engine.h"
 #include "core/analysis_scheduler.h"
 #include "core/analysis_database.h"
 #include "core/data_analyzer.h"
@@ -7,6 +12,7 @@
 #include "core/module_analyzer.h"
 #include "core/pattern_scanner.h"
 #include "core/pe_parser.h"
+#include "core/process_manager.h"
 #include "core/string_scanner.h"
 #include "core/xref_scanner.h"
 #include "utils/helpers.h"
@@ -20,6 +26,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -155,6 +162,55 @@ std::vector<uint8_t> BuildMinimalPE64()
     return bytes;
 }
 
+std::vector<uint8_t> BuildPE64WithRuntimeFunctions()
+{
+    auto bytes = BuildMinimalPE64();
+    bytes.resize(0xA00, 0);
+    const size_t ntOffset = 0x80;
+
+    IMAGE_FILE_HEADER file{};
+    std::memcpy(&file, bytes.data() + ntOffset + sizeof(DWORD), sizeof(file));
+    file.NumberOfSections = 3;
+    WriteObject(bytes, ntOffset + sizeof(DWORD), file);
+
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    const size_t optionalOffset = ntOffset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
+    std::memcpy(&optional, bytes.data() + optionalOffset, sizeof(optional));
+    optional.SizeOfImage = 0x4000;
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress = 0x3000;
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size = 3 * sizeof(RUNTIME_FUNCTION);
+    WriteObject(bytes, optionalOffset, optional);
+
+    const size_t sectionOffset = optionalOffset + sizeof(optional);
+    IMAGE_SECTION_HEADER pdata{};
+    std::memcpy(pdata.Name, ".pdata", 6);
+    pdata.Misc.VirtualSize = 0x200;
+    pdata.VirtualAddress = 0x3000;
+    pdata.SizeOfRawData = 0x200;
+    pdata.PointerToRawData = 0x800;
+    pdata.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+    WriteObject(bytes, sectionOffset + 2 * sizeof(IMAGE_SECTION_HEADER), pdata);
+
+    const RUNTIME_FUNCTION runtimeFunctions[] = {
+        {0x1010, 0x1020, 0x3100},
+        {0x1010, 0x1020, 0x3100},
+        {0x1020, 0x1030, 0x3104}
+    };
+    std::memcpy(bytes.data() + 0x800, runtimeFunctions, sizeof(runtimeFunctions));
+    const uint8_t firstFunction[] = {
+        0x48, 0x8B, 0x05, 0xE9, 0x0F, 0x00, 0x00,
+        0x48, 0x8B, 0xD9,
+        0x8B, 0x43, 0x20,
+        0x90, 0x90, 0xC3
+    };
+    const uint8_t secondFunction[] = {
+        0x89, 0x53, 0x24, 0x31, 0xC0, 0xC3
+    };
+    std::memcpy(bytes.data() + 0x410, firstFunction, sizeof(firstFunction));
+    std::memcpy(bytes.data() + 0x420, secondFunction, sizeof(secondFunction));
+    return bytes;
+}
+
 void TestPEMapping()
 {
     auto raw = BuildMinimalPE64();
@@ -200,6 +256,82 @@ void TestPEMapping()
            "offline MemoryReader reads mapped bytes by VA");
     Expect(!reader.ReadMemory(nullptr, 0x1010, code, sizeof(code)),
            "offline MemoryReader rejects ambiguous raw/RVA addresses");
+}
+
+void TestAddressSpacesAndRuntimeFunctions()
+{
+    auto raw = BuildPE64WithRuntimeFunctions();
+    openreverse::PEParser parser;
+    const auto pe = parser.ParseBuffer(raw.data(), raw.size());
+    Expect(pe.valid && pe.runtimeFunctions.size() == 2 && pe.rejectedRuntimeFunctionCount == 1,
+           "x64 runtime functions retain valid unique non-overlapping ranges");
+    Expect(pe.runtimeFunctionDirectoryComplete,
+           "complete runtime-function directory is reported as complete");
+
+    openreverse::PEFileAddressSpace fileSpace(raw, pe);
+    size_t sourceOffset = 0;
+    Expect(fileSpace.ResolveRva(0x1010, 3, sourceOffset) && sourceOffset == 0x410,
+           "raw PE address space resolves RVA through section raw offsets");
+
+    std::vector<uint8_t> mapped;
+    Expect(openreverse::PEParser::BuildMappedImage(raw, pe, mapped),
+           "runtime-function fixture maps to an image");
+    openreverse::MappedImageAddressSpace mappedSpace(mapped, pe.imageBase);
+    Expect(mappedSpace.ResolveRva(0x1010, 3, sourceOffset) && sourceOffset == 0x1010,
+           "mapped image address space resolves RVA directly");
+    openreverse::DumpAddressSpace dumpSpace(mapped, 0x180000000ULL);
+    uint32_t dumpRva = 0;
+    Expect(dumpSpace.VaToRva(0x180001010ULL, dumpRva) && dumpRva == 0x1010,
+           "dump address space retains its explicit image base");
+
+    const auto mappedPe = parser.ParseMappedImage(mapped.data(), mapped.size(), 0x180000000ULL);
+    Expect(mappedPe.valid && mappedPe.imageBase == 0x180000000ULL &&
+           mappedPe.runtimeFunctions.size() == 2 && mappedPe.exports.size() == 2,
+           "mapped PE image parses directories without raw-file translation");
+
+    auto truncated = raw;
+    IMAGE_OPTIONAL_HEADER64 optional{};
+    const size_t optionalOffset = 0x80 + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
+    std::memcpy(&optional, truncated.data() + optionalOffset, sizeof(optional));
+    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size = sizeof(RUNTIME_FUNCTION) + 1;
+    WriteObject(truncated, optionalOffset, optional);
+    const auto truncatedPe = parser.ParseBuffer(truncated.data(), truncated.size());
+    Expect(truncatedPe.valid && !truncatedPe.runtimeFunctionDirectoryComplete &&
+           truncatedPe.runtimeFunctions.size() == 1,
+           "truncated runtime-function directory is explicit and bounded");
+}
+
+void TestMappedAnalysisPipeline()
+{
+    auto raw = BuildPE64WithRuntimeFunctions();
+    openreverse::PEParser parser;
+    const auto pe = parser.ParseBuffer(raw.data(), raw.size());
+    std::vector<uint8_t> mapped;
+    openreverse::PEParser::BuildMappedImage(raw, pe, mapped);
+    openreverse::ModuleInfo module{"pipeline.exe", "pipeline.exe", pe.imageBase, pe.sizeOfImage};
+    openreverse::ModuleAnalyzer analyzer;
+    const auto analysis = analyzer.AnalyzeMappedImage(mapped, raw.size(), module, pe);
+    const auto runtimeFunction = std::find_if(analysis.functions.begin(), analysis.functions.end(),
+        [&](const openreverse::FunctionInfo& function) {
+            return function.startAddress == pe.imageBase + 0x1010;
+        });
+    Expect(analysis.success && runtimeFunction != analysis.functions.end() &&
+           runtimeFunction->source == openreverse::FunctionSource::RuntimeFunction &&
+           runtimeFunction->boundaryKnown && runtimeFunction->size == 0x10,
+           "mapped analysis prioritizes .pdata and retains exact function boundaries");
+    Expect(!analysis.xrefs.empty() && analysis.xrefs.front().toAddress == pe.imageBase + 0x2000 &&
+           analysis.xrefs.front().functionAddress == pe.imageBase + 0x1010,
+           "mapped analysis indexes operand Xrefs with containing-function provenance");
+    const auto copiedField = std::find_if(analysis.fieldAccesses.begin(), analysis.fieldAccesses.end(),
+        [](const openreverse::FieldAccessCandidate& field) {
+            return field.offset == 0x20 && field.argumentIndex == 1;
+        });
+    Expect(copiedField != analysis.fieldAccesses.end() &&
+           copiedField->originRegister == "rcx" && copiedField->baseRegister == "rbx",
+           "mapped analysis carries register-origin evidence into field records");
+    Expect(!analysis.offsets.empty() && !analysis.identity.sha256.empty() &&
+           !analysis.signatures.empty(),
+           "mapped analysis publishes typed offsets, module identity, and signatures together");
 }
 
 void TestMalformedPEs()
@@ -402,6 +534,13 @@ void TestRecursiveCFG()
                "linear return emits a Return edge");
         Expect(function.cfg.basicBlocks[0].successors.empty() && function.cfg.basicBlocks[0].predecessors.empty(),
                "linear return block has no CFG neighbors");
+        openreverse::FunctionAnalyzer analyzer;
+        const std::string summary = analyzer.GenerateAssemblySummary(function, true);
+        Expect(summary.find("nop") != std::string::npos &&
+               summary.find("Every instruction below is decoded evidence") != std::string::npos &&
+               summary.find("rax_result") == std::string::npos &&
+               summary.find("_condition") == std::string::npos,
+               "assembly summary reports decoded evidence without invented source semantics");
     }
 
     {
@@ -488,7 +627,8 @@ void TestRecursiveCFG()
     {
         const auto function = AnalyzeCFG({0x85, 0xC9, 0x74, 0x01, 0xC3, 0xC3, 0x90, 0xC3}, base);
         Expect(function.cfg.basicBlocks.size() == 3, "early return keeps only reachable return paths");
-        Expect(function.endAddress == base + 6, "early-return CFG excludes a later unreachable return");
+        Expect(function.analyzedEndAddress == base + 6,
+               "early-return CFG excludes a later unreachable return from analyzed extent");
     }
 
     {
@@ -557,9 +697,11 @@ void TestTypedXRefs()
     {
         Expect(refs[0].toAddress == base + 0x1C && refs[0].type == openreverse::XRefType::Read,
                "RIP-relative source operand is a READ Xref");
+        Expect(refs[0].operandIndex == 1 && refs[0].operandSize == 8,
+               "Xref retains source operand index and width");
         Expect(refs[1].toAddress == base + 0x33 && refs[1].type == openreverse::XRefType::Write,
                "RIP-relative destination operand is a WRITE Xref");
-        Expect(refs[2].toAddress == base + 0x4A && refs[2].type == openreverse::XRefType::Lea,
+        Expect(refs[2].toAddress == base + 0x4A && refs[2].type == openreverse::XRefType::Address,
                 "RIP-relative LEA is retained as address generation");
         Expect(refs[3].toAddress == base + 0x62 && refs[3].type == openreverse::XRefType::ReadWrite,
                "read-modify-write memory operands retain both access modes");
@@ -762,6 +904,9 @@ void TestAnalysisDatabase()
 
     openreverse::FunctionInfo first;
     first.startAddress = module.baseAddress + 0x1000;
+    first.endAddress = first.startAddress + 0x40;
+    first.size = 0x40;
+    first.boundaryKnown = true;
     first.name = "first";
     openreverse::XRefEntry firstXref;
     firstXref.fromAddress = first.startAddress + 4;
@@ -777,6 +922,10 @@ void TestAnalysisDatabase()
     Expect(database.FindModuleContaining(module.baseAddress + module.size - 1) == initial &&
            database.FindModuleContaining(module.baseAddress + module.size) == nullptr,
            "analysis database resolves addresses with an exclusive module end");
+    Expect(database.FindFunction(module.baseAddress, first.startAddress) != nullptr &&
+           database.FindFunctionContaining(module.baseAddress, first.startAddress + 0x20) != nullptr &&
+           database.FindXRefsTo(module.baseAddress, firstString.address).size() == 1,
+           "analysis database indexes functions and Xrefs by address");
 
     first.name = "first_updated";
     openreverse::FunctionInfo second;
@@ -861,6 +1010,231 @@ void TestDataCandidates()
     Expect(structures.size() == 1 && structures[0].fields.size() == 3 &&
            structures[0].functionAddress == owner.startAddress && structures[0].estimatedSize >= 0x31,
            "structure inference groups repeated base-register fields by owning function");
+
+    const uint8_t negativeFieldCode[] = {0x8B, 0x41, 0xF8};
+    const auto negativeInstructions = disassembler.Disassemble(
+        negativeFieldCode, sizeof(negativeFieldCode), pe.imageBase + 0x1080, 4);
+    const auto negativeFields = openreverse::FindFieldAccesses(negativeInstructions);
+    Expect(negativeFields.size() == 1 && negativeFields[0].displacement == -8 &&
+           negativeFields[0].offset == -8,
+           "field candidates preserve bounded signed object displacements");
+
+    const uint8_t propagatedCode[] = {
+        0x48, 0x8B, 0xD9,             // mov rbx, rcx
+        0x8B, 0x43, 0x20,             // mov eax, [rbx+0x20]
+        0x89, 0x53, 0x24              // mov [rbx+0x24], edx
+    };
+    const auto propagatedInstructions = disassembler.Disassemble(
+        propagatedCode, sizeof(propagatedCode), pe.imageBase + 0x1100, 16);
+    auto propagatedFields = openreverse::FindFieldAccesses(propagatedInstructions);
+    Expect(propagatedFields.size() == 2 && propagatedFields[0].argumentIndex == 1 &&
+           propagatedFields[0].originRegister == "rcx" &&
+           propagatedFields[0].originKind == openreverse::RegisterOriginKind::RegisterCopy,
+           "register-copy propagation retains Windows x64 argument origin");
+    if (propagatedFields.size() == 2)
+    {
+        Expect(propagatedFields[0].baseRegister == "rbx" &&
+               propagatedFields[0].access == openreverse::DataAccessType::Read,
+               "propagated field retains observed base register and READ access");
+        Expect(propagatedFields[1].access == openreverse::DataAccessType::Write,
+               "propagated field retains WRITE access");
+    }
+}
+
+void TestSignatures()
+{
+    const uint64_t base = 0x140001000ULL;
+    const uint8_t code[] = {
+        0x48, 0x8B, 0x05, 0x10, 0x00, 0x00, 0x00,
+        0xE8, 0x04, 0x00, 0x00, 0x00,
+        0x48, 0x85, 0xC0,
+        0xC3
+    };
+    openreverse::Disassembler disassembler;
+    Expect(disassembler.Init(true), "signature test initializes x64 decoder");
+    const auto instructions = disassembler.Disassemble(code, sizeof(code), base, 16);
+    openreverse::SignatureEngine engine;
+    openreverse::SignatureRelationship relationship;
+    relationship.kind = openreverse::SignatureTargetKind::RipRelativeOperand;
+    relationship.operandIndex = 1;
+    openreverse::SignatureGenerationOptions options;
+    options.minimumBytes = 12;
+    options.maximumBytes = 32;
+    options.imageBase = 0x140000000ULL;
+    options.imageSize = 0x100000;
+    auto signature = engine.Generate(instructions, 0, relationship, options);
+    Expect(signature.pattern.size() == 12 && signature.pattern[3].wildcard &&
+           signature.pattern[6].wildcard && signature.pattern[8].wildcard &&
+           signature.pattern[11].wildcard,
+           "signature generation wildcards RIP displacement and relative call target bytes");
+    const auto resolved = engine.Resolve(signature, base, instructions);
+    Expect(resolved.valid && resolved.address == base + 7 + 0x10,
+           "signature relationship resolves a RIP-relative global");
+
+    auto raw = BuildMinimalPE64();
+    openreverse::PEParser parser;
+    const auto pe = parser.ParseBuffer(raw.data(), raw.size());
+    std::vector<uint8_t> mapped;
+    Expect(openreverse::PEParser::BuildMappedImage(raw, pe, mapped),
+           "signature fixture maps a PE image");
+    std::memcpy(mapped.data() + 0x1010, code, sizeof(code));
+    signature.stableId = "signature-test";
+    engine.Evaluate(signature, mapped, pe, raw.size());
+    Expect(signature.status == openreverse::SignatureStatus::Unique && signature.matchCount == 1,
+           "signature uniqueness is measured across executable sections");
+    std::memcpy(mapped.data() + 0x1050, code, sizeof(code));
+    engine.Evaluate(signature, mapped, pe, raw.size());
+    Expect(signature.status == openreverse::SignatureStatus::Ambiguous && signature.matchCount == 2,
+           "duplicate signature matches are reported as ambiguous");
+
+    const uint8_t fieldCode[] = {
+        0x8B, 0x81, 0xA8, 0x01, 0x00, 0x00,
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90
+    };
+    const auto fieldInstructions = disassembler.Disassemble(fieldCode, sizeof(fieldCode), base, 16);
+    relationship.kind = openreverse::SignatureTargetKind::FieldDisplacement;
+    relationship.operandIndex = 1;
+    auto fieldSignature = engine.Generate(fieldInstructions, 0, relationship, options);
+    const auto field = engine.Resolve(fieldSignature, base, fieldInstructions);
+    Expect(fieldSignature.pattern.size() == sizeof(fieldCode) && fieldSignature.pattern[2].wildcard &&
+           fieldSignature.pattern[5].wildcard && field.valid && field.value == 0x1A8,
+           "field signature wildcards and resolves the structure displacement");
+}
+
+void TestOffsetProjectsAndIdentity()
+{
+    openreverse::PEInfo pe;
+    pe.valid = true;
+    pe.timestamp = 0x12345678;
+    pe.sizeOfImage = 0x3000;
+    pe.imageBase = 0x140000000ULL;
+    const std::vector<uint8_t> bytes{'a', 'b', 'c'};
+    openreverse::ModuleIdentity identity;
+    std::string error;
+    Expect(openreverse::ComputeModuleIdentity(bytes, pe, "fixture.exe", identity, error) &&
+           identity.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+           "module identity uses SHA-256 over supplied module bytes");
+
+    openreverse::OffsetProject project;
+    project.module = identity;
+    openreverse::OffsetRecord first;
+    first.stableId = "field:1";
+    first.name = "state-value";
+    first.kind = openreverse::OffsetKind::StructureField;
+    first.fieldOffset = 0x1A8;
+    first.module = "fixture.exe";
+    first.accessType = openreverse::DataAccessType::Read;
+    first.evidence = openreverse::EvidenceLevel::Inferred;
+    first.evidenceScore = 3;
+    first.provenance = {"Arg1 origin", "decoded operand"};
+    project.offsets.push_back(first);
+    first.stableId = "field:2";
+    first.name = "state value";
+    project.offsets.push_back(first);
+    first.stableId = "field:3";
+    first.name = "negative field";
+    first.fieldOffset = -8;
+    project.offsets.push_back(first);
+    openreverse::SignatureRecord signature;
+    signature.stableId = "sig:1";
+    signature.pattern = openreverse::PatternScanner::ParsePattern("48 8B ?? FF");
+    project.signatures.push_back(signature);
+
+    const std::string json = openreverse::SerializeOffsetProject(project);
+    openreverse::OffsetProject imported;
+    Expect(openreverse::ParseOffsetProject(json, imported, error) && imported.offsets.size() == 3 &&
+           imported.signatures.size() == 1 && imported.module.sha256 == identity.sha256,
+           "offset project JSON round-trips typed offsets, signatures, and module identity");
+    const std::string header = openreverse::ExportOffsetHeader(imported);
+    Expect(header.find("state_value") != std::string::npos &&
+           header.find("state_value_2") != std::string::npos &&
+           header.find("std::ptrdiff_t negative_field = -0x8") != std::string::npos,
+           "C++ header export sanitizes identifiers, handles duplicates, and preserves signed fields");
+    Expect(!openreverse::ParseOffsetProject("{invalid", imported, error) && !error.empty(),
+           "malformed offset JSON fails with an actionable error");
+}
+
+void TestBinaryDiffAndMigration()
+{
+    const uint64_t oldBase = 0x140010000ULL;
+    const uint64_t newBase = 0x180020000ULL;
+    const auto oldFunction = AnalyzeCFG({0x85, 0xC9, 0x74, 0x01, 0xC3, 0xC3}, oldBase);
+    const auto newFunction = AnalyzeCFG({0x85, 0xC9, 0x74, 0x01, 0xC3, 0xC3}, newBase);
+    const auto unrelated = AnalyzeCFG({0x31, 0xC0, 0xC3}, newBase + 0x100);
+    const auto oldFingerprint = openreverse::BuildFunctionFingerprint(oldFunction, {"shared-string"});
+    const auto newFingerprint = openreverse::BuildFunctionFingerprint(newFunction, {"shared-string"});
+    const auto unrelatedFingerprint = openreverse::BuildFunctionFingerprint(unrelated, {"other"});
+    std::vector<std::string> evidence;
+    const double similar = openreverse::CompareFunctionFingerprints(
+        oldFingerprint, newFingerprint, &evidence);
+    const double different = openreverse::CompareFunctionFingerprints(
+        oldFingerprint, unrelatedFingerprint);
+    Expect(similar > different && similar > 0.95 && !evidence.empty(),
+           "normalized function fingerprints ignore location while retaining reviewable evidence");
+
+    auto unique = openreverse::CompareFunctionSets({oldFingerprint},
+        {newFingerprint, unrelatedFingerprint});
+    Expect(unique.size() == 1 && unique[0].status == openreverse::MigrationStatus::UniqueCandidate &&
+           unique[0].candidates.front().newAddress == newBase,
+           "offset migration produces a unique review candidate for a strong match");
+    auto duplicate = newFingerprint;
+    duplicate.functionAddress = newBase + 0x200;
+    auto ambiguous = openreverse::CompareFunctionSets({oldFingerprint},
+        {newFingerprint, duplicate});
+    Expect(ambiguous.size() == 1 && ambiguous[0].status == openreverse::MigrationStatus::Ambiguous,
+           "equally strong migration matches remain explicitly ambiguous");
+}
+
+void TestDumpImportAndDeniedAccess()
+{
+    char tempPath[MAX_PATH]{};
+    GetTempPathA(MAX_PATH, tempPath);
+    const std::string mappedPath = std::string(tempPath) + "openreverse-mapped-fixture-" +
+        std::to_string(GetCurrentProcessId()) + ".bin";
+    const std::string rawPath = std::string(tempPath) + "openreverse-raw-fixture-" +
+        std::to_string(GetCurrentProcessId()) + ".bin";
+
+    auto rawPe = BuildMinimalPE64();
+    openreverse::PEParser parser;
+    const auto pe = parser.ParseBuffer(rawPe.data(), rawPe.size());
+    std::vector<uint8_t> mapped;
+    openreverse::PEParser::BuildMappedImage(rawPe, pe, mapped);
+    {
+        std::ofstream file(mappedPath, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(mapped.data()), mapped.size());
+    }
+    const std::vector<uint8_t> snapshot(64, 0x90);
+    {
+        std::ofstream file(rawPath, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(snapshot.data()), snapshot.size());
+    }
+
+    openreverse::DumpLoader loader;
+    const auto mappedDump = loader.Load(mappedPath);
+    Expect(mappedDump.success &&
+           mappedDump.representation == openreverse::DumpRepresentation::MappedPEImage &&
+           mappedDump.pe.imageBase == pe.imageBase,
+           "mapped PE dump is detected and loaded with direct RVA semantics");
+    const auto missingMetadata = loader.Load(rawPath);
+    Expect(!missingMetadata.success && missingMetadata.error.find("architecture") != std::string::npos,
+           "unknown raw dump requires explicit critical metadata");
+    openreverse::DumpImportOptions options;
+    options.representation = openreverse::DumpRepresentation::RawSnapshot;
+    options.architecture = openreverse::DumpArchitecture::X64;
+    options.imageBase = 0x180000000ULL;
+    options.moduleSize = snapshot.size();
+    const auto rawDump = loader.Load(rawPath, options);
+    Expect(rawDump.success && rawDump.module.baseAddress == options.imageBase &&
+           rawDump.imageBytes.size() == snapshot.size(),
+           "raw snapshot import preserves explicit architecture, base, and module size");
+    DeleteFileA(mappedPath.c_str());
+    DeleteFileA(rawPath.c_str());
+
+    const std::string denied = openreverse::ProcessOpenFailureMessage(ERROR_ACCESS_DENIED);
+    Expect(denied.find("denied") != std::string::npos &&
+           denied.find("user-provided dump") != std::string::npos &&
+           denied.find("bypass") == std::string::npos,
+           "denied process access reports safe offline alternatives without bypass guidance");
 }
 
 } // namespace
@@ -869,6 +1243,8 @@ int main()
 {
     TestSharedUtilities();
     TestPEMapping();
+    TestAddressSpacesAndRuntimeFunctions();
+    TestMappedAnalysisPipeline();
     TestMalformedPEs();
     TestBuiltExecutablePE();
     TestLiveExecutableSections();
@@ -880,6 +1256,10 @@ int main()
     TestAnalysisScheduler();
     TestAnalysisDatabase();
     TestDataCandidates();
+    TestSignatures();
+    TestOffsetProjectsAndIdentity();
+    TestBinaryDiffAndMigration();
+    TestDumpImportAndDeniedAccess();
 
     if (failures != 0)
     {

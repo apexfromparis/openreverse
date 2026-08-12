@@ -1,5 +1,4 @@
 #pragma once
-// Interactive command-line shell for analysis and GUI handover.
 
 #include "app/application.h"
 #include <string>
@@ -12,15 +11,11 @@ public:
     CLIRepl();
     ~CLIRepl();
 
-    // Enable Windows Terminal ANSI escape codes (colors & formatting)
     static void EnableAnsiColors();
 
     static void PrintCLIHelp();
     static void PrintCLIVersion();
 
-    // Start interactive command-line REPL loop
-    // Returns true if user requested to switch to GUI mode ('gui' command)
-    // Returns false if user requested to exit ('exit' command)
     bool Run(Application& app);
 
     bool HandleOpen(Application& app, const std::vector<std::string>& args);
@@ -41,7 +36,6 @@ private:
     void HandleModules(Application& app, const std::vector<std::string>& args);
     void HandleReport(Application& app, const std::vector<std::string>& args);
 
-    // AI Copilot & Model Configuration Commands
     void HandleAIConfig(Application& app, const std::vector<std::string>& args);
     void HandleAIKey(Application& app, const std::vector<std::string>& args);
     void HandleAIModel(Application& app, const std::vector<std::string>& args);
@@ -73,7 +67,7 @@ private:
     std::string ReadInteractiveLine(Application& app, const std::string& targetLabel);
 
     uint64_t ParseAddressOrName(Application& app, const std::string& token);
-    std::string DecompileHelper(Application& app, uint64_t addr);
+    std::string AssemblySummaryFor(Application& app, uint64_t addr);
 };
 
 } // namespace openreverse

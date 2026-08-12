@@ -75,7 +75,6 @@ void MemoryMapPanel::Render(Application& app)
 
             ImGui::TableNextRow();
 
-            // Color by type
             ImVec4 rowColor;
             if (region.state == MEM_FREE)
                 rowColor = ImVec4(0.3f, 0.3f, 0.3f, 1.0f);
@@ -86,7 +85,6 @@ void MemoryMapPanel::Render(Application& app)
             else
                 rowColor = ImVec4(0.8f, 0.8f, 0.85f, 1.0f);
 
-            // Base Address (clickable, right-click menu)
             ImGui::TableSetColumnIndex(0);
             std::string addrStr = address;
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.6f, 0.8f, 1.0f));
@@ -128,18 +126,15 @@ void MemoryMapPanel::Render(Application& app)
             }
             ImGui::PopStyleColor();
 
-            // Size
             ImGui::TableSetColumnIndex(1);
             ImGui::Text("%s", helpers::FormatSize(region.size).c_str());
 
-            // State
             ImGui::TableSetColumnIndex(2);
             ImVec4 stateColor = (region.state == MEM_COMMIT)
                 ? ImVec4(0.3f, 0.85f, 0.4f, 1.0f)
                 : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
             ImGui::TextColored(stateColor, "%s", state.c_str());
 
-            // Protection
             ImGui::TableSetColumnIndex(3);
             const std::string& prot = protection;
             bool hasExec = region.protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY);
@@ -148,7 +143,6 @@ void MemoryMapPanel::Render(Application& app)
                 : ImVec4(0.7f, 0.7f, 0.75f, 1.0f);
             ImGui::TextColored(protColor, "%s", prot.c_str());
 
-            // Type
             ImGui::TableSetColumnIndex(4);
             ImGui::TextColored(rowColor, "%s", type.c_str());
         }

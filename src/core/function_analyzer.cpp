@@ -153,10 +153,9 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* dat
 
         FunctionInfo fi;
         fi.startAddress = addr;
-        fi.size = (size_t)std::min((uint64_t)2048, (uint64_t)(nextAddr - addr));
-        fi.endAddress = addr + fi.size;
+        fi.analysisLimit = std::min<uint64_t>(nextAddr, addr + std::min<uint64_t>(4096, bufferEnd - addr));
         fi.name = "sub_" + helpers::FormatAddress(addr, false);
-        fi.callingConvention = is64Bit ? "x64 fastcall (RCX, RDX, R8, R9)" : "x86 stdcall / cdecl";
+        fi.source = FunctionSource::Heuristic;
         functions.push_back(fi);
     }
 
@@ -182,10 +181,9 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromXRefs(const std
         known.insert(target);
         FunctionInfo fi;
         fi.startAddress = target;
-        fi.endAddress = target + 128;
-        fi.size = 128;
+        fi.analysisLimit = codeEnd - target > 4096 ? target + 4096 : codeEnd;
         fi.name = "sub_" + helpers::FormatAddress(target, is64Bit).substr(2);
-        fi.callingConvention = is64Bit ? "x64 fastcall" : "stdcall / cdecl";
+        fi.source = FunctionSource::DirectCall;
         out.push_back(fi);
     }
 
@@ -208,9 +206,9 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::v
     {
         auto& fi = funcMap[entryPoint];
         fi.startAddress = entryPoint;
-        if (fi.size == 0) { fi.size = 128; fi.endAddress = entryPoint + 128; }
         fi.name = "entry_point";
-        fi.callingConvention = is64Bit ? "x64 fastcall" : "stdcall / cdecl";
+        if (fi.source != FunctionSource::RuntimeFunction && fi.source != FunctionSource::Symbol)
+            fi.source = FunctionSource::EntryPoint;
     }
 
     for (size_t i = 0; i < exportAddresses.size(); ++i)
@@ -219,8 +217,9 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::v
         if (addr == 0) continue;
         auto& fi = funcMap[addr];
         fi.startAddress = addr;
-        if (fi.size == 0) { fi.size = 128; fi.endAddress = addr + 128; }
         fi.isExported = true;
+        if (fi.source != FunctionSource::RuntimeFunction && fi.source != FunctionSource::Symbol)
+            fi.source = FunctionSource::Export;
         if (fi.name.empty() || fi.name.rfind("sub_", 0) == 0)
             fi.name = "Export_" + helpers::FormatAddress(addr, is64Bit).substr(2);
     }
@@ -235,6 +234,38 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::v
     return out;
 }
 
+std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromRuntimeFunctions(
+    const std::vector<FunctionInfo>& existing, uint64_t imageBase,
+    const std::vector<PERuntimeFunction>& runtimeFunctions, bool is64Bit)
+{
+    std::map<uint64_t, FunctionInfo> functions;
+    for (const auto& function : existing)
+        functions[function.startAddress] = function;
+
+    for (const auto& runtime : runtimeFunctions)
+    {
+        if (runtime.beginRva >= runtime.endRva ||
+            imageBase > (std::numeric_limits<uint64_t>::max)() - runtime.endRva)
+            continue;
+        const uint64_t start = imageBase + runtime.beginRva;
+        auto& function = functions[start];
+        function.startAddress = start;
+        function.endAddress = imageBase + runtime.endRva;
+        function.analysisLimit = function.endAddress;
+        function.size = static_cast<size_t>(runtime.endRva - runtime.beginRva);
+        function.boundaryKnown = true;
+        function.source = FunctionSource::RuntimeFunction;
+        if (function.name.empty())
+            function.name = "sub_" + helpers::FormatAddress(start, is64Bit).substr(2);
+    }
+
+    std::vector<FunctionInfo> result;
+    result.reserve(functions.size());
+    for (auto& pair : functions)
+        result.push_back(std::move(pair.second));
+    return result;
+}
+
 FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataSize,
                                                uint64_t funcAddress, uint64_t bufferBase,
                                                Disassembler& disasm, bool is64Bit,
@@ -243,7 +274,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
     FunctionInfo fi;
     fi.startAddress = funcAddress;
     fi.name = "sub_" + helpers::FormatAddress(funcAddress, is64Bit).substr(2);
-    fi.callingConvention = is64Bit ? "x64 fastcall" : "stdcall / cdecl";
+    fi.source = FunctionSource::RecursiveTraversal;
     fi.cfg.entryAddress = funcAddress;
 
     if (!data || maxBytes == 0 || maxInstructions == 0 || funcAddress < bufferBase ||
@@ -252,6 +283,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
 
     const size_t functionOffset = static_cast<size_t>(funcAddress - bufferBase);
     const size_t scanLength = std::min(maxBytes, dataSize - functionOffset);
+    fi.analysisLimit = funcAddress + scanLength;
     const auto inRange = [&](uint64_t address) {
         return address >= funcAddress && address - funcAddress < scanLength;
     };
@@ -471,7 +503,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
         const Instruction& last = block.instructions.back();
         if (IsConditionalJump(last.mnemonic))
             ++conditionalCount;
-        fi.endAddress = std::max(fi.endAddress, block.endAddress);
+        fi.analyzedEndAddress = std::max(fi.analyzedEndAddress, block.endAddress);
     }
 
     for (const auto& pair : decoded)
@@ -481,93 +513,58 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
             fi.callTargets.push_back(instruction.targetAddress);
     }
 
-    fi.size = fi.endAddress >= fi.startAddress ? static_cast<size_t>(fi.endAddress - fi.startAddress) : 0;
     fi.cyclomaticComplexity = 1 + conditionalCount;
+    fi.analyzedSize = fi.analyzedEndAddress >= fi.startAddress
+        ? static_cast<size_t>(fi.analyzedEndAddress - fi.startAddress) : 0;
 
     return fi;
 }
 
-std::string FunctionAnalyzer::GeneratePseudocode(const FunctionInfo& func, bool is64Bit) const
+std::string FunctionAnalyzer::GenerateAssemblySummary(const FunctionInfo& func, bool is64Bit) const
 {
     std::ostringstream ss;
-    ss << "// ============================================================================\n";
-    ss << "// OpenReverse Experimental Pseudocode\n";
-    ss << "// Heuristic output: inferred names and types are not authoritative.\n";
-    ss << "// Function: " << func.name << " | Address: " << helpers::FormatAddress(func.startAddress, is64Bit) << "\n";
-    ss << "// Size: " << func.size << " bytes | Basic Blocks: " << func.cfg.basicBlocks.size() << " | Complexity V(G): " << func.cyclomaticComplexity << "\n";
-    ss << "// Calling Convention: " << func.callingConvention << "\n";
-    ss << "// ============================================================================\n\n";
-
-    if (is64Bit)
-    {
-        ss << "int64_t " << func.name << "(int64_t rcx_arg, int64_t rdx_arg, int64_t r8_arg, int64_t r9_arg)\n{\n";
-        ss << "    int64_t var_10 = rcx_arg;  // Shadow stack / fastcall arg 1\n";
-        ss << "    int64_t var_18 = rdx_arg;  // Shadow stack / fastcall arg 2\n";
-        ss << "    int64_t var_20 = r8_arg;   // Shadow stack / fastcall arg 3\n";
-        ss << "    int64_t var_28 = r9_arg;   // Shadow stack / fastcall arg 4\n";
-        ss << "    int64_t rax_result = 0;\n\n";
-    }
+    ss << "OpenReverse control-flow assembly summary\n";
+    ss << "Function: " << func.name << "\n";
+    ss << "Address: " << helpers::FormatAddress(func.startAddress, is64Bit) << "\n";
+    if (func.boundaryKnown)
+        ss << "Boundary: " << helpers::FormatAddress(func.startAddress, is64Bit) << " - "
+           << helpers::FormatAddress(func.endAddress, is64Bit) << " (" << func.size << " bytes)\n";
     else
-    {
-        ss << "int32_t __stdcall " << func.name << "(int32_t arg1, int32_t arg2, int32_t arg3)\n{\n";
-        ss << "    int32_t eax_result = 0;\n\n";
-    }
+        ss << "Boundary: unknown; analyzed extent " << func.analyzedSize << " bytes\n";
+    ss << "Basic blocks: " << func.cfg.basicBlocks.size()
+       << " | decoded instructions: " << func.cfg.decodedInstructionCount
+       << " | V(G): " << func.cyclomaticComplexity << "\n";
+    ss << "Every instruction below is decoded evidence; no source-level types or variables are inferred.\n\n";
 
     if (func.cfg.basicBlocks.empty())
     {
-        ss << "    // [Unanalyzed or empty basic block]\n";
-        ss << "    return " << (is64Bit ? "rax_result" : "eax_result") << ";\n}\n";
+        ss << "No decoded basic blocks.\n";
         return ss.str();
     }
 
     for (size_t bidx = 0; bidx < func.cfg.basicBlocks.size(); ++bidx)
     {
         const auto& bb = func.cfg.basicBlocks[bidx];
-        ss << "loc_" << std::hex << std::uppercase << bb.startAddress << ":\n";
-        ss << "    // --- Basic Block " << std::dec << bidx << " (" << helpers::FormatAddress(bb.startAddress, is64Bit) << " -> " << helpers::FormatAddress(bb.endAddress, is64Bit) << ") ---\n";
+        ss << "block_" << std::dec << bidx << " "
+           << helpers::FormatAddress(bb.startAddress, is64Bit) << " - "
+           << helpers::FormatAddress(bb.endAddress, is64Bit) << "\n";
 
         for (const auto& ins : bb.instructions)
         {
-            if (ins.isCall)
-            {
-                if (ins.targetAddress != 0)
-                    ss << "    " << (is64Bit ? "rax_result" : "eax_result") << " = sub_" << std::hex << std::uppercase << ins.targetAddress << "(); // " << ins.operands << "\n";
-                else
-                    ss << "    " << (is64Bit ? "rax_result" : "eax_result") << " = indirect_call(" << ins.operands << ");\n";
-            }
-            else if (ins.mnemonic == "mov" || ins.mnemonic == "lea")
-            {
-                ss << "    " << ins.operands << "; // " << ins.mnemonic << "\n";
-            }
-            else if (ins.mnemonic == "xor" && ins.operands.size() >= 7 && ins.operands.substr(0, 3) == ins.operands.substr(5, 3))
-            {
-                ss << "    " << ins.operands.substr(0, 3) << " = 0;\n";
-            }
-            else if (IsConditionalJump(ins.mnemonic))
-            {
-                ss << "    if (" << ins.mnemonic << "_condition) {\n";
-                ss << "        goto loc_" << std::hex << std::uppercase << ins.targetAddress << ";\n";
-                if (bb.fallthroughAddr != 0)
-                    ss << "    } else {\n        goto loc_" << std::hex << std::uppercase << bb.fallthroughAddr << ";\n";
-                ss << "    }\n";
-            }
-            else if (IsUnconditionalJump(ins.mnemonic))
-            {
-                ss << "    goto loc_" << std::hex << std::uppercase << ins.targetAddress << ";\n";
-            }
-            else if (IsReturn(ins.mnemonic))
-            {
-                ss << "    return " << (is64Bit ? "rax_result" : "eax_result") << ";\n";
-            }
-            else if (ins.mnemonic != "nop" && ins.mnemonic != "push" && ins.mnemonic != "pop")
-            {
-                ss << "    // asm: " << ins.mnemonic << " " << ins.operands << "\n";
-            }
+            ss << "  " << helpers::FormatAddress(ins.address, is64Bit) << "  "
+               << ins.mnemonic;
+            if (!ins.operands.empty()) ss << " " << ins.operands;
+            ss << "\n";
+        }
+        if (!bb.successors.empty())
+        {
+            ss << "  successors:";
+            for (const uint64_t successor : bb.successors)
+                ss << " " << helpers::FormatAddress(successor, is64Bit);
+            ss << "\n";
         }
         ss << "\n";
     }
-
-    ss << "}\n";
     return ss.str();
 }
 

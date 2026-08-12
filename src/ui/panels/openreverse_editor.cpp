@@ -537,10 +537,8 @@ void OpenReverseEditorPanel::RenderActivityBar(Application& app)
     float tx = actP.x + 11.f;
     float ty = actP.y + 112.f;
     dl->AddRect(ImVec2(tx, ty), ImVec2(tx + 20.f, ty + 16.f), colProb, 3.0f, 0, 1.8f);
-    // Draw '>' prompt chevron inside terminal box
     dl->AddLine(ImVec2(tx + 4.f, ty + 4.f), ImVec2(tx + 8.f, ty + 8.f), colProb, 1.8f);
     dl->AddLine(ImVec2(tx + 8.f, ty + 8.f), ImVec2(tx + 4.f, ty + 12.f), colProb, 1.8f);
-    // Draw '_' underscore cursor
     dl->AddLine(ImVec2(tx + 10.f, ty + 12.f), ImVec2(tx + 15.f, ty + 12.f), colProb, 1.8f);
 
     if (showProblemsPanel_)
@@ -569,7 +567,6 @@ void OpenReverseEditorPanel::RenderExplorerTab(Application& app)
     ImGui::InputTextWithHint("##Filter", "Filter scripts...", searchBuf_, sizeof(searchBuf_));
     ImGui::Separator();
 
-    // Explorer background context menu
     if (ImGui::BeginPopupContextWindow("ExplorerBlankContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
     {
         if (ImGui::Selectable("  + New Script File"))
@@ -618,7 +615,6 @@ void OpenReverseEditorPanel::RenderExplorerTab(Application& app)
                     OpenFileFromDisk(f.path);
                 }
 
-                // Script context menu
                 if (ImGui::BeginPopupContextItem(("FileCtx_" + f.path).c_str(), ImGuiPopupFlags_MouseButtonRight))
                 {
                     if (ImGui::Selectable("  Rename File"))

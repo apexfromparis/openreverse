@@ -1,4 +1,3 @@
-// OpenReverse - UI Panel: Console/Log Panel Implementation
 #include "console_panel.h"
 #include "app/application.h"
 #include "ui/ui_manager.h"

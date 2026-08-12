@@ -1,4 +1,3 @@
-// OpenReverse - Utils: Helpers
 #include "helpers.h"
 #include <commdlg.h>
 #include <cstring>
@@ -13,7 +12,8 @@ bool OpenSaveFileDialog(char* outPath, int outPathSize, const char* defaultName)
     char buf[1024];
     buf[0] = '\0';
     if (defaultName && defaultName[0])
-        strncpy_s(buf, defaultName, _TRUNCATE);    OPENFILENAMEA ofn = {};
+        strncpy_s(buf, defaultName, _TRUNCATE);
+    OPENFILENAMEA ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.lpstrFilter = "Binary (*.bin)\0*.bin\0All (*.*)\0*.*\0";
     ofn.lpstrFile = buf;

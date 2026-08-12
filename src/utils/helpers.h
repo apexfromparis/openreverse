@@ -1,6 +1,4 @@
 #pragma once
-// OpenReverse - Utils: Helpers
-// Formatting and conversion utilities
 
 #include <string>
 #include <vector>
@@ -15,7 +13,6 @@
 namespace openreverse {
 namespace helpers {
 
-// Format address as hex string (e.g. "0x00007FF612340000")
 inline std::string FormatAddress(uint64_t address, bool is64bit = true)
 {
     char buf[32];
@@ -26,7 +23,6 @@ inline std::string FormatAddress(uint64_t address, bool is64bit = true)
     return buf;
 }
 
-// Format as "ModuleName+0xOFFSET" for pasters/cheat tables (offset from module base)
 inline std::string FormatModuleOffset(const std::string& moduleName, uint64_t moduleBase, uint64_t address, bool is64bit = true)
 {
     if (moduleName.empty()) return FormatAddress(address, is64bit);
@@ -39,7 +35,6 @@ inline std::string FormatModuleOffset(const std::string& moduleName, uint64_t mo
     return buf;
 }
 
-// Format size as human-readable (e.g. "4.00 KB", "16.00 MB")
 inline std::string FormatSize(uint64_t size)
 {
     char buf[64];
@@ -54,7 +49,6 @@ inline std::string FormatSize(uint64_t size)
     return buf;
 }
 
-// Convert bytes to hex string (e.g. "48 8B 05 ...")
 inline std::string BytesToHex(const uint8_t* data, size_t size, const char* sep = " ")
 {
     std::ostringstream oss;
@@ -66,7 +60,6 @@ inline std::string BytesToHex(const uint8_t* data, size_t size, const char* sep 
     return oss.str();
 }
 
-// Convert bytes to C array string
 inline std::string BytesToCArray(const uint8_t* data, size_t size)
 {
     std::ostringstream oss;
@@ -80,13 +73,11 @@ inline std::string BytesToCArray(const uint8_t* data, size_t size)
     return oss.str();
 }
 
-// Parse hex string to uint64_t address
 inline std::optional<uint64_t> TryParseAddress(const std::string& str)
 {
     if (str.empty()) return std::nullopt;
     std::string s = str;
 
-    // Trim whitespace
     while (!s.empty() && isspace((unsigned char)s.front())) s.erase(s.begin());
     while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
     if (s.empty()) return std::nullopt;
@@ -98,14 +89,13 @@ inline std::optional<uint64_t> TryParseAddress(const std::string& str)
         s = s.substr(2);
     }
 
-    // Check if string contains only hex digits (0-9, a-f, A-F)
     for (char c : s)
     {
         if (!isxdigit((unsigned char)c))
             return std::nullopt;
     }
 
-    // If it's a short token without 0x prefix and contains only ASCII letters (e.g. "OpenReverse", "exit"), don't treat as hex address unless prefixed
+    // Preserve short command/function tokens such as "exit" instead of treating them as hex.
     if (!hasHexPrefix && s.size() <= 4)
     {
         bool allLetters = true;
@@ -142,13 +132,11 @@ inline uint64_t ParseAddress(const char* str)
     return str ? ParseAddress(std::string(str)) : 0;
 }
 
-// Check if a character is printable ASCII
 inline char PrintableChar(uint8_t c)
 {
     return (c >= 32 && c <= 126) ? (char)c : '.';
 }
 
-// String to lowercase
 inline std::string ToLower(const std::string& s)
 {
     std::string result = s;
@@ -156,7 +144,6 @@ inline std::string ToLower(const std::string& s)
     return result;
 }
 
-// Get memory protection flags as string
 inline std::string ProtectionToString(DWORD protect)
 {
     std::string result;
@@ -177,7 +164,6 @@ inline std::string ProtectionToString(DWORD protect)
     return result;
 }
 
-// Get memory state as string
 inline std::string StateToString(DWORD state)
 {
     switch (state)
@@ -189,7 +175,6 @@ inline std::string StateToString(DWORD state)
     }
 }
 
-// Get memory type as string
 inline std::string TypeToString(DWORD type)
 {
     switch (type)
@@ -201,7 +186,6 @@ inline std::string TypeToString(DWORD type)
     }
 }
 
-// Open native "Save As" dialog. Returns true if user chose a file, path written to outPath.
 bool OpenSaveFileDialog(char* outPath, int outPathSize, const char* defaultName = "dump.bin");
 
 } // namespace helpers

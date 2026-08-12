@@ -1,5 +1,4 @@
 #pragma once
-// Main application class and shared analysis state.
 
 #include "core/process_manager.h"
 #include "core/memory_reader.h"
@@ -11,6 +10,7 @@
 #include "core/xref_scanner.h"
 #include "core/analysis_scheduler.h"
 #include "core/analysis_database.h"
+#include "core/dump_loader.h"
 
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
@@ -30,8 +30,18 @@
 
 #include <string>
 #include <memory>
+#include <vector>
 
 namespace openreverse {
+
+enum class AnalysisTargetKind {
+    None,
+    PEFile,
+    MappedDump,
+    RawDump,
+    MinidumpModule,
+    LiveProcess
+};
 
 class Application {
 public:
@@ -60,16 +70,20 @@ public:
     void SwitchToDevMode(bool enable);
 
     bool             isAttached = false;
+    AnalysisTargetKind targetKind = AnalysisTargetKind::None;
     DWORD            attachedPID = 0;
     HANDLE           processHandle = nullptr;
     std::string      attachedProcessName;
     bool             is64Bit = false;
     uint64_t         targetGeneration = 0;
+    uint64_t         offlineAnalysisJobId = 0;
 
     bool AttachToProcess(DWORD pid);
     void DetachFromProcess();
     bool OpenBinaryFile(const std::string& filePath);
+    bool OpenDumpFile(const std::string& filePath, const DumpImportOptions& options = {});
     void ShowOpenFileDialog();
+    void ShowOpenDumpDialog();
     void NavigateToAddress(uint64_t address);
 
     std::string      loadedFilePath;
@@ -114,12 +128,22 @@ private:
     bool             showPEViewer_ = false;
     bool             showBookmarks_ = false;
     bool             showConsole_ = false;
+    bool             showDumpImportModal_ = false;
+    bool             requestDumpImportPopup_ = false;
+    std::string      pendingDumpPath_;
+    std::string      dumpImportError_;
+    std::vector<DumpModuleMetadata> pendingDumpModules_;
+    int              pendingDumpModuleIndex_ = 0;
+    int              dumpArchitectureIndex_ = 1;
+    char             dumpImageBaseBuf_[32] = "0x140000000";
+    char             dumpModuleSizeBuf_[32] = "0";
 
     void RenderMenuBar();
     void RenderBrandBar();
     void RenderToolbar();
     void RenderStatusBar();
     void RenderDockspace();
+    void RenderDumpImportDialog();
 };
 
 } // namespace openreverse
