@@ -1,97 +1,110 @@
-# OpenReverse Architecture
+# OpenReverse architecture
 
 Last updated: 2026-08-12
 
 ## Composition
 
-OpenReverse is a Windows C++17 application using Win32, DirectX 11, ImGui,
-Capstone, WinHTTP, and nlohmann/json. `Application` is the composition root. It
-owns target services, analysis engines, the scheduler, the analysis database,
-and UI panels.
+OpenReverse is a Windows C++17 application using Win32, DirectX 11, Dear ImGui,
+Capstone, WinHTTP, DbgHelp, BCrypt, and nlohmann/json. `Application` remains the
+composition root for target lifecycle, analysis services, the scheduler, the
+canonical database, navigation, and panels.
 
-## Target Model
+## Targets and address spaces
 
-Live targets use a read-only process handle, enumerated `ModuleInfo` records, and
-bounded `ReadProcessMemory` reads. Offline PE targets retain both raw file bytes
-and an RVA-mapped image. `MemoryReader` exposes the mapped image through the same
-VA-oriented read interface used by panels.
+`AnalysisTargetKind` distinguishes disk PE files, mapped dumps, raw dumps,
+captured minidump modules, and live processes. Analysis code uses explicit
+address-space behavior:
 
-Target teardown follows this order:
+- `PEFileAddressSpace` translates RVA through section raw offsets.
+- `MappedImageAddressSpace` maps RVA directly into an RVA-shaped byte buffer.
+- `DumpAddressSpace` applies the user-supplied or captured image base.
+- `ProcessAddressSpace` represents live virtual addresses.
 
-1. Cancel analysis jobs and wait for the worker.
-2. Clear database, panel, Xref, string, and AI conversation state.
-3. Advance the target generation used by panel caches.
-4. Close the process handle and clear mapped offline buffers.
+Raw PE files are validated and mapped before VA-oriented analysis. Section
+virtual tails beyond `SizeOfRawData` are zero-filled. An already mapped image is
+never translated through `PointerToRawData`.
 
-This order prevents worker completion callbacks from publishing into a detached
-target.
+`DumpLoader` never executes input. It accepts a complete mapped PE image, a raw
+snapshot with explicit architecture/base/size, or a Windows minidump module
+whose captured ranges include usable mapped PE headers. Multi-module minidumps
+require an explicit module selection.
 
-## Analysis Pipeline
+## Shared analysis pipeline
 
-`ModuleAnalyzer` is the shared live module pipeline used by the GUI and
-`Automator`. It performs these bounded phases:
+`ModuleAnalyzer` owns the common live and mapped-image pipelines. The pipeline
+validates PE metadata, decodes bounded executable ranges, discovers functions,
+builds CFGs and operand-level Xrefs, scans strings, derives globals and field
+evidence, builds typed offsets, and generates bounded candidate signatures.
 
-1. Parse PE metadata within the mapped module size.
-2. Read committed, readable blocks from executable sections.
-3. Decode instructions, discover functions, build typed Xrefs, and collect
-   object-relative field accesses.
-4. Add PE entry/export and decoded-call function seeds.
-5. Read bounded readable sections for strings.
-6. Infer non-code globals and conservative per-function structure layouts.
+x64 function discovery prioritizes validated `RUNTIME_FUNCTION` entries,
+followed by symbols when a provider is available, exports, entry point, decoded
+direct calls, recursive traversal, and finally prologue heuristics. A
+`FunctionInfo` keeps authoritative boundaries separate from its bounded analyzed
+extent.
 
-The result is immutable while on the worker and is published only by the
-scheduler completion callback on the UI thread. Code bytes, decoded instruction
-counts, string bytes, function counts, duration budgets, cancellation, and phase
-durations are bounded or recorded in `ModuleAnalysisResult`.
+The result is immutable on the worker. A scheduler completion callback publishes
+it on the UI thread only when the captured target generation is still active.
+Opening a PE or dump from the desktop uses this scheduled path; CLI analysis may
+run it synchronously because no ImGui loop is present.
 
-Offline opening uses the same decoders and candidate analyzers over mapped PE
-sections. It publishes the same database models but remains synchronous.
+## Deterministic models
 
-## Scheduler
+Capstone details are retained per instruction: register/immediate/memory
+operands, base/index/scale/signed displacement, width, read/write access,
+register access, groups, encoding offsets, and resolved RIP-relative targets.
+`XRefEntry` records every meaningful resolved operand with its index, width,
+source function, and typed access.
 
-`AnalysisScheduler` owns one worker thread. Jobs receive a cooperative
-`CancellationToken` and progress callback. Workers return completion functions;
-`Application::Render` drains those functions on the UI thread. Process detach
-and application shutdown cancel and join jobs before releasing target state.
-Completed work closures release captured resources, and job history is bounded.
+Global candidates retain VA, RVA, section, access counts, source instructions,
+source functions, operand widths, and all contributing Xrefs. Field evidence
+retains base/index/scale/displacement/width/access and basic register origin.
+Block-local propagation follows straightforward `MOV` and `LEA` relationships,
+seeds RCX/RDX/R8/R9 as Windows x64 arguments 1–4, rejects stack locals, and stops
+when a transform is ambiguous.
 
-## Shared State
+Structure candidates group compatible fields by containing function and root
+argument/register evidence. They are explicitly inferred candidates, not
+recovered source types. `EvidenceLevel` and raw `evidenceScore` communicate the
+kind and amount of evidence without claiming calibrated probability.
 
-`AnalysisDatabase` is the canonical module-analysis store. A module snapshot
-contains:
+## Signatures, offsets, and comparison
 
-- PE and architecture metadata
-- functions and recursive control-flow graphs
-- typed Xrefs and strings
-- inferred global candidates
-- object-relative field accesses and inferred structures
-- a monotonic revision
+`OffsetRecord` distinguishes global, structure-field, function, import, export,
+pattern, and user-defined locations and retains provenance. `ModuleIdentity`
+uses SHA-256 plus PE timestamp, image size/base, and optional version/PDB fields.
+nlohmann/json performs bounded project import/export; imported data is parsed as
+data and never executed.
 
-Complete analysis replaces a module snapshot so stale automatic records are
-removed. Later analysis stages can use the incremental merge API, which updates
-records by stable address/type keys. Existing panel-local vectors remain
-compatibility views while panels are migrated; they are not independent
-analysis pipelines.
+Signatures use a byte-plus-wildcard model, so literal `FF` bytes remain literal.
+Generation wildcards relative branch/call immediates, RIP displacements,
+in-module absolute pointers, and supplied relocation RVAs. Relationships resolve
+a match to a function RVA, RIP-relative global, or field displacement. Scans
+report unique, ambiguous, not-found, or invalid; migration never auto-accepts an
+ambiguous match.
 
-## CFG Model
+Function fingerprints normalize instruction IDs and operand classes and combine
+them with CFG shape, referenced strings, call count, and instruction count.
+Comparison returns a transparent similarity score and evidence list, not a
+probability.
 
-`FunctionAnalyzer::AnalyzeFunction` uses a bounded recursive worklist. A
-`ControlFlowGraph` owns basic blocks and typed edges: fallthrough, conditional
-true, conditional false, unconditional, and return. Blocks expose predecessor
-and successor addresses. Invalid or external targets are represented without
-being decoded, and instruction-budget truncation is explicit.
+`ISymbolProvider` defines optional symbol/type ingestion. No concrete DIA/PDB
+provider is shipped yet, so symbols are not required for analysis.
 
-## Data Inference
+## Canonical state and indexes
 
-Global candidates are typed Read, Write, ReadWrite, or Lea Xref targets in mapped,
-non-executable PE sections. Counts, access sites, section names, module offsets,
-and confidence are retained.
+`AnalysisDatabase` is the canonical per-module store for PE data, functions,
+CFGs, Xrefs, strings, globals, fields, structures, offsets, signatures, and
+module identity. It rebuilds deterministic indexes for function addresses,
+source/target Xrefs, strings, and globals whenever a module snapshot changes.
+User-defined offsets survive automatic replacement. Some panels retain display
+snapshots, but they do not run separate analysis pipelines.
 
-Field candidates come from non-indexed Capstone memory operands with a non-stack
-base register and a small non-negative displacement. They retain operand width,
-access type, instruction address, and inferred owning function. Structure
-candidates group at least two distinct offsets observed with the same base
-register in one function. These are candidates, not recovered source types.
+## Lifecycle and safety
+
+Detach and shutdown cancel jobs, wait for the worker, clear database and panel
+state, advance the generation, release offline buffers, then close the live
+process handle. Windows access denial is reported factually with disk, dump, and
+saved-project alternatives; OpenReverse does not attempt protection bypasses.
 
 ## Verification
 
@@ -102,7 +115,7 @@ cmake --build --preset windows-x64-release --parallel
 ctest --test-dir build/windows-x64 -C Release --output-on-failure
 ```
 
-`OpenReverse.Core` covers PE validation/mapping, bounded live reads, decoded
-calls, recursive CFG behavior, typed Xrefs, offline patterns, scheduler
-publication/cancellation, database replacement/merge behavior, and global,
-field, and structure candidate inference.
+`OpenReverse.Core` covers raw/mapped addressing, `.pdata`, mapped dump loading,
+operand Xrefs, globals, field provenance, register propagation, signatures,
+function comparison, migration ambiguity, JSON, SHA-256 identity, database
+indexes, scheduler publication/cancellation, and denied-access messaging.

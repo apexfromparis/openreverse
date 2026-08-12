@@ -11,41 +11,52 @@ Open-source reverse-engineering workspace for Windows.
 
 ![OpenReverse workspace](assets/screenshots/workspace.png)
 
-OpenReverse combines offline PE analysis and read-only live-process inspection
-in a native C++17 desktop application. Its docked workspace keeps disassembly,
-hex data, cross-references, structures, modules, and optional AI context visible
-together.
+OpenReverse combines offline PE and dump analysis with authorized, read-only
+live-process inspection in a native C++17 desktop application. Its docked
+workspace keeps disassembly, hex data, cross-references, offsets, structures,
+modules, and optional AI context visible together.
 
 ## Features
 
 ### Available
 
-- PE32/PE32+ parsing with section-aware offline image mapping
+- PE32/PE32+ parsing with distinct raw-file and RVA-mapped address spaces
+- Static mapped-image, raw snapshot, and captured minidump-module import
 - Read-only Windows process attachment, memory maps, and module inspection
 - x86/x64 disassembly powered by Capstone
-- Heuristic function discovery and bounded recursive control-flow graphs
-- Typed call, branch, RIP-relative data, and address cross-references
+- x64 runtime-function (`.pdata`) boundaries, PE seeds, decoded-call discovery,
+  and bounded recursive control-flow graphs with provenance
+- Operand-level call, branch, read, write, and address cross-references
 - ASCII and limited UTF-16 string scanning
-- AOB pattern scanning with wildcard support
-- Hex view, data inspector, bookmarks, and module-relative offsets
+- RIP-relative globals and conservative object-field evidence with simple
+  Windows x64 argument/register-origin propagation
+- Typed offsets, SHA-256 module identity, and JSON/C++ export
+- AOB scanning and decoded-instruction signature generation with explicit
+  wildcards and uniqueness status
+- Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
 
 ### Experimental
 
-- C-like summaries generated from decoded instructions
-- Heuristic function/Xref discovery and inferred globals, fields, and structures
+- Signature-based offset migration with explicit unique, ambiguous, not-found,
+  and invalid outcomes
+- Function-fingerprint comparison as a core API; it is not yet a whole-program
+  binary-diff workflow
+- Heuristic function discovery fallbacks and inferred globals, fields, and
+  structure candidates
 - CFG block/edge presentation without a spatial graph layout
 - AI explanations assembled from the current analysis selection
 - Integrated script editor; script execution and a plugin API are not available
 
-Experimental output is not authoritative. Confirm inferred code, control flow,
-and types against the disassembly.
+The assembly summary contains decoded instructions and CFG facts only; it does
+not invent source variables or types. Experimental inference and migration
+results are not authoritative and require review against the disassembly.
 
 ### Planned
 
-Project persistence, symbol/PDB support, deeper data-flow analysis, binary
-comparison, and a versioned extension API are tracked in the
+Project persistence, a concrete symbol/PDB provider, deeper interprocedural
+data-flow analysis, a full binary-diff workflow, and a versioned extension API are tracked in the
 [roadmap](ROADMAP.md). Planned work is not included in the current build.
 
 ## Installation
@@ -89,7 +100,13 @@ build\windows-x64\bin\Release\OpenReverse.exe --help
 build\windows-x64\bin\Release\OpenReverse.exe --version
 build\windows-x64\bin\Release\OpenReverse.exe --cli
 build\windows-x64\bin\Release\OpenReverse.exe open path\to\sample.exe
+build\windows-x64\bin\Release\OpenReverse.exe dump path\to\mapped-module.bin
+build\windows-x64\bin\Release\OpenReverse.exe dump path\to\snapshot.bin --base 0x140000000 --size 0x200000 --arch x64
 ```
+
+`File > Open Dump` detects mapped PE images and minidumps. When critical raw
+snapshot metadata cannot be detected, the desktop UI requires architecture,
+image base, and module size instead of guessing. Dump files are never executed.
 
 Because this is a Windows GUI-subsystem executable, automation should use
 `Start-Process -Wait -PassThru` when it needs a reliable exit code.

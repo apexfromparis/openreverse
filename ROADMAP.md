@@ -5,26 +5,32 @@ subject to change until their analysis models stabilize.
 
 ## Shipped
 
-- Offline PE32/PE32+ parsing and section-aware mapping
-- Read-only live process and module inspection
-- x86/x64 disassembly, function candidates, CFGs, and typed Xrefs
-- String and wildcard pattern scanning
-- Shared analysis snapshots with bounded scheduling and cancellation
-- Hex, memory, structures, bookmarks, offsets, CLI, and optional AI workflows
-- Native Windows installer and uninstall flow
+- Raw PE, RVA-mapped image, user dump, and authorized live-process address spaces
+- Static mapped-module, raw-snapshot, and captured minidump-module analysis
+- x86/x64 decoding, x64 runtime-function boundaries, function provenance, and CFGs
+- Operand-level Xrefs, strings, RIP-relative globals, and field-access evidence
+- Simple register-origin propagation for Windows x64 argument registers
+- Typed offsets, SHA-256 module identity, safe JSON import/export, and C++ export
+- Decoded-instruction signatures, target relationships, and uniqueness results
+- Conservative function fingerprinting and migration ambiguity reporting
+- Indexed canonical analysis snapshots with bounded scheduling and cancellation
+- Native Windows workspace, command shell, installer, and optional AI client
 
 ## In progress
 
-- Moving remaining panel-local compatibility data to `AnalysisDatabase`
-- Improving offline analysis scheduling and explicit live/offline target state
-- Strengthening regression coverage for application and UI workflows
+- Moving the remaining panel compatibility views and CLI queries directly onto
+  `AnalysisDatabase`
+- Extending signature migration from imported signatures to a complete
+  reviewable old/new function comparison workflow
+- Adding application and UI-level regression coverage
 
 ## Planned
 
 - Persistent `.orev` projects, names, comments, structures, and bookmarks
-- PDB/symbol loading and richer import/type presentation
-- Deeper data-flow analysis and indirect-target recovery
-- Binary comparison and signature generation
+- A DIA-backed `ISymbolProvider` for PDB functions, public symbols, and types
+- Predecessor-aware and interprocedural data flow, alias analysis, and indirect
+  target recovery
+- PE relocation-directory ingestion for signature wildcard provenance
 - Configurable AI context levels and persistent provider preferences
 
 ## Research

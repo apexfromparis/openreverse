@@ -1,46 +1,82 @@
 # Analysis pipeline
 
-OpenReverse analyzes either a live process module or an offline PE image. Both
-paths publish the same immutable module snapshots to `AnalysisDatabase`.
+OpenReverse publishes disk files, dumps, and authorized live modules into the
+same `ModuleAnalysisResult` and `AnalysisDatabase` models.
 
 ## Target preparation
 
-For a live target, `ProcessManager` opens a read-only handle and
-`ModuleManager` enumerates loaded modules. `MemoryReader` performs bounded
-reads from committed, readable regions.
+| Input | Address rule | Required metadata |
+| --- | --- | --- |
+| Raw PE file | RVA translates through section raw offsets | Valid PE headers |
+| Mapped PE image | RVA is an index in the mapped image | Complete mapped headers |
+| Raw snapshot | Dump offset maps from an explicit image base | x86/x64, base, module size |
+| Minidump module | Captured VA ranges are copied into an RVA-shaped module image | Module selection when ambiguous |
+| Live module | VA is read through bounded Windows APIs | Authorized read handle |
 
-For an offline target, `PEParser` validates the raw file and maps headers and
-sections by RVA. Virtual tails beyond `SizeOfRawData` are zero-filled so the
-analysis address model matches a loaded image.
+Critical dump metadata is never guessed. Static inputs are never launched or
+loaded as executable modules.
 
-## Module analysis
+## Bounded stages
 
-`ModuleAnalyzer` performs bounded phases:
+1. Validate the target and PE metadata within the declared module bounds.
+2. Parse imports, exports, and x64 exception-directory runtime functions.
+3. Decode executable ranges while preserving detailed operand/access metadata.
+4. Seed functions from runtime functions, symbols when available, exports, entry
+   point, decoded calls, traversal evidence, and heuristics in that order.
+5. Build bounded recursive CFGs and record known boundaries separately from
+   analyzed extents.
+6. Emit one typed Xref for each meaningful resolved operand and assign its
+   containing function.
+7. Scan bounded readable ranges for strings.
+8. Derive RIP-relative globals and block-local object-field evidence.
+9. Group conservative structure candidates and build typed offsets.
+10. Generate and uniqueness-test a bounded set of function signatures for
+    mapped static inputs.
+11. Publish the complete snapshot and rebuild query indexes.
 
-1. Parse PE metadata inside the module bounds.
-2. Read readable blocks from executable sections.
-3. Decode instructions and collect candidate functions and typed Xrefs.
-4. Add entry point, export, call-target, and branch-target seeds.
-5. Build bounded recursive control-flow graphs for candidate functions.
-6. Scan readable sections for strings and pattern candidates.
-7. Infer conservative non-code globals and object-relative fields/structures.
+Each stage observes byte, instruction, function, string, result-count, time, and
+cancellation limits. Truncation and cancellation remain explicit in the result.
+Progress values advance from completed work; no timer-based progress is used.
 
-Function boundaries, indirect targets, generated summaries, and inferred data
-types remain heuristic.
+## Evidence and uncertainty
+
+Runtime-function ranges and valid PE metadata are `Known`. Resolved operands,
+global locations, and simple register copies are deterministic observations used
+to form `Inferred`, `Heuristic`, or `Partial` candidates. `evidenceScore` is a raw
+evidence count/weight, not a calibrated confidence percentage.
+
+The assembly summary reproduces decoded instructions grouped by basic block. It
+does not generate source parameters, source variables, conditions, return types,
+or semantic names.
+
+## Signatures and migration
+
+Signature bytes are explicit literals or wildcards. Relative control-transfer
+immediates, RIP-relative displacements, in-module absolute pointers, and supplied
+relocations can be wildcarded. A relationship may resolve the match itself, a
+function RVA, a RIP-relative global, or a field displacement.
+
+Imported JSON is bounded and parsed with nlohmann/json. Migration scans imported
+signatures once per import/database revision and reports `Unique`, `Ambiguous`,
+`Not found`, or `Invalid`. Only unique valid results expose a candidate; no weak
+or ambiguous candidate is silently accepted.
+
+Function fingerprint comparison is a separate core foundation. It returns
+ranked candidates with explicit similarity scores and contributing evidence.
 
 ## Scheduling and publication
 
-Live analysis runs through `AnalysisScheduler` on one worker thread. Jobs use a
-cooperative cancellation token and return a completion callback. The
-application executes completion callbacks on the UI thread, discarding results
-whose target generation no longer matches the active target.
+Desktop PE/dump analysis runs through `AnalysisScheduler`. Workers receive a
+cooperative cancellation token and return a UI-thread completion callback.
+Callbacks whose target generation no longer matches are discarded. CLI mode may
+invoke the same module analyzer synchronously because it has no render loop.
 
-Detach and shutdown cancel and join analysis before target memory and panel
-state are cleared. This prevents stale work from publishing into a new session.
+Detach and shutdown cancel and join active analysis before target memory and
+panel state are released.
 
 ## Consumers
 
-The disassembly, CFG, Xref, strings, structures, and AI panels read the shared
-analysis snapshot. Some panels still maintain compatibility views while the
-database migration is completed; they must not introduce independent analysis
-pipelines.
+The workspace, CLI, report generator, and optional AI context consume the shared
+database result. AI output is always a suggestion layer and is never written
+back as deterministic structure or offset evidence without an explicit future
+acceptance workflow.

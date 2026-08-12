@@ -83,8 +83,9 @@ cleanup.
 `Application` remains a broad composition root and shared UI state object.
 Separating session state and panel-facing query APIs would be a substantial
 architecture change, so it remains documented technical debt rather than a
-pre-push rewrite. The experimental pseudocode and structure inference systems
-also remain explicitly labeled and are not presented as authoritative output.
+pre-push rewrite. Structure inference remains explicitly labeled, while the
+assembly summary now reproduces decoded evidence without invented source-level
+semantics.
 
 ## Final verification
 

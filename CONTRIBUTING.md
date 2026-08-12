@@ -18,7 +18,8 @@ See [Building](docs/BUILDING.md) for output paths and smoke-test guidance.
 - Keep each change focused and preserve C++17 and Windows x64 support.
 - Put analysis behavior in `src/core`, lifecycle coordination in `src/app`,
   CLI interaction in `src/cli`, and presentation in `src/ui`.
-- Treat inferred functions, control flow, pseudocode, and types as heuristic.
+- Treat inferred functions, boundaries, structures, and AI suggestions as
+  non-authoritative; preserve decoded evidence and provenance.
 - Add or update a small fixture/test when analysis behavior changes.
 - Explain only non-obvious PE, Windows, concurrency, ownership, or security
   decisions in comments.

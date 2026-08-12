@@ -1,62 +1,77 @@
-# OpenReverse Technical Debt
+# OpenReverse technical debt
 
 Last updated: 2026-08-12
 
-## High Priority
+## Analysis accuracy
 
-- Offline `OpenBinaryFile` analysis is still synchronous. Move its existing
-  section-aware pipeline behind `AnalysisScheduler` without changing mapped PE
-  address semantics.
-- Live and offline targets still share `isAttached`. Introduce an explicit
-  target-kind value when the remaining live-only panel checks are migrated.
-- Panel-local function, Xref, and string vectors remain compatibility views of
-  `AnalysisDatabase`. Continue migration when touching those panels; do not add
-  another store.
-
-## Analysis Accuracy
-
-- Function discovery remains heuristic. Recursive CFG construction is bounded
-  and correct for decoded seeds, but function boundaries and indirect targets
-  are not recovered comprehensively.
-- Field ownership uses the nearest discovered function and register/offset
-  observations. It does not perform register provenance, alias, points-to, or
-  interprocedural data-flow analysis.
-- Structure candidates are per-function observations. Merging layouts across
-  call sites requires evidence-based argument and object identity tracking.
-- Globals intentionally exclude executable targets but do not yet distinguish
-  imports, vtables, constants, and mutable variables as separate semantic kinds.
+- `ISymbolProvider` is an interface only. A DIA-backed Windows implementation,
+  PDB GUID/age extraction, symbol functions, and type ingestion remain absent.
+- Register-origin propagation is block-local and intentionally stops on
+  ambiguous transforms. It does not perform predecessor merging,
+  interprocedural propagation, alias/points-to analysis, or deterministic
+  pointer-chain recovery.
+- Runtime functions provide strong x64 boundaries, but x86 boundaries and
+  indirect call/jump targets remain incomplete. Prologue scanning remains a
+  bounded fallback.
+- Raw snapshots without PE sections must conservatively expose one synthetic
+  readable/writable/executable range. Users must interpret results as partial.
+- Minidump analysis requires the selected module's headers and relevant ranges
+  to be present in the dump. Sparse captures can be rejected even when module
+  metadata exists.
+- Signature generation can consume relocation RVAs, but the PE relocation
+  directory is not yet ingested by the common pipeline.
+- Global classification is section- and Xref-based. Import-thunk/vtable/constant
+  semantics need stronger deterministic evidence before further subdivision.
 - UTF-16 and cross-block string recovery remain limited.
+
+## Migration and persistence
+
+- The UI migration tab resolves imported signatures against the current static
+  image. Function-fingerprint comparison exists in core but is not yet exposed
+  as a complete old/new binary review workspace.
+- Persistent `.orev` projects do not exist. User names, comments, bookmarks,
+  accepted migrations, and analysis snapshots are not restored across runs.
+- C/C++ offset export is available through the clipboard. JSON supports both
+  clipboard and file export/import; a C/C++ header importer is not implemented.
+
+## State and architecture
+
+- `Application` remains a broad composition root. Target session, navigation,
+  and panel orchestration can be separated incrementally when a change needs it.
+- `AnalysisTargetKind` is explicit, but legacy panel availability checks still
+  use `isAttached` to mean "a target is open".
+- `AnalysisDatabase` is canonical, while `AnalysisPanel`, `stringResults`, and
+  `XRefScanner` retain compatibility display snapshots. CLI function lookup
+  still reaches through the panel for some commands.
+- Database indexes cover functions, Xrefs, strings, and globals. Structure-field
+  stable IDs and signature-target indexes can be added when query consumers
+  require them.
 
 ## Performance
 
-- Module analysis decodes executable blocks for candidate extraction and also
-  decodes reachable function instructions for CFG construction. Cache decoded
-  instructions only if profiling shows this duplication dominates.
-- One scheduler worker prevents analysis races but also serializes independent
-  jobs. Keep this until result publication and target ownership are fully
-  isolated.
-- Database merge operations use linear vector searches. Replace them with
-  internal indexes only when module-scale profiling justifies the complexity.
-- Live phase timings are logged, but there is no historical profiler UI or
-  persisted benchmark baseline.
+- A single scheduler worker avoids publication races but serializes independent
+  jobs. Keep this until target ownership is fully isolated.
+- Executable bytes are decoded for candidate extraction and again for bounded
+  per-function CFGs. Add a decoded-instruction cache only after profiling shows
+  material benefit.
+- Signature uniqueness scans each generated pattern independently. A multi-
+  pattern index would help large modules but needs measurement first.
+- Phase durations are recorded/logged, but no persisted benchmark baseline or
+  profiler UI exists.
 
-## UI And Persistence
+## UI and testing
 
-- The CFG panel presents typed navigable blocks and edges, not a spatial graph
-  layout. A graph canvas needs deterministic layout, zoom/pan, and large-graph
-  virtualization before being added.
-- Inferred names, structures, bookmarks, offsets, and analysis snapshots are not
-  persisted as a project.
-- Several ImGui tables advertise sorting without applying sort specifications.
-- Application/UI tests are absent; current automation exercises core models and
-  analyzers only.
+- The CFG panel presents typed blocks and edges rather than a spatial graph.
+- Several ImGui tables advertise sorting without consuming sort specifications.
+- Core tests cover the deterministic models and loaders. Application lifecycle,
+  native dialogs, minidump UI selection, and installer UI do not have automated
+  interaction tests.
 
-## Build And Packaging
+## Build and packaging
 
-- Recursive CMake source globbing makes source additions implicit.
-- Dependency configuration still depends on fetched source trees on a clean
-  machine.
-- The shared GUI/CLI executable uses the Windows GUI subsystem. PowerShell
-  automation must wait explicitly to obtain a reliable exit code.
-- WinGet metadata was removed because no matching release exists. Recreate it
-  from a published, checksummed installer if package distribution resumes.
+- Recursive CMake source globbing makes application source additions implicit.
+- A clean configure downloads pinned dependencies unless already cached.
+- The combined GUI/CLI executable uses the Windows GUI subsystem, so PowerShell
+  automation must wait explicitly for reliable exit codes.
+- WinGet metadata remains intentionally absent until a matching checksummed
+  GitHub release is published.
