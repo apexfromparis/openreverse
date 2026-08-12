@@ -1,14 +1,13 @@
 # OpenReverse Architecture
 
-Last updated: 2026-08-09
+Last updated: 2026-08-12
 
 ## Composition
 
 OpenReverse is a Windows C++17 application using Win32, DirectX 11, ImGui,
 Capstone, WinHTTP, and nlohmann/json. `Application` is the composition root. It
 owns target services, analysis engines, the scheduler, the analysis database,
-and UI panels. Historical internal panel names are retained where changing them
-would add risk without changing behavior.
+and UI panels.
 
 ## Target Model
 

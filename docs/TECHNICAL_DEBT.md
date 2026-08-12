@@ -1,6 +1,6 @@
 # OpenReverse Technical Debt
 
-Last updated: 2026-08-09
+Last updated: 2026-08-12
 
 ## High Priority
 
@@ -58,5 +58,5 @@ Last updated: 2026-08-09
   machine.
 - The shared GUI/CLI executable uses the Windows GUI subsystem. PowerShell
   automation must wait explicitly to obtain a reliable exit code.
-- The WinGet manifest must not be submitted until a matching release asset is
-  published and its SHA-256 is updated.
+- WinGet metadata was removed because no matching release exists. Recreate it
+  from a published, checksummed installer if package distribution resumes.

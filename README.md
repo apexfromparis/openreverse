@@ -1,118 +1,127 @@
-# OpenReverse Studio
+<p align="center">
+  <img src="assets/branding/openreverse-logo.png" alt="OpenReverse" width="220">
+</p>
 
-OpenReverse is an open-source reverse-engineering workspace for Windows,
-written in C++, with optional AI integration.
+# OpenReverse
 
-The project is under active development. Interfaces and analysis results may
-change between releases.
+Open-source reverse-engineering workspace for Windows.
 
-## Available
+[![Windows CI](https://github.com/apexfromparis/openreverse/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/apexfromparis/openreverse/actions/workflows/windows-ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-- PE32/PE32+ parsing and section-aware offline image mapping
-- Windows process attachment, memory map, and module inspection
-- x86/x64 Capstone disassembly
-- Heuristic function discovery and recursive control-flow graphs
-- Typed call, jump, RIP-relative read/write, and address Xrefs
+![OpenReverse workspace](assets/screenshots/workspace.png)
+
+OpenReverse combines offline PE analysis and read-only live-process inspection
+in a native C++17 desktop application. Its docked workspace keeps disassembly,
+hex data, cross-references, structures, modules, and optional AI context visible
+together.
+
+## Features
+
+### Available
+
+- PE32/PE32+ parsing with section-aware offline image mapping
+- Read-only Windows process attachment, memory maps, and module inspection
+- x86/x64 disassembly powered by Capstone
+- Heuristic function discovery and bounded recursive control-flow graphs
+- Typed call, branch, RIP-relative data, and address cross-references
 - ASCII and limited UTF-16 string scanning
-- AOB pattern scanning with wildcards
+- AOB pattern scanning with wildcard support
 - Hex view, data inspector, bookmarks, and module-relative offsets
-- ImGui docking workspace and interactive command shell
-- Optional OpenAI-compatible AI client with Windows Credential Manager storage
+- Interactive command shell and optional OpenAI-compatible AI client
+- User API-key storage through Windows Credential Manager
 
-## Experimental
+### Experimental
 
-- C-like pseudocode generated from decoded instructions
-- CFG metadata and basic-block presentation
-- Automated function and Xref discovery heuristics
-- Memory-operand-derived global, field, and structure candidates
-- AI context assembled from the selected target
-- Integrated script editor; script execution and plugin APIs are not available
+- C-like summaries generated from decoded instructions
+- Heuristic function/Xref discovery and inferred globals, fields, and structures
+- CFG block/edge presentation without a spatial graph layout
+- AI explanations assembled from the current analysis selection
+- Integrated script editor; script execution and a plugin API are not available
 
-Experimental output is not authoritative. Validate inferred functions, types,
-control flow, and pseudocode against the disassembly.
+Experimental output is not authoritative. Confirm inferred code, control flow,
+and types against the disassembly.
 
-## Planned
+### Planned
 
-- Data-flow analysis
-- Signature generation and binary comparison
-- Persistent `.orev` projects and symbols/PDB support
-- Persistent provider settings and configurable context levels
-- A versioned plugin API after core analysis models stabilize
+Project persistence, symbol/PDB support, deeper data-flow analysis, binary
+comparison, and a versioned extension API are tracked in the
+[roadmap](ROADMAP.md). Planned work is not included in the current build.
 
-Planned features are not included in the current build.
+## Installation
 
-## Repository layout
+OpenReverse does not currently publish a GitHub release. Build it from source
+using the commands below. Future installers will use the canonical name
+`OpenReverse-x.y.z-Setup.exe`; release binaries belong in GitHub Releases, not
+in this repository.
 
-- `src/`: application and analysis source code
-- `installer/`: Windows installer source and resources
-- `tests/fixtures/crackme/`: small local analysis fixture
-- `scripts/`: build and installation helpers
-- `assets/`: project branding and static assets
+## Build from source
 
-Build directories, binaries, reports, and local provider settings are ignored
-by Git and should not be committed.
-
-## Requirements
+Requirements:
 
 - Windows 10 or later
-- Visual Studio 2022 with C++ desktop tools
+- Visual Studio 2022 with the **Desktop development with C++** workload
 - CMake 3.23 or later
-- Git for CMake FetchContent dependencies
-
-## Build
-
-```powershell
-cmake -B build -A x64
-cmake --build build --config Release --parallel
-```
-
-Or use the checked-in Windows preset:
+- Git, used by CMake to fetch pinned dependencies
 
 ```powershell
 cmake --preset windows-x64
 cmake --build --preset windows-x64-release --parallel
-```
-
-The build produces the `OpenReverse` and installer targets. Use only
-on binaries and processes you are authorized to inspect.
-
-## Tests
-
-```powershell
 ctest --test-dir build/windows-x64 -C Release --output-on-failure
 ```
 
-Core tests cover PE validation and mapping, recursive CFGs, typed Xrefs, offline
-patterns, scheduler cancellation, shared analysis state, and inferred data
-candidates.
+Outputs are written to `build/windows-x64/bin/Release/`:
+
+- `OpenReverse.exe`
+- `OpenReverse-2.0.0-Setup.exe`
+- `OpenReverseCoreTests.exe`
+- `OpenReverseTestFixture.exe`
+
+See [Building](docs/BUILDING.md) for details.
 
 ## CLI
 
+Launching without arguments starts the desktop workspace. Command-line entry
+points use the same executable:
+
 ```powershell
-.\build\bin\Release\OpenReverse.exe --help
-.\build\bin\Release\OpenReverse.exe --cli
+build\windows-x64\bin\Release\OpenReverse.exe --help
+build\windows-x64\bin\Release\OpenReverse.exe --version
+build\windows-x64\bin\Release\OpenReverse.exe --cli
+build\windows-x64\bin\Release\OpenReverse.exe open path\to\sample.exe
 ```
 
-With the preset build, use `build\windows-x64\bin\Release\OpenReverse.exe`.
-Launching without `--cli` starts the GUI. The shell supports opening PE files,
-attaching to processes, disassembly, function analysis, strings, Xrefs, reports,
-and optional AI-assisted queries.
+Because this is a Windows GUI-subsystem executable, automation should use
+`Start-Process -Wait -PassThru` when it needs a reliable exit code.
 
-The GUI and command shell share a Windows GUI-subsystem executable. PowerShell
-scripts that require a reliable exit code should launch it with
-`Start-Process -Wait -PassThru`.
+## Architecture and AI privacy
 
-## AI privacy
+The [architecture](docs/ARCHITECTURE.md) and
+[analysis pipeline](docs/ANALYSIS_PIPELINE.md) documents describe target
+ownership, scheduling, and analysis boundaries.
 
-AI is optional. API keys are user-supplied and stored in Windows Credential
-Manager. Remote endpoints must use HTTPS; plaintext HTTP is accepted only for
-the exact loopback hosts `localhost`, `127.0.0.1`, and `::1`. Selected analysis
-context may contain target names, disassembly, strings, and pseudocode. Review
-provider policies before transmitting proprietary or sensitive data.
+AI is optional. Selected context may include target names, disassembly,
+strings, and generated summaries. Remote endpoints must use HTTPS; plaintext
+HTTP is accepted only for exact loopback hosts. Review the provider's policy
+before transmitting proprietary or sensitive data.
 
-OpenReverse does not include a hosted account, subscription, marketplace, or
-cloud compliance service in this repository.
+## Project information
+
+- [Roadmap](ROADMAP.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+Use OpenReverse only on binaries and processes you own or are explicitly
+authorized to inspect.
+
+## Community
+
+Use [GitHub Issues](https://github.com/apexfromparis/openreverse/issues) for
+reproducible bugs and focused feature requests. Development discussion is also
+available in the [OpenReverse Discord community](https://discord.gg/4mmhKcy6US).
 
 ## License
 
-This project is distributed under the MIT License. See `LICENSE`.
+OpenReverse is distributed under the [MIT License](LICENSE).

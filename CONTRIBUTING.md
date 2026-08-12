@@ -1,26 +1,36 @@
-# Contributing
+# Contributing to OpenReverse
 
-## Development setup
+## Set up a build
 
-1. Install Visual Studio 2022 with the Desktop development with C++ workload.
-2. Install CMake 3.23 or later and Git.
-3. Configure the project with the `windows-x64` preset.
+Install Visual Studio 2022 with Desktop development with C++, CMake 3.23 or
+later, and Git. From the repository root:
 
 ```powershell
 cmake --preset windows-x64
 cmake --build --preset windows-x64-release --parallel
+ctest --test-dir build/windows-x64 -C Release --output-on-failure
 ```
 
-## Change guidelines
+See [Building](docs/BUILDING.md) for output paths and smoke-test guidance.
 
-- Keep changes focused on one concern.
-- Preserve the existing C++17 and Windows x64 support matrix.
-- Do not commit build directories, binaries, reports, credentials, or local configuration.
-- Add or update a fixture under `tests/fixtures` when changing binary analysis behavior.
-- Use clear names and explain non-obvious platform-specific code briefly.
+## Changes
 
-## Pull requests
+- Keep each change focused and preserve C++17 and Windows x64 support.
+- Put analysis behavior in `src/core`, lifecycle coordination in `src/app`,
+  CLI interaction in `src/cli`, and presentation in `src/ui`.
+- Treat inferred functions, control flow, pseudocode, and types as heuristic.
+- Add or update a small fixture/test when analysis behavior changes.
+- Explain only non-obvious PE, Windows, concurrency, ownership, or security
+  decisions in comments.
+- Do not commit binaries, build trees, reports, credentials, or local settings.
+- Avoid style-only changes in `src/ui/vendor` and generated resources.
 
-Describe the behavior changed, the validation performed, and any Windows-specific
-requirements. Include screenshots for UI changes and a reproducible sample for
-analysis changes when possible.
+## Issues and pull requests
+
+Search existing issues first. Bug reports should include the OpenReverse and
+Windows versions, reproduction steps, expected behavior, and sanitized logs or
+screenshots. Never attach private binaries, credentials, or memory dumps.
+
+Pull requests should explain what changed, why it changed, and the exact tests
+performed. Include before/after screenshots for visible UI changes and a small
+reproducible sample for analysis changes where possible.
