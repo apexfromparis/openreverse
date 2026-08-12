@@ -8,7 +8,14 @@ indent_style = space
 indent_size = 4
 
 [*.{md,json,yml,yaml}]
+end_of_line = lf
 indent_size = 2
+
+[*.cmake]
+end_of_line = lf
+
+[CMakeLists.txt]
+end_of_line = lf
 
 [*.bat]
 indent_size = 2

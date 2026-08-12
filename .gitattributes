@@ -1,0 +1,28 @@
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.editorconfig text eol=lf
+
+*.c text eol=crlf
+*.cc text eol=crlf
+*.cpp text eol=crlf
+*.h text eol=crlf
+*.hpp text eol=crlf
+*.in text eol=crlf
+*.rc text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+
+*.ico binary
+*.png binary
+
+src/ui/embedded_font.h linguist-generated=true
+src/ui/vendor/** linguist-vendored=true

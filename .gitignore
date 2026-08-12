@@ -1,22 +1,41 @@
 # Native build output
-**/build/
-**/build-fresh/
-**/build_ninja/
-**/out/
-**/.vs/
-cmake-build-*/
+/build*/
+/out/
+/dist/
+/.vs/
+/.idea/
+/.vscode/
+/cmake-build-*/
+/Debug/
+/Release/
+/x64/
+/Win32/
+/Testing/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
 *.exe
 *.dll
 *.obj
 *.lib
 *.pdb
 *.ilk
+*.exp
+*.idb
+*.pch
+*.lastbuildstate
+*.user
+*.suo
 *.tlog/
 
 # Generated local state and diagnostics
 imgui.ini
 **/imgui.ini
 *.log
+*.tmp
+*.cache
+*.dmp
 msbuild_errors*.txt
 build_log*.txt
 setup_trace.txt
@@ -25,13 +44,6 @@ setup_trace.txt
 report_test.md
 decompiled_report.md
 openreverse_scripts/
-
-# Frontend dependencies and build output
-**/node_modules/
-**/dist/
-
-# Private website source lives outside this repository
-web/
 
 # Local secrets and provider settings
 .env
