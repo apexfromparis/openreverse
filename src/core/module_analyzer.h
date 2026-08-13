@@ -17,12 +17,12 @@
 namespace openreverse {
 
 struct ModuleAnalysisOptions {
-    size_t maxCodeBytes = 8ULL * 1024ULL * 1024ULL;
-    size_t maxStringBytes = 8ULL * 1024ULL * 1024ULL;
-    size_t maxInstructions = 250000;
-    size_t maxFunctions = 10000;
-    size_t maxStrings = 5000;
-    std::chrono::milliseconds maxDuration{10000};
+    size_t maxCodeBytes = 128ULL * 1024ULL * 1024ULL;
+    size_t maxStringBytes = 32ULL * 1024ULL * 1024ULL;
+    size_t maxInstructions = 4000000;
+    size_t maxFunctions = 200000;
+    size_t maxStrings = 100000;
+    std::chrono::milliseconds maxDuration{120000};
 };
 
 struct ModuleAnalysisResult {

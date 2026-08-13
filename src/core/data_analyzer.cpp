@@ -150,7 +150,7 @@ std::vector<FieldAccessCandidate> FindFieldAccesses(
             if (origin != origins.end() &&
                 !AddSigned(displacement, origin->second.adjustment, displacement))
                 continue;
-            if (displacement < -0x10000 || displacement > 0x10000)
+            if (displacement < -0x100000 || displacement > 0x100000)
                 continue;
 
             FieldAccessCandidate field;
@@ -310,7 +310,7 @@ std::vector<StructureCandidate> InferStructures(const std::vector<FieldAccessCan
     std::vector<StructureCandidate> result;
     for (auto& [key, fieldMap] : grouped)
     {
-        if (fieldMap.size() < 2) continue;
+        if (fieldMap.empty()) continue;
         StructureCandidate structure;
         structure.functionAddress = key.first;
         structure.baseRegister = key.second.rfind("arg", 0) == 0 ? "Arg" + key.second.substr(3) : key.second;

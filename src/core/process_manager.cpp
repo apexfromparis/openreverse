@@ -74,12 +74,35 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
     return result;
 }
 
+static void EnableDebugPrivilege()
+{
+    HANDLE hToken = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+    {
+        TOKEN_PRIVILEGES tp{};
+        LUID luid{};
+        if (LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &luid))
+        {
+            tp.PrivilegeCount = 1;
+            tp.Privileges[0].Luid = luid;
+            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), nullptr, nullptr);
+        }
+        CloseHandle(hToken);
+    }
+}
+
 HANDLE ProcessManager::OpenProcess(DWORD pid)
 {
-    return ::OpenProcess(
-        PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
-        FALSE, pid
-    );
+    static bool privsEnabled = (EnableDebugPrivilege(), true);
+    (void)privsEnabled;
+
+    HANDLE handle = ::OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (!handle)
+        handle = ::OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!handle)
+        handle = ::OpenProcess(PROCESS_VM_READ, FALSE, pid);
+    return handle;
 }
 
 void ProcessManager::CloseProcess(HANDLE handle)

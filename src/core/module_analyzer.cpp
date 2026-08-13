@@ -17,6 +17,13 @@ void BuildTypedOffsets(ModuleAnalysisResult& result)
 {
     result.offsets.clear();
     const auto& module = result.module;
+
+    // Build xref count map for scoring
+    std::map<uint64_t, size_t> functionXrefCounts;
+    for (const auto& xref : result.xrefs)
+        if (xref.type == XRefType::Call)
+            ++functionXrefCounts[xref.toAddress];
+
     for (const auto& function : result.functions)
     {
         OffsetRecord offset;
@@ -31,8 +38,20 @@ void BuildTypedOffsets(ModuleAnalysisResult& result)
         offset.sourceFunction = function.startAddress;
         offset.evidence = function.boundaryKnown ? EvidenceLevel::Known :
             function.source == FunctionSource::Heuristic ? EvidenceLevel::Heuristic : EvidenceLevel::Inferred;
-        offset.evidenceScore = function.boundaryKnown ? 3U :
-            function.source == FunctionSource::Heuristic ? 1U : 2U;
+
+        // Enhanced scoring: .pdata boundary +5, export +10, xrefs +1 each (cap 20)
+        uint32_t score = 0;
+        if (function.boundaryKnown) score += 5;
+        if (function.isExported) score += 10;
+        const auto xrefIt = functionXrefCounts.find(function.startAddress);
+        if (xrefIt != functionXrefCounts.end())
+            score += static_cast<uint32_t>(std::min<size_t>(xrefIt->second, 20));
+        if (function.source == FunctionSource::DirectCall) score += 2;
+        else if (function.source == FunctionSource::EntryPoint) score += 3;
+        else if (function.source == FunctionSource::Heuristic) score += 1;
+        else score += 2;
+        offset.evidenceScore = score;
+
         offset.provenance.push_back(function.boundaryKnown ? "runtime function boundary" :
             function.source == FunctionSource::Export ? "PE export" :
             function.source == FunctionSource::EntryPoint ? "PE entry point" :
@@ -53,7 +72,13 @@ void BuildTypedOffsets(ModuleAnalysisResult& result)
         offset.section = global.sectionName;
         offset.sourceInstruction = global.accessSites.empty() ? 0 : global.accessSites.front();
         offset.evidence = global.evidence;
-        offset.evidenceScore = global.evidenceScore;
+
+        // Enhanced scoring: based on distinct source functions and total references
+        uint32_t score = static_cast<uint32_t>(std::min<size_t>(
+            global.readCount + global.writeCount + global.addressCount, 1000));
+        score += static_cast<uint32_t>(std::min<size_t>(global.sourceFunctions.size() * 3, 60));
+        offset.evidenceScore = score;
+
         offset.provenance.push_back("resolved operand Xrefs");
         result.offsets.push_back(std::move(offset));
     }
@@ -75,11 +100,17 @@ void BuildTypedOffsets(ModuleAnalysisResult& result)
         offset.accessType = field.access;
         offset.operandWidth = field.operandSize;
         offset.evidence = field.argumentIndex != 0 ? EvidenceLevel::Inferred : EvidenceLevel::Heuristic;
-        offset.evidenceScore = field.argumentIndex != 0 ? 2U : 1U;
+        offset.evidenceScore = field.argumentIndex != 0 ? 5U : 1U;
         offset.provenance.push_back(field.argumentIndex != 0
             ? "Windows x64 argument-origin propagation" : "decoded memory operand");
         result.offsets.push_back(std::move(offset));
     }
+
+    // Sort offsets by evidence score descending for most relevant first
+    std::sort(result.offsets.begin(), result.offsets.end(),
+        [](const OffsetRecord& left, const OffsetRecord& right) {
+            return left.evidenceScore > right.evidenceScore;
+        });
 }
 
 } // namespace
@@ -181,7 +212,7 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
             remainingInstructions -= std::min(remainingInstructions, instructions.size());
             xrefScanner.ScanInstructions(instructions, module.name);
             auto fields = FindFieldAccesses(
-                instructions, 100000 - std::min<size_t>(result.fieldAccesses.size(), 100000));
+                instructions, 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000));
             result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
         }
         if (progress && executableSections != 0)
@@ -371,7 +402,7 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
         result.codeBytesAnalyzed += sectionSize;
         xrefScanner.ScanInstructions(instructions, module.name);
         auto fields = FindFieldAccesses(
-            instructions, 100000 - std::min<size_t>(result.fieldAccesses.size(), 100000));
+            instructions, 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000));
         result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
         allInstructions.insert(allInstructions.end(), instructions.begin(), instructions.end());
 
@@ -486,15 +517,30 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
     SignatureEngine signatureEngine;
     std::sort(allInstructions.begin(), allInstructions.end(),
         [](const Instruction& left, const Instruction& right) { return left.address < right.address; });
-    size_t generatedSignatures = 0;
+
+    // Prioritize functions: exported and .pdata-bounded functions first
+    std::vector<const FunctionInfo*> signatureCandidates;
+    signatureCandidates.reserve(result.functions.size());
     for (const auto& function : result.functions)
+        signatureCandidates.push_back(&function);
+    std::sort(signatureCandidates.begin(), signatureCandidates.end(),
+        [](const FunctionInfo* left, const FunctionInfo* right) {
+            const int leftPriority = (left->isExported ? 100 : 0) + (left->boundaryKnown ? 50 : 0) +
+                (left->source == FunctionSource::DirectCall ? 10 : 0);
+            const int rightPriority = (right->isExported ? 100 : 0) + (right->boundaryKnown ? 50 : 0) +
+                (right->source == FunctionSource::DirectCall ? 10 : 0);
+            return leftPriority > rightPriority;
+        });
+
+    size_t generatedSignatures = 0;
+    for (const auto* function : signatureCandidates)
     {
-        if (generatedSignatures >= 256 || shouldStop()) break;
+        if (generatedSignatures >= 8192 || shouldStop()) break;
         const auto instruction = std::lower_bound(allInstructions.begin(), allInstructions.end(),
-            function.startAddress, [](const Instruction& value, uint64_t address) {
+            function->startAddress, [](const Instruction& value, uint64_t address) {
                 return value.address < address;
             });
-        if (instruction == allInstructions.end() || instruction->address != function.startAddress) continue;
+        if (instruction == allInstructions.end() || instruction->address != function->startAddress) continue;
         SignatureRelationship relationship;
         relationship.kind = SignatureTargetKind::FunctionRva;
         SignatureGenerationOptions generation;
@@ -504,10 +550,10 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
             static_cast<size_t>(instruction - allInstructions.begin()), relationship, generation);
         if (signature.pattern.empty()) continue;
         std::ostringstream stable;
-        stable << "signature:function:" << std::hex << (function.startAddress - module.baseAddress);
+        stable << "signature:function:" << std::hex << (function->startAddress - module.baseAddress);
         signature.stableId = stable.str();
-        signature.targetFunction = function.startAddress;
-        signature.targetOffset = function.startAddress - module.baseAddress;
+        signature.targetFunction = function->startAddress;
+        signature.targetOffset = function->startAddress - module.baseAddress;
         signatureEngine.Evaluate(signature, mappedImage, pe, sourceFileSize);
         result.signatures.push_back(std::move(signature));
         ++generatedSignatures;

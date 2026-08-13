@@ -194,6 +194,17 @@ bool PatternScanner::MatchPattern(const uint8_t* data, size_t dataSize,
     if (dataSize < pattern.size())
         return false;
 
+    // Fast-reject: check first non-wildcard byte before full comparison
+    for (size_t i = 0; i < pattern.size(); ++i)
+    {
+        if (!pattern[i].wildcard)
+        {
+            if (data[i] != pattern[i].value)
+                return false;
+            break;
+        }
+    }
+
     for (size_t i = 0; i < pattern.size(); ++i)
     {
         if (!pattern[i].wildcard && data[i] != pattern[i].value)

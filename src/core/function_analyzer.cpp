@@ -92,6 +92,24 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* dat
                 isPrologue = true; // push rbx/rsi/rdi; sub rsp, imm8
             else if (data[i] == 0x48 && data[i + 1] == 0x8B && data[i + 2] == 0xC4)
                 isPrologue = true; // mov rax, rsp
+            else if (data[i] == 0x48 && data[i + 1] == 0x89 && data[i + 2] == 0x74 && data[i + 3] == 0x24)
+                isPrologue = true; // mov [rsp+imm], rsi
+            else if (data[i] == 0x48 && data[i + 1] == 0x89 && data[i + 2] == 0x6C && data[i + 3] == 0x24)
+                isPrologue = true; // mov [rsp+imm], rbp
+            else if (data[i] == 0x48 && data[i + 1] == 0x89 && data[i + 2] == 0x4C && data[i + 3] == 0x24)
+                isPrologue = true; // mov [rsp+imm], rcx (home parameter)
+            else if (data[i] == 0x48 && data[i + 1] == 0x89 && data[i + 2] == 0x54 && data[i + 3] == 0x24)
+                isPrologue = true; // mov [rsp+imm], rdx (home parameter)
+            else if (data[i] == 0x44 && data[i + 1] == 0x89 && (data[i + 2] == 0x44 || data[i + 2] == 0x4C) && data[i + 3] == 0x24)
+                isPrologue = true; // mov [rsp+imm], r8d/r9d
+            else if (data[i] == 0x4C && data[i + 1] == 0x8B && data[i + 2] == 0xDC)
+                isPrologue = true; // mov r11, rsp (LTCG/PGO)
+            else if (data[i] == 0x48 && data[i + 1] == 0x8D && data[i + 2] == 0x68)
+                isPrologue = true; // lea rbp, [rsp-imm8]
+            else if (data[i] == 0x40 && data[i + 1] == 0x55)
+                isPrologue = true; // push rbp (REX-prefixed)
+            else if (data[i] == 0x41 && (data[i + 1] >= 0x54 && data[i + 1] <= 0x57))
+                isPrologue = true; // push r12/r13/r14/r15
         }
         else
         {
