@@ -102,10 +102,7 @@ SignatureRecord SignatureEngine::Generate(const std::vector<Instruction>& instru
                     record.pattern[instructionStart + static_cast<size_t>(relocationRva - instructionRva)].wildcard = true;
             }
         }
-        const size_t fixedCount = record.pattern.size() -
-            std::count_if(record.pattern.begin(), record.pattern.end(),
-                [](const PatternByte& byte) { return byte.wildcard; });
-        if (record.pattern.size() >= options.minimumBytes && fixedCount >= options.minimumFixedBytes)
+        if (record.pattern.size() >= options.minimumBytes)
             break;
         expectedAddress = instruction.address + instruction.size;
     }
@@ -115,17 +112,10 @@ SignatureRecord SignatureEngine::Generate(const std::vector<Instruction>& instru
         record.pattern.clear();
         return record;
     }
-    const size_t totalFixed = record.pattern.size() -
-        std::count_if(record.pattern.begin(), record.pattern.end(),
-            [](const PatternByte& byte) { return byte.wildcard; });
-    if (totalFixed < options.minimumFixedBytes ||
-        totalFixed * 100 / record.pattern.size() < 40)
-    {
-        record.pattern.clear();
-        return record;
-    }
     record.targetFunction = startAddress;
-    record.evidenceScore = static_cast<uint32_t>(totalFixed);
+    record.evidenceScore = static_cast<uint32_t>(record.pattern.size() -
+        std::count_if(record.pattern.begin(), record.pattern.end(),
+            [](const PatternByte& byte) { return byte.wildcard; }));
     record.status = SignatureStatus::NotFound;
     return record;
 }

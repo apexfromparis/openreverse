@@ -45,8 +45,7 @@ struct SignatureRecord {
 
 struct SignatureGenerationOptions {
     size_t minimumBytes = 12;
-    size_t maximumBytes = 128;
-    size_t minimumFixedBytes = 8;
+    size_t maximumBytes = 48;
     uint64_t imageBase = 0;
     uint64_t imageSize = 0;
     std::vector<uint32_t> relocationRvas;
