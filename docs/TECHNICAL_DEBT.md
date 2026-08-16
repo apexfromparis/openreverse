@@ -51,6 +51,13 @@ Last updated: 2026-08-16
 - Database indexes cover functions, Xrefs, strings, and globals. Structure-field
   stable IDs and signature-target indexes can be added when query consumers
   require them.
+- Extension ABI v1 intentionally exposes only target and function snapshots.
+  Bounded read-only CFG, Xref, string, global, structure, offset, signature, and
+  Version Intelligence views require additive ABI design as real consumers
+  emerge.
+- Native extensions are trusted in-process code and are not sandboxed. A future
+  out-of-process host, RPC contract, operating-system restrictions, and signed
+  distribution require separate threat modeling and research.
 
 ## Performance
 
@@ -75,6 +82,9 @@ Last updated: 2026-08-16
 - Core tests cover the deterministic models and loaders. Application lifecycle,
   native dialogs, minidump UI selection, and installer UI do not have automated
   interaction tests.
+- Extension manifest, ABI compatibility, project state, command, panel, and
+  callback failures are covered at the host layer. Desktop menu/docking behavior
+  remains manually tested.
 
 ## Build and packaging
 

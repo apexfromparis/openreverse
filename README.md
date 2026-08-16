@@ -38,6 +38,9 @@ modules, and optional AI context visible together.
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
+- Versioned Windows x64 native extension API with bounded manifests, read-only
+  analysis queries, controlled commands/navigation/panels, and extension-owned
+  `.orev` state
 
 ### Experimental
 
@@ -49,7 +52,7 @@ modules, and optional AI context visible together.
   structure candidates
 - CFG block/edge presentation without a spatial graph layout
 - AI explanations assembled from the current analysis selection
-- Integrated script editor; script execution and a plugin API are not available
+- Integrated script editor; script execution is not available
 
 The assembly summary contains decoded instructions and CFG facts only; it does
 not invent source variables or types. Experimental inference and migration
@@ -58,9 +61,22 @@ results are not authoritative and require review against the disassembly.
 ### Planned
 
 Migration support for future project schema versions, a concrete symbol/PDB
-provider, deeper interprocedural data-flow analysis, broader old-target formats,
-and a versioned extension API are tracked in the
+provider, deeper interprocedural data-flow analysis, and broader old-target formats
+are tracked in the
 [roadmap](ROADMAP.md). Planned work is not included in the current build.
+
+## Extensions / SDK
+
+OpenReverse supports versioned native extensions through a public Windows x64 C
+API. Extensions can read approved target/function snapshots, register controlled
+commands and text panels, request navigation, and persist bounded state under
+their own ID. They do not receive internal C++ or Dear ImGui objects.
+
+The minimal example in `examples/hello_extension` builds against only the
+header in `sdk/include`. Native extensions run in-process and must be trusted;
+OpenReverse does not claim that they are sandboxed. See the
+[extension SDK documentation](docs/EXTENSIONS.md) for the manifest, lifecycle,
+build, installation, and compatibility contract.
 
 ## Installation
 

@@ -36,6 +36,13 @@ candidates, structured evidence, deterministic change summaries, migration
 candidates, new-function RVAs, and explicit user decisions. It stores no binary
 bytes or executable content.
 
+Version 1 also permits an additive optional `extensions` object keyed by the
+canonical extension ID. Each value is an extension-owned JSON object. The core
+does not interpret the object's schema, but validates and canonicalizes it,
+includes it in the integrity digest, and preserves it even when the owning
+extension is not installed. Older version-1 projects without this root member
+remain valid.
+
 ## Integrity and limits
 
 Before publication, OpenReverse serializes the document without `integrity`,
@@ -52,6 +59,11 @@ future versions return explicit errors instead of partial state.
 Version Intelligence functions, candidates, migrations, evidence, names, and
 change lists are independently bounded. An unsupported comparison algorithm
 version is rejected even when the surrounding project format is valid.
+
+Extension state is limited to 128 IDs and 256 KiB per object, with a maximum
+depth of 16 and 10,000 JSON nodes. IDs and object keys/strings are bounded,
+floating-point values must be finite, and the root value must be an object.
+State is data only and is never loaded as code.
 
 ## Save and load behavior
 

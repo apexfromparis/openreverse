@@ -19,6 +19,9 @@ subject to change until their analysis models stabilize.
 - Experimental indexed old/new Version Intelligence review with structured
   evidence, explicit ambiguity, typed migrations, and persisted user decisions
 - Native Windows workspace, command shell, installer, and optional AI client
+- Versioned Windows x64 native extension ABI, bounded manifest discovery,
+  controlled Community host APIs, extension-owned project state, compatibility
+  tests, and a standalone SDK example
 
 ## In progress
 
@@ -40,4 +43,5 @@ subject to change until their analysis models stabilize.
 
 - Evidence-based structure merging across functions and call sites
 - Deterministic spatial CFG layout for large functions
-- A stable, versioned extension API after core analysis models settle
+- Out-of-process extension hosting, RPC isolation, process restrictions, and
+  signed extension distribution

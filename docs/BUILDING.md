@@ -34,9 +34,23 @@ ctest --test-dir build/windows-x64 -C Release --output-on-failure
 
 `OpenReverse.Core` exercises PE mapping, bounded memory reads, disassembly,
 function and CFG discovery, typed cross-references, patterns, scheduling,
-database publication, and inferred data candidates. CMake also builds
+database publication, inferred data candidates, extension manifests, ABI
+compatibility, loader failures, callbacks, and extension project state. CMake also builds
 `OpenReverseTestFixture.exe`, a small purpose-written PE used by CLI smoke
 checks.
+
+## Extension SDK example
+
+The minimal Community example can be compiled without OpenReverse internals:
+
+```powershell
+cmake -S examples/hello_extension -B build/hello-extension
+cmake --build build/hello-extension --config Release
+```
+
+It includes only `sdk/include/openreverse/extension.h`. The main test build also
+compiles the example and purpose-built invalid DLL fixtures, but neither the
+application nor the installer bundles them. See [Extensions](EXTENSIONS.md).
 
 ## Smoke checks
 

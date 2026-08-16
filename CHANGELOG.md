@@ -8,6 +8,10 @@ reconstructed as release notes.
 
 ### Changed
 
+- Added a versioned Windows x64 native extension ABI, bounded manifests,
+  controlled read-only analysis queries, commands, navigation, host-rendered
+  panels, lifecycle diagnostics, extension-owned project state, compatibility
+  fixtures, and a standalone Community SDK example.
 - Added distinct raw-file, mapped-image, dump, and process address spaces.
 - Added static mapped-image, raw snapshot, and captured minidump-module analysis.
 - Added x64 runtime-function boundaries, function provenance, operand-level

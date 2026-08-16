@@ -131,6 +131,25 @@ source/target Xrefs, strings, and globals whenever a module snapshot changes.
 User-defined offsets survive automatic replacement. Some panels retain display
 snapshots, but they do not run separate analysis pipelines.
 
+## Native extension boundary
+
+`ExtensionManager` discovers manifest-backed DLLs only under the deliberate
+application-local `extensions` root. It validates bounded manifests, semantic
+and ABI compatibility, capabilities, duplicate IDs, canonical paths, the
+exported descriptor, and initialization before publishing registrations. DLLs
+load from explicit full paths with restricted Windows search flags.
+
+The public Windows x64 C ABI in `sdk/include/openreverse/extension.h` exposes
+fixed-layout function tables and caller-owned UTF-8 buffers. It deliberately
+does not expose `Application`, `AnalysisSession`, `AnalysisDatabase`, STL types,
+Dear ImGui, or borrowed collection pointers. V1 supplies read-only target and
+function snapshots, controlled navigation, extension-owned project JSON state,
+commands, and host-rendered text panels. See [Extensions](EXTENSIONS.md).
+
+The application owns callback ordering and unloads extensions in reverse order
+after shutdown callbacks. Native in-process extensions are trusted code, not a
+sandbox boundary. Out-of-process isolation remains research.
+
 ## Lifecycle and safety
 
 Detach and shutdown cancel jobs, wait for the worker, clear database and panel
