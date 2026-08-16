@@ -52,6 +52,30 @@ if ($result.ExitCode -ne 0) { throw 'OpenReverse --help failed' }
 The installer is `OpenReverse-2.0.0-Setup.exe`. Built executables are ignored by
 Git and should be published as release assets rather than committed.
 
+## Package and publish a Community release
+
+After the Release build and tests pass, the packaging script creates the three
+canonical release artifacts from the version declared in `CMakeLists.txt`:
+
+```powershell
+.\scripts\package_release.ps1 -OutputDirectory dist
+```
+
+The output is:
+
+- `OpenReverse-x.y.z-Setup.exe`
+- `OpenReverse-x.y.z-Portable.zip`
+- `SHA256SUMS.txt`
+
+Pushing a protected tag named exactly `vx.y.z` runs the Windows Release workflow.
+The workflow rejects a tag that differs from the CMake project version, rebuilds
+and tests Community, packages the artifacts with the same script, and publishes
+them through GitHub Releases. Release executables and archives remain untracked.
+
+The current pipeline provides reproducible checksums but does not yet provide
+Windows code signing or a signed update manifest. Automatic updating must remain
+disabled until trusted signing, staged installation, and rollback are tested.
+
 ## Local CLI installation
 
 After a successful build, `scripts/install_cli.ps1` copies the shared executable

@@ -1,0 +1,91 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-package:
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and project version
+        id: version
+        shell: pwsh
+        run: |
+          $project = Get-Content CMakeLists.txt -Raw
+          if ($project -notmatch 'project\(OpenReverse VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
+            throw 'Could not read the project version from CMakeLists.txt'
+          }
+          $version = $Matches[1]
+          $expectedTag = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Release tag $env:GITHUB_REF_NAME does not match project version $expectedTag"
+          }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The release tag must point to a commit reachable from origin/main'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Configure
+        run: cmake --preset windows-x64
+
+      - name: Build Release
+        run: cmake --build --preset windows-x64-release --parallel
+
+      - name: Run core tests
+        run: ctest --test-dir build/windows-x64 -C Release --output-on-failure
+
+      - name: Run CLI smoke tests
+        shell: pwsh
+        run: |
+          $app = 'build/windows-x64/bin/Release/OpenReverse.exe'
+          $fixture = 'build/windows-x64/bin/Release/OpenReverseTestFixture.exe'
+          $smokeCases = @(
+            @{ Name = 'help'; Arguments = @('--help') },
+            @{ Name = 'version'; Arguments = @('--version') },
+            @{ Name = 'fixture analysis'; Arguments = @('open', $fixture) }
+          )
+          foreach ($case in $smokeCases) {
+            $process = Start-Process $app -ArgumentList $case.Arguments -NoNewWindow -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "OpenReverse smoke test failed: $($case.Name)"
+            }
+          }
+
+      - name: Package Community artifacts
+        shell: pwsh
+        run: |
+          ./scripts/package_release.ps1 -OutputDirectory dist
+          Get-Content -LiteralPath dist/SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $assets = @(
+            "dist/OpenReverse-$version-Setup.exe",
+            "dist/OpenReverse-$version-Portable.zip",
+            'dist/SHA256SUMS.txt'
+          )
+          gh release create $env:GITHUB_REF_NAME $assets `
+            --verify-tag `
+            --title "OpenReverse $version" `
+            --generate-notes
