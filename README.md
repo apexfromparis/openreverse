@@ -31,6 +31,8 @@ modules, and optional AI context visible together.
 - RIP-relative globals and conservative object-field evidence with simple
   Windows x64 argument/register-origin propagation
 - Typed offsets, SHA-256 module identity, and JSON/C++ export
+- Versioned `.orev` projects with atomic saves, verified target identity,
+  annotations, bookmarks, structures, offsets, signatures, and workspace state
 - AOB scanning and decoded-instruction signature generation with explicit
   wildcards and uniqueness status
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
@@ -39,10 +41,10 @@ modules, and optional AI context visible together.
 
 ### Experimental
 
-- Signature-based offset migration with explicit unique, ambiguous, not-found,
-  and invalid outcomes
-- Function-fingerprint comparison as a core API; it is not yet a whole-program
-  binary-diff workflow
+- Review-first Version Intelligence workspace for old/new PE builds, with
+  indexed multi-signal function matching, explicit ambiguity, deterministic
+  change summaries, relationship-aware signature/global/offset/field migration,
+  and persisted accept/reject decisions
 - Heuristic function discovery fallbacks and inferred globals, fields, and
   structure candidates
 - CFG block/edge presentation without a spatial graph layout
@@ -55,8 +57,9 @@ results are not authoritative and require review against the disassembly.
 
 ### Planned
 
-Project persistence, a concrete symbol/PDB provider, deeper interprocedural
-data-flow analysis, a full binary-diff workflow, and a versioned extension API are tracked in the
+Migration support for future project schema versions, a concrete symbol/PDB
+provider, deeper interprocedural data-flow analysis, broader old-target formats,
+and a versioned extension API are tracked in the
 [roadmap](ROADMAP.md). Planned work is not included in the current build.
 
 ## Installation

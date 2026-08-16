@@ -284,6 +284,10 @@ bool AnalysisSession::SetVersionDecision(const std::string& stableId, VersionDec
         {
             if (migration.stableId != stableId) continue;
             found = true;
+            const bool actionable = migration.suggestedState == VersionMatchState::Exact ||
+                migration.suggestedState == VersionMatchState::StrongCandidate ||
+                migration.suggestedState == VersionMatchState::Candidate;
+            if (decision == VersionDecision::Accepted && !actionable) return false;
             changed = migration.decision != decision;
             migration.decision = decision;
             selectedMigration = &migration;

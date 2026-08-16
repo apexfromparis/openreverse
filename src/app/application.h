@@ -10,6 +10,7 @@
 #include "core/xref_scanner.h"
 #include "core/analysis_scheduler.h"
 #include "core/analysis_database.h"
+#include "core/analysis_session.h"
 #include "core/dump_loader.h"
 
 #include "ui/panels/process_list.h"
@@ -27,6 +28,7 @@
 #include "ui/panels/ai_copilot.h"
 #include "ui/panels/analysis_panel.h"
 #include "ui/panels/openreverse_editor.h"
+#include "ui/panels/version_intelligence_panel.h"
 
 #include <string>
 #include <memory>
@@ -60,7 +62,8 @@ public:
     FunctionAnalyzer functionAnalyzer;
     XRefScanner      xrefScanner;
     AnalysisScheduler analysisScheduler;
-    AnalysisDatabase analysisDatabase;
+    AnalysisSession  analysisSession;
+    AnalysisDatabase& analysisDatabase;
     ai::AIService    aiService;
     panels::AnalysisPanel analysisPanel;
     OpenReverseEditorPanel openReverseEditorPanel;
@@ -82,8 +85,12 @@ public:
     void DetachFromProcess();
     bool OpenBinaryFile(const std::string& filePath);
     bool OpenDumpFile(const std::string& filePath, const DumpImportOptions& options = {});
+    bool OpenProjectFile(const std::string& filePath);
+    bool SaveProjectFile(bool saveAs = false);
     void ShowOpenFileDialog();
     void ShowOpenDumpDialog();
+    void ShowOpenProjectDialog();
+    void RestoreProjectUiAfterAnalysis();
     void NavigateToAddress(uint64_t address);
 
     std::string      loadedFilePath;
@@ -115,6 +122,7 @@ private:
     panels::ConsolePanel        consolePanel;
     panels::OffsetsPanel        offsetsPanel;
     panels::AICopilotPanel      aiCopilotPanel;
+    panels::VersionIntelligencePanel versionIntelligencePanel;
 
     bool             showGotoModal_ = false;
     char             gotoAddressBuf_[32] = "0";
@@ -128,6 +136,7 @@ private:
     bool             showPEViewer_ = false;
     bool             showBookmarks_ = false;
     bool             showConsole_ = false;
+    bool             showVersionIntelligence_ = false;
     bool             showDumpImportModal_ = false;
     bool             requestDumpImportPopup_ = false;
     std::string      pendingDumpPath_;
@@ -137,6 +146,7 @@ private:
     int              dumpArchitectureIndex_ = 1;
     char             dumpImageBaseBuf_[32] = "0x140000000";
     char             dumpModuleSizeBuf_[32] = "0";
+    bool             openingProjectTarget_ = false;
 
     void RenderMenuBar();
     void RenderBrandBar();
@@ -144,6 +154,7 @@ private:
     void RenderStatusBar();
     void RenderDockspace();
     void RenderDumpImportDialog();
+    bool ShowProjectTargetDialog(std::string& filePath) const;
 };
 
 } // namespace openreverse

@@ -1,6 +1,6 @@
 # OpenReverse technical debt
 
-Last updated: 2026-08-12
+Last updated: 2026-08-16
 
 ## Analysis accuracy
 
@@ -26,18 +26,23 @@ Last updated: 2026-08-12
 
 ## Migration and persistence
 
-- The UI migration tab resolves imported signatures against the current static
-  image. Function-fingerprint comparison exists in core but is not yet exposed
-  as a complete old/new binary review workspace.
-- Persistent `.orev` projects do not exist. User names, comments, bookmarks,
-  accepted migrations, and analysis snapshots are not restored across runs.
+- The experimental Version Intelligence workspace compares a PE-backed old
+  binary/project with the current offline target. Old dump projects, whole-
+  program assignment optimization, indirect-call neighborhoods, and symbol-
+  enriched matching remain absent.
+- Versioned `.orev` projects persist target identity, annotations, bookmarks,
+  structures, offsets, signatures, migration decisions, settings, and useful UI
+  state. Native file-dialog/lifecycle interaction remains manually tested; a
+  future schema version must add an explicit sequential migration in
+  `MigrateProjectDocument`.
 - C/C++ offset export is available through the clipboard. JSON supports both
   clipboard and file export/import; a C/C++ header importer is not implemented.
 
 ## State and architecture
 
-- `Application` remains a broad composition root. Target session, navigation,
-  and panel orchestration can be separated incrementally when a change needs it.
+- `Application` remains a broad composition root. `AnalysisSession` now owns the
+  canonical database and project state; target buffers, scheduler jobs,
+  navigation, and most panel orchestration still live on `Application`.
 - `AnalysisTargetKind` is explicit, but legacy panel availability checks still
   use `isAttached` to mean "a target is open".
 - `AnalysisDatabase` is canonical, while `AnalysisPanel`, `stringResults`, and
@@ -51,6 +56,10 @@ Last updated: 2026-08-12
 
 - A single scheduler worker avoids publication races but serializes independent
   jobs. Keep this until target ownership is fully isolated.
+- Version Intelligence indexes reduce expensive candidate scoring, but signature
+  migration still scans patterns independently and copies the new target
+  snapshot into its background job. Profile large binaries before introducing
+  shared immutable buffers or a multi-pattern matcher.
 - Executable bytes are decoded for candidate extraction and again for bounded
   per-function CFGs. Add a decoded-instruction cache only after profiling shows
   material benefit.

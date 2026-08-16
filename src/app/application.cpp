@@ -10,6 +10,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <cstdlib>
 #include <iostream>
@@ -19,10 +20,38 @@
 #include <set>
 #include <utility>
 #include <cmath>
+#include <filesystem>
+#include <limits>
 
 namespace openreverse {
 
+namespace {
+
+ProjectTargetKind ProjectKindFromTarget(AnalysisTargetKind kind)
+{
+    switch (kind)
+    {
+    case AnalysisTargetKind::MappedDump: return ProjectTargetKind::MappedDump;
+    case AnalysisTargetKind::RawDump: return ProjectTargetKind::RawDump;
+    case AnalysisTargetKind::MinidumpModule: return ProjectTargetKind::MinidumpModule;
+    case AnalysisTargetKind::LiveProcess: return ProjectTargetKind::LiveProcess;
+    default: return ProjectTargetKind::PEFile;
+    }
+}
+
+std::string EnsureProjectExtension(std::string path)
+{
+    std::string extension = std::filesystem::path(path).extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+        [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    if (extension != ".orev") path += ".orev";
+    return path;
+}
+
+} // namespace
+
 Application::Application()
+    : analysisDatabase(analysisSession.Database())
 {
     Logger::Get().Log(LogLevel::Info, "OpenReverse initialized. Ready to analyze.");
 }
@@ -44,6 +73,7 @@ void Application::Shutdown()
 bool Application::AttachToProcess(DWORD pid)
 {
     DetachFromProcess();
+    analysisSession.ClearProject();
 
     processHandle = processManager.OpenProcess(pid);
     if (!processHandle)
@@ -174,11 +204,224 @@ void Application::ShowOpenDumpDialog()
     }
 }
 
+void Application::ShowOpenProjectDialog()
+{
+    std::vector<char> fileName(32768, '\0');
+    OPENFILENAMEA dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = nullptr;
+    dialog.lpstrFilter = "OpenReverse projects (*.orev)\0*.orev\0All Files (*.*)\0*.*\0";
+    dialog.lpstrFile = fileName.data();
+    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
+    dialog.lpstrDefExt = "orev";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    dialog.lpstrTitle = "Open an OpenReverse project";
+    if (GetOpenFileNameA(&dialog)) OpenProjectFile(fileName.data());
+}
+
+bool Application::ShowProjectTargetDialog(std::string& filePath) const
+{
+    std::vector<char> fileName(32768, '\0');
+    OPENFILENAMEA dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = nullptr;
+    dialog.lpstrFilter = "Supported targets (*.sys;*.exe;*.dll;*.dmp;*.mdmp;*.bin)\0*.sys;*.exe;*.dll;*.dmp;*.mdmp;*.bin\0All Files (*.*)\0*.*\0";
+    dialog.lpstrFile = fileName.data();
+    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    dialog.lpstrTitle = "Locate the target referenced by this project";
+    if (!GetOpenFileNameA(&dialog)) return false;
+    filePath = fileName.data();
+    return true;
+}
+
+bool Application::OpenProjectFile(const std::string& filePath)
+{
+    OpenReverseProject project;
+    std::string error;
+    if (!ProjectStore::Load(filePath, project, error))
+    {
+        Logger::Get().Log(LogLevel::Error, "Project load failed: %s", error.c_str());
+        MessageBoxA(nullptr, error.c_str(), "OpenReverse project", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    if (project.target.kind == ProjectTargetKind::LiveProcess)
+    {
+        error = "Live-process projects cannot be reopened automatically. Open the matching binary or attach manually.";
+        Logger::Get().Log(LogLevel::Error, "%s", error.c_str());
+        MessageBoxA(nullptr, error.c_str(), "OpenReverse project", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+
+    std::string targetPath = project.target.path;
+    bool restoreTargetBoundState = false;
+    for (;;)
+    {
+        const ProjectTargetVerification verification = ProjectStore::VerifyTarget(project, targetPath);
+        if (verification.status == ProjectTargetVerificationStatus::Match)
+        {
+            restoreTargetBoundState = true;
+            break;
+        }
+        if (verification.status == ProjectTargetVerificationStatus::HashMismatch)
+        {
+            const std::string message =
+                "The selected target does not match the SHA-256 stored in this project.\n\n"
+                "Yes: open it as a changed target without restoring target-bound annotations.\n"
+                "No: locate the original target.\n"
+                "Cancel: leave the current workspace unchanged.";
+            const int choice = MessageBoxA(nullptr, message.c_str(), "Target identity mismatch",
+                                           MB_YESNOCANCEL | MB_ICONWARNING);
+            if (choice == IDYES)
+            {
+                restoreTargetBoundState = false;
+                break;
+            }
+            if (choice == IDCANCEL) return false;
+        }
+        else
+        {
+            const std::string message = verification.error +
+                "\n\nSelect OK to locate the referenced target, or Cancel to stop.";
+            if (MessageBoxA(nullptr, message.c_str(), "Project target unavailable",
+                            MB_OKCANCEL | MB_ICONWARNING) != IDOK)
+                return false;
+        }
+        if (!ShowProjectTargetDialog(targetPath)) return false;
+    }
+
+    project.target.path = targetPath;
+    analysisSession.SetLoadedProject(std::move(project), filePath, restoreTargetBoundState);
+    openingProjectTarget_ = true;
+    bool opened = false;
+    const ProjectTarget& target = analysisSession.Project().target;
+    if (target.kind == ProjectTargetKind::PEFile)
+    {
+        opened = OpenBinaryFile(targetPath);
+    }
+    else
+    {
+        DumpImportOptions options;
+        options.architecture = target.architecture == "x64"
+            ? DumpArchitecture::X64 : DumpArchitecture::X86;
+        options.imageBase = target.imageBase;
+        options.moduleSize = target.moduleSize;
+        options.minidumpModuleBase = target.selectedModuleBase;
+        if (target.kind == ProjectTargetKind::MappedDump)
+            options.representation = DumpRepresentation::MappedPEImage;
+        else if (target.kind == ProjectTargetKind::RawDump)
+            options.representation = DumpRepresentation::RawSnapshot;
+        else
+            options.representation = DumpRepresentation::Minidump;
+        opened = OpenDumpFile(targetPath, options);
+    }
+    openingProjectTarget_ = false;
+    if (!opened)
+    {
+        analysisSession.ClearProject();
+        return false;
+    }
+    Logger::Get().Log(LogLevel::Info, "Opened OpenReverse project: %s%s", filePath.c_str(),
+        restoreTargetBoundState ? "" : " (changed target; annotations not restored)");
+    return true;
+}
+
+bool Application::SaveProjectFile(bool saveAs)
+{
+    if (!isAttached || targetKind == AnalysisTargetKind::LiveProcess)
+    {
+        MessageBoxA(nullptr,
+            "Open an offline binary or dump before saving a project. Live-process projects are not persisted in version 1.",
+            "Save OpenReverse project", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
+    if (!analysis && !analysisDatabase.GetModules().empty())
+        analysis = &analysisDatabase.GetModules().begin()->second;
+    if (!analysis)
+    {
+        MessageBoxA(nullptr, "Wait for target analysis to complete before saving the project.",
+                    "Save OpenReverse project", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+
+    ProjectTarget target;
+    target.kind = ProjectKindFromTarget(targetKind);
+    target.path = loadedFilePath;
+    target.architecture = is64Bit ? "x64" : "x86";
+    target.imageBase = analysis->module.baseAddress;
+    target.moduleSize = analysis->module.size;
+    if (target.kind == ProjectTargetKind::MinidumpModule)
+        target.selectedModuleBase = analysis->module.baseAddress;
+    std::string error;
+    if (!ProjectStore::ComputeFileSha256(target.path, target.sha256, error))
+    {
+        Logger::Get().Log(LogLevel::Error, "Project save failed: %s", error.c_str());
+        MessageBoxA(nullptr, error.c_str(), "Save OpenReverse project", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    target.module = analysis->identity;
+    target.module.name = analysis->module.name;
+    target.module.sha256 = target.sha256;
+    target.module.imageBase = analysis->module.baseAddress;
+    target.module.imageSize = static_cast<uint32_t>(std::min<uint64_t>(
+        analysis->module.size, (std::numeric_limits<uint32_t>::max)()));
+    if (target.module.peTimestamp == 0) target.module.peTimestamp = analysis->pe.timestamp;
+
+    ProjectUiState ui;
+    ui.currentRva = currentAddress >= analysis->module.baseAddress
+        ? currentAddress - analysis->module.baseAddress : 0;
+    ui.workspace = isDevMode ? "editor" : "reverse";
+    if (showAnalysisPanel_) ui.openPanels.push_back("analysis");
+    if (showMemoryMap_) ui.openPanels.push_back("memory-map");
+    if (showScanner_) ui.openPanels.push_back("scanner");
+    if (showStrings_) ui.openPanels.push_back("strings");
+    if (showDataInspector_) ui.openPanels.push_back("data-inspector");
+    if (showPEViewer_) ui.openPanels.push_back("pe-viewer");
+    if (showBookmarks_) ui.openPanels.push_back("bookmarks");
+    if (showConsole_) ui.openPanels.push_back("console");
+    if (showVersionIntelligence_) ui.openPanels.push_back("version-intelligence");
+
+    OpenReverseProject project = analysisSession.BuildSnapshot(target, *analysis, ui);
+    std::string outputPath = analysisSession.ProjectPath();
+    if (saveAs || outputPath.empty() || analysisSession.RequiresSaveAs())
+    {
+        std::vector<char> fileName(32768, '\0');
+        std::string defaultName = std::filesystem::path(attachedProcessName).stem().string();
+        if (defaultName.empty()) defaultName = "OpenReverseProject";
+        for (char& character : defaultName)
+            if (std::string("<>:\"/\\|?*").find(character) != std::string::npos) character = '_';
+        defaultName += ".orev";
+        strncpy_s(fileName.data(), fileName.size(), defaultName.c_str(), _TRUNCATE);
+        OPENFILENAMEA dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = nullptr;
+        dialog.lpstrFilter = "OpenReverse projects (*.orev)\0*.orev\0All Files (*.*)\0*.*\0";
+        dialog.lpstrFile = fileName.data();
+        dialog.nMaxFile = static_cast<DWORD>(fileName.size());
+        dialog.lpstrDefExt = "orev";
+        dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+        dialog.lpstrTitle = "Save OpenReverse project";
+        if (!GetSaveFileNameA(&dialog)) return false;
+        outputPath = EnsureProjectExtension(fileName.data());
+    }
+    if (!ProjectStore::SaveAtomic(outputPath, project, error))
+    {
+        Logger::Get().Log(LogLevel::Error, "Project save failed: %s", error.c_str());
+        MessageBoxA(nullptr, error.c_str(), "Save OpenReverse project", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    analysisSession.MarkSaved(std::move(project), outputPath);
+    Logger::Get().Log(LogLevel::Info, "Saved OpenReverse project: %s", outputPath.c_str());
+    return true;
+}
+
 bool Application::OpenBinaryFile(const std::string& filePath)
 {
     try
     {
         DetachFromProcess();
+        if (!openingProjectTarget_) analysisSession.ClearProject();
         std::cout << "[*] Parsing PE headers and mapping sections..." << std::endl;
 
         std::vector<uint8_t> rawFile;
@@ -321,6 +564,7 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
         }
 
         DetachFromProcess();
+        if (!openingProjectTarget_) analysisSession.ClearProject();
 
         loadedFilePath = filePath;
         attachedProcessName = dump.module.name;
@@ -408,7 +652,12 @@ void Application::Render()
 {
     analysisScheduler.DrainCompletions();
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O) && !ImGui::GetIO().WantTextInput)
-        ShowOpenFileDialog();
+    {
+        if (ImGui::GetIO().KeyShift) ShowOpenProjectDialog();
+        else ShowOpenFileDialog();
+    }
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S) && !ImGui::GetIO().WantTextInput)
+        SaveProjectFile(ImGui::GetIO().KeyShift);
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_1))
         SwitchToDevMode(false);
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_2))
@@ -448,6 +697,7 @@ void Application::Render()
     if (isDevMode || showPEViewer_) peViewerPanel.Render(*this);
     if (isDevMode || showBookmarks_) bookmarksPanel.Render(*this);
     if (isDevMode || showConsole_) consolePanel.Render(*this);
+    if (showVersionIntelligence_) versionIntelligencePanel.Render(*this, &showVersionIntelligence_);
 
     RenderStatusBar();
 }
@@ -854,6 +1104,8 @@ void Application::RenderMenuBar()
 
     if (ImGui::BeginMenu("File"))
     {
+        if (ImGui::MenuItem("Open Project (.orev)...", "Ctrl+Shift+O"))
+            ShowOpenProjectDialog();
         if (ImGui::MenuItem("Open Binary / Driver File (.sys, .exe, .dll)...", "Ctrl+O"))
         {
             ShowOpenFileDialog();
@@ -864,6 +1116,13 @@ void Application::RenderMenuBar()
             ShowOpenDumpDialog();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Static analysis only; mapped PE images and Windows minidumps are never executed");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save Project", "Ctrl+S", false,
+                            isAttached && targetKind != AnalysisTargetKind::LiveProcess))
+            SaveProjectFile(false);
+        if (ImGui::MenuItem("Save Project As...", "Ctrl+Shift+S", false,
+                            isAttached && targetKind != AnalysisTargetKind::LiveProcess))
+            SaveProjectFile(true);
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
             PostQuitMessage(0);
@@ -881,6 +1140,7 @@ void Application::RenderMenuBar()
         ImGui::MenuItem("Data Inspector", nullptr, &showDataInspector_);
         ImGui::MenuItem("Bookmarks", nullptr, &showBookmarks_);
         ImGui::MenuItem("Console", nullptr, &showConsole_);
+        ImGui::MenuItem("Version Intelligence", nullptr, &showVersionIntelligence_);
         ImGui::EndMenu();
     }
 
@@ -890,6 +1150,8 @@ void Application::RenderMenuBar()
             analysisPanel.StartAnalyzeCurrentModule(*this);
         if (ImGui::MenuItem("Functions and CFG", "Ctrl+I"))
             showAnalysisPanel_ = true;
+        if (ImGui::MenuItem("Compare Versions..."))
+            showVersionIntelligence_ = true;
         if (ImGui::MenuItem("Go to address...", "Ctrl+G", false, isAttached))
             showGotoModal_ = true;
         ImGui::EndMenu();
@@ -981,6 +1243,31 @@ void Application::AddOffsetFromAddress(uint64_t address, const std::string& name
     offsetsPanel.AddFromAddress(*this, address, name);
 }
 
+void Application::RestoreProjectUiAfterAnalysis()
+{
+    if (!analysisSession.HasProject() || !analysisSession.RestoresTargetBoundState()) return;
+    const ProjectUiState& ui = analysisSession.Project().ui;
+    SwitchToDevMode(ui.workspace == "editor");
+    const auto isOpen = [&](const char* panel) {
+        return std::find(ui.openPanels.begin(), ui.openPanels.end(), panel) != ui.openPanels.end();
+    };
+    showAnalysisPanel_ = isOpen("analysis");
+    showMemoryMap_ = isOpen("memory-map");
+    showScanner_ = isOpen("scanner");
+    showStrings_ = isOpen("strings");
+    showDataInspector_ = isOpen("data-inspector");
+    showPEViewer_ = isOpen("pe-viewer");
+    showBookmarks_ = isOpen("bookmarks");
+    showConsole_ = isOpen("console");
+    showVersionIntelligence_ = isOpen("version-intelligence");
+
+    const ModuleAnalysisState* analysis = nullptr;
+    if (!analysisDatabase.GetModules().empty())
+        analysis = &analysisDatabase.GetModules().begin()->second;
+    if (analysis && ui.currentRva < analysis->module.size)
+        NavigateToAddress(analysis->module.baseAddress + ui.currentRva);
+}
+
 void Application::RenderStatusBar()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1022,6 +1309,15 @@ void Application::RenderStatusBar()
     else
     {
         ImGui::TextDisabled("No target attached");
+    }
+
+    if (analysisSession.HasProject())
+    {
+        ImGui::SameLine(0, 7);
+        const std::string projectName = analysisSession.ProjectPath().empty()
+            ? "Unsaved project" : std::filesystem::path(analysisSession.ProjectPath()).filename().string();
+        ImGui::TextColored(ImVec4(0.25f, 0.67f, 0.96f, 1.0f), "- %s%s",
+                           projectName.c_str(), analysisSession.IsDirty() ? " *" : "");
     }
 
     const AnalysisJobSnapshot offlineJob = offlineAnalysisJobId != 0

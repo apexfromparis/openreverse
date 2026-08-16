@@ -1,13 +1,29 @@
 # OpenReverse architecture
 
-Last updated: 2026-08-12
+Last updated: 2026-08-16
 
 ## Composition
 
 OpenReverse is a Windows C++17 application using Win32, DirectX 11, Dear ImGui,
 Capstone, WinHTTP, DbgHelp, BCrypt, and nlohmann/json. `Application` remains the
-composition root for target lifecycle, analysis services, the scheduler, the
-canonical database, navigation, and panels.
+composition root for target lifecycle, analysis services, the scheduler,
+navigation, and panels. `AnalysisSession` now owns the canonical
+`AnalysisDatabase` plus persistent project/user state; `Application` keeps a
+compatibility reference while orchestration moves incrementally to the session.
+
+## Persistent projects
+
+`ProjectStore` owns the versioned `.orev` data boundary. It performs bounded
+typed decoding, canonical SHA-256 integrity checks, explicit version/migration
+handling, target identity verification, and flushed temporary-file replacement.
+Projects reference rather than embed binaries. Target-bound state is restored
+only after the external target SHA-256 matches; a user-selected changed target
+starts without annotations and requires Save As.
+
+Function annotations and bookmarks use RVAs so they rebase with the verified
+module. The session merges stored user offsets and signatures into a newly
+computed deterministic analysis snapshot instead of trusting persisted results
+as executable behavior. See [Project format](PROJECT_FORMAT.md).
 
 ## Targets and address spaces
 
@@ -83,9 +99,25 @@ report unique, ambiguous, not-found, or invalid; migration never auto-accepts an
 ambiguous match.
 
 Function fingerprints normalize instruction IDs and operand classes and combine
-them with CFG shape, referenced strings, call count, and instruction count.
-Comparison returns a transparent similarity score and evidence list, not a
-probability.
+them with CFG topology, edge distribution, strings, imports, global roles,
+stable signatures, field provenance, runtime boundaries, calls, and instruction
+counts. Address-like immediates, relative branches/calls, and RIP-relative
+displacements are normalized without discarding small semantic constants or
+separate field evidence. Comparison returns a transparent heuristic score and
+machine-readable evidence, not a probability.
+
+`VersionIntelligenceEngine` builds normalized/CFG/data/signature indexes before
+scoring plausible candidates. Exact and strong results may refine callers via
+matched callees; weak candidates never reinforce each other. It produces
+explicit removed/new/ambiguous states, deterministic function change summaries,
+and conservative global, signature, typed-offset, and structure-field migration
+records. See [Version Intelligence](VERSION_INTELLIGENCE.md).
+
+The desktop comparison is submitted through `AnalysisScheduler`. The worker
+loads and analyzes the old PE, compares immutable old/new snapshots, checks
+cancellation, and publishes only when the current target generation still
+matches. User decisions live in `AnalysisSession` and the additive version-1
+project section.
 
 `ISymbolProvider` defines optional symbol/type ingestion. No concrete DIA/PDB
 provider is shipped yet, so symbols are not required for analysis.
@@ -118,4 +150,8 @@ ctest --test-dir build/windows-x64 -C Release --output-on-failure
 `OpenReverse.Core` covers raw/mapped addressing, `.pdata`, mapped dump loading,
 operand Xrefs, globals, field provenance, register propagation, signatures,
 function comparison, migration ambiguity, JSON, SHA-256 identity, database
-indexes, scheduler publication/cancellation, and denied-access messaging.
+indexes, scheduler publication/cancellation, `.orev` round-trips, corruption,
+atomic replacement, target mismatch/missing handling, session rebasing, and
+denied-access messaging. Controlled Version Intelligence fixtures cover indexed
+matching, ambiguity, false positives, deterministic changes, relationship-aware
+migrations, cancellation, and persisted decisions.

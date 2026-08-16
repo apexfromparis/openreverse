@@ -124,6 +124,7 @@ void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult r
             Logger::Get().Log(LogLevel::Error, "Module analysis failed: %s", result.error.c_str());
         return;
     }
+    app.analysisSession.ApplyPersistedAnalysis(result);
     app.analysisDatabase.ReplaceModuleAnalysis(result.module, app.is64Bit, result.pe,
                                                result.functions, result.xrefs, result.strings,
                                                result.globals, result.fieldAccesses, result.structures,
@@ -148,6 +149,7 @@ void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult r
         Logger::Get().Log(LogLevel::Warning, "Module analysis stopped at a configured limit");
     if (!functions_.empty())
         SelectFunction(app, functions_[0].startAddress);
+    app.RestoreProjectUiAfterAnalysis();
 }
 
 void AnalysisPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs)
@@ -198,6 +200,14 @@ void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
             activeFunction_.endAddress = f.endAddress;
             activeFunction_.size = f.size;
             break;
+        }
+    }
+    if (const ModuleInfo* module = app.moduleManager.FindModuleByAddress(funcAddress))
+    {
+        if (const ProjectFunctionAnnotation* annotation =
+                app.analysisSession.FindFunctionAnnotation(funcAddress - module->baseAddress))
+        {
+            if (!annotation->name.empty()) activeFunction_.name = annotation->name;
         }
     }
 
@@ -332,8 +342,14 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
         for (const auto& fn : functions_)
         {
             std::string addrStr = helpers::FormatAddress(fn.startAddress, app.is64Bit);
+            const ModuleInfo* module = app.moduleManager.FindModuleByAddress(fn.startAddress);
+            const uint64_t rva = module ? fn.startAddress - module->baseAddress : 0;
+            const ProjectFunctionAnnotation* annotation = module
+                ? app.analysisSession.FindFunctionAnnotation(rva) : nullptr;
+            const std::string& displayName = annotation && !annotation->name.empty()
+                ? annotation->name : fn.name;
             if (!filterLower.empty() &&
-                helpers::ToLower(fn.name).find(filterLower) == std::string::npos &&
+                helpers::ToLower(displayName).find(filterLower) == std::string::npos &&
                 helpers::ToLower(addrStr).find(filterLower) == std::string::npos)
             {
                 continue;
@@ -350,9 +366,25 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
             {
                 SelectFunction(app, fn.startAddress);
             }
+            if (module && app.targetKind != AnalysisTargetKind::LiveProcess &&
+                ImGui::BeginPopupContextItem())
+            {
+                if (ImGui::MenuItem("Edit project annotation..."))
+                {
+                    annotationRva_ = rva;
+                    const std::string name = annotation ? annotation->name : fn.name;
+                    const std::string comment = annotation ? annotation->comment : std::string{};
+                    strncpy_s(annotationName_, sizeof(annotationName_), name.c_str(), _TRUNCATE);
+                    strncpy_s(annotationComment_, sizeof(annotationComment_), comment.c_str(), _TRUNCATE);
+                    requestAnnotationPopup_ = true;
+                }
+                ImGui::EndPopup();
+            }
 
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.95f, 1.0f), "%s", fn.name.c_str());
+            ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.95f, 1.0f), "%s", displayName.c_str());
+            if (annotation && !annotation->comment.empty() && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", annotation->comment.c_str());
 
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(FunctionSourceName(fn.source));
@@ -381,6 +413,45 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
 
         ImGui::EndTable();
     }
+    RenderAnnotationPopup(app);
+}
+
+void AnalysisPanel::RenderAnnotationPopup(Application& app)
+{
+    if (requestAnnotationPopup_)
+    {
+        ImGui::OpenPopup("Function project annotation");
+        requestAnnotationPopup_ = false;
+    }
+    if (!ImGui::BeginPopupModal("Function project annotation", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextDisabled("RVA 0x%llX", static_cast<unsigned long long>(annotationRva_));
+    ImGui::SetNextItemWidth(420.0f);
+    ImGui::InputText("Name", annotationName_, sizeof(annotationName_));
+    ImGui::SetNextItemWidth(420.0f);
+    ImGui::InputTextMultiline("Comment", annotationComment_, sizeof(annotationComment_),
+                              ImVec2(420.0f, 100.0f));
+    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f)))
+    {
+        app.analysisSession.SetFunctionAnnotation(annotationRva_, annotationName_, annotationComment_);
+        const ModuleAnalysisState* analysis = app.analysisDatabase.FindModuleContaining(app.currentAddress);
+        if (analysis) SelectFunction(app, analysis->module.baseAddress + annotationRva_);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Remove", ImVec2(90.0f, 0.0f)))
+    {
+        app.analysisSession.RemoveFunctionAnnotation(annotationRva_);
+        const ModuleAnalysisState* analysis = app.analysisDatabase.FindModuleContaining(app.currentAddress);
+        if (analysis) SelectFunction(app, analysis->module.baseAddress + annotationRva_);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f)))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void AnalysisPanel::RenderCFGTab(Application& app)

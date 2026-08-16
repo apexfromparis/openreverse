@@ -14,6 +14,10 @@ reconstructed as release notes.
   Xrefs, global/field provenance, and simple Windows x64 register-origin flow.
 - Added typed offset records, SHA-256 module identity, JSON/C++ export, decoded
   signatures, conservative migration results, and function fingerprinting.
+- Added an experimental Version Intelligence workspace with indexed normalized
+  function matching, structured evidence, deterministic change summaries,
+  explicit ambiguity, conservative typed migrations, background cancellation,
+  and `.orev`-persisted review decisions.
 - Moved desktop offline analysis onto the bounded scheduler and expanded the
   **Offsets & Structures** workspace with real deterministic data.
 - Replaced fabricated C-like output with a decoded control-flow assembly summary.

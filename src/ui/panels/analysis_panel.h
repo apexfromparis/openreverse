@@ -42,8 +42,13 @@ private:
 
     uint64_t                  xrefTargetAddress_ = 0;
     uint64_t                  lastXrefSelection_ = 0;
+    bool                      requestAnnotationPopup_ = false;
+    uint64_t                  annotationRva_ = 0;
+    char                      annotationName_[128] = {};
+    char                      annotationComment_[512] = {};
 
     void RenderFunctionsTab(Application& app);
+    void RenderAnnotationPopup(Application& app);
     void RenderCFGTab(Application& app);
     void RenderAssemblySummaryTab(Application& app);
     void RenderXRefsTab(Application& app);

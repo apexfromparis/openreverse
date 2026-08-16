@@ -14,19 +14,22 @@ subject to change until their analysis models stabilize.
 - Decoded-instruction signatures, target relationships, and uniqueness results
 - Conservative function fingerprinting and migration ambiguity reporting
 - Indexed canonical analysis snapshots with bounded scheduling and cancellation
+- Versioned `.orev` project save/load with target verification, annotations,
+  bookmarks, structures, offsets, signatures, and UI/session restoration
+- Experimental indexed old/new Version Intelligence review with structured
+  evidence, explicit ambiguity, typed migrations, and persisted user decisions
 - Native Windows workspace, command shell, installer, and optional AI client
 
 ## In progress
 
 - Moving the remaining panel compatibility views and CLI queries directly onto
   `AnalysisDatabase`
-- Extending signature migration from imported signatures to a complete
-  reviewable old/new function comparison workflow
+- Profiling and extending Version Intelligence to old dump projects, indirect
+  call neighborhoods, and symbol-enriched comparison evidence
 - Adding application and UI-level regression coverage
 
 ## Planned
 
-- Persistent `.orev` projects, names, comments, structures, and bookmarks
 - A DIA-backed `ISymbolProvider` for PDB functions, public symbols, and types
 - Predecessor-aware and interprocedural data flow, alias analysis, and indirect
   target recovery

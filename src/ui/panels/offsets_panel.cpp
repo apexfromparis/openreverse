@@ -96,6 +96,8 @@ void OffsetsPanel::AddFromAddress(Application& app, uint64_t address,
     if (!app.analysisDatabase.UpsertOffset(module->baseAddress, offset))
         Logger::Get().Log(LogLevel::Warning,
             "Analyze the module before adding a canonical offset record");
+    else
+        app.analysisSession.MarkDirty();
 }
 
 void OffsetsPanel::CopyJson(const ModuleAnalysisState& analysis) const
