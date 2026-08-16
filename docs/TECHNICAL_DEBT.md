@@ -1,6 +1,6 @@
 # OpenReverse technical debt
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 ## Analysis accuracy
 
@@ -58,6 +58,14 @@ Last updated: 2026-08-16
 - Native extensions are trusted in-process code and are not sandboxed. A future
   out-of-process host, RPC contract, operating-system restrictions, and signed
   distribution require separate threat modeling and research.
+- The WorkOS native public-client flow is implemented, but a legitimate
+  provider application/client configuration and live end-to-end verification
+  are still required before Phase E can be marked complete. If future provider
+  requirements demand confidential operations, those operations belong behind
+  the separate Phase F backend rather than in the desktop or website.
+- Account access-token refresh is explicit through the account UI. Automatic
+  refresh scheduling and expiry-driven retry policy should be added only after
+  the production provider flow is verified.
 
 ## Performance
 
@@ -85,6 +93,9 @@ Last updated: 2026-08-16
 - Extension manifest, ABI compatibility, project state, command, panel, and
   callback failures are covered at the host layer. Desktop menu/docking behavior
   remains manually tested.
+- Authentication primitives, callback rejection, state lifecycle, rotation,
+  logout, loopback binding, and isolated secure storage are automated. Browser
+  launch, real provider consent, and live provider logout remain manual tests.
 
 ## Build and packaging
 

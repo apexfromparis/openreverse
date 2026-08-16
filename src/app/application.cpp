@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
@@ -133,6 +134,7 @@ void Application::Shutdown()
     if (shutdown_)
         return;
     shutdown_ = true;
+    accountAuth_.CancelLogin();
     analysisScheduler.Shutdown();
     DetachFromProcess();
     if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
@@ -787,6 +789,7 @@ void Application::Render()
     if (showVersionIntelligence_) versionIntelligencePanel.Render(*this, &showVersionIntelligence_);
     RenderExtensionPanels();
     if (showExtensions_) RenderExtensionsWindow();
+    if (showAccount_) RenderAccountWindow();
 
     RenderStatusBar();
 }
@@ -849,6 +852,120 @@ void Application::RenderExtensionsWindow()
         }
         ImGui::EndTable();
     }
+    ImGui::End();
+}
+
+void Application::RenderAccountWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(470.0f, 260.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Settings > Account", &showAccount_))
+    {
+        ImGui::End();
+        return;
+    }
+
+    const auth::AuthStatus status = accountAuth_.Status();
+    ImGui::TextUnformatted("OpenReverse Account");
+    ImGui::Separator();
+    ImGui::Text("Status: %s", auth::AuthSession::StateName(status.state));
+    if (status.state == auth::AuthState::SignedIn && !status.email.empty())
+        ImGui::TextUnformatted(status.email.c_str());
+    else
+        ImGui::TextDisabled("%s", status.message.c_str());
+
+    if (!accountUiMessage_.empty())
+        ImGui::TextColored(ImVec4(0.94f, 0.45f, 0.30f, 1.0f), "%s",
+                           accountUiMessage_.c_str());
+
+    const bool loginActive = status.state == auth::AuthState::WaitingForBrowser ||
+        status.state == auth::AuthState::ProcessingCallback ||
+        status.state == auth::AuthState::ExchangingCode;
+    if (status.state == auth::AuthState::WaitingForBrowser)
+    {
+        if (ImGui::Button("Cancel Sign In"))
+        {
+            accountAuth_.CancelLogin();
+            accountUiMessage_.clear();
+        }
+    }
+    else if (status.state == auth::AuthState::ProcessingCallback ||
+             status.state == auth::AuthState::ExchangingCode)
+    {
+        ImGui::BeginDisabled();
+        ImGui::Button("Completing Sign In...");
+        ImGui::EndDisabled();
+    }
+    else if (status.state == auth::AuthState::SignedIn)
+    {
+        ImGui::BeginDisabled();
+        ImGui::Button("Manage Account");
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Account portal configuration is deferred.");
+        ImGui::SameLine();
+        if (ImGui::Button("Sign Out"))
+        {
+            std::string logoutUrl;
+            std::string error;
+            if (!accountAuth_.Logout(logoutUrl, error)) accountUiMessage_ = error;
+            else accountUiMessage_.clear();
+            if (!logoutUrl.empty())
+            {
+                const std::wstring wideUrl(logoutUrl.begin(), logoutUrl.end());
+                const HINSTANCE launched = ShellExecuteW(nullptr, L"open", wideUrl.c_str(),
+                                                          nullptr, nullptr, SW_SHOWNORMAL);
+                if (reinterpret_cast<INT_PTR>(launched) <= 32)
+                    accountUiMessage_ = "Signed out locally; the provider logout page could not be opened.";
+            }
+        }
+    }
+    else
+    {
+        const bool canSignIn = !loginActive && status.providerConfigured &&
+            status.state != auth::AuthState::Refreshing &&
+            status.state != auth::AuthState::LoggingOut;
+        if (!canSignIn) ImGui::BeginDisabled();
+        if (ImGui::Button("Sign In"))
+        {
+            std::string authorizationUrl;
+            std::string error;
+            if (!accountAuth_.StartLogin(authorizationUrl, error))
+            {
+                accountUiMessage_ = error;
+            }
+            else
+            {
+                accountUiMessage_.clear();
+                const std::wstring wideUrl(authorizationUrl.begin(), authorizationUrl.end());
+                const HINSTANCE launched = ShellExecuteW(nullptr, L"open", wideUrl.c_str(),
+                                                          nullptr, nullptr, SW_SHOWNORMAL);
+                if (reinterpret_cast<INT_PTR>(launched) <= 32)
+                {
+                    accountAuth_.CancelLogin();
+                    accountUiMessage_ = "The system browser could not be opened.";
+                }
+            }
+        }
+        if (!canSignIn) ImGui::EndDisabled();
+
+        if (status.state == auth::AuthState::ReauthenticationRequired &&
+            status.providerConfigured)
+        {
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh Session"))
+            {
+                std::string error;
+                if (!accountAuth_.StartRefresh(error)) accountUiMessage_ = error;
+                else accountUiMessage_.clear();
+            }
+        }
+        if (!status.providerConfigured)
+            ImGui::TextDisabled("Account sign-in requires a configured public desktop client ID.");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextWrapped("Community analysis, projects, extensions, CLI and BYOK AI remain available without an account.");
     ImGui::End();
 }
 
@@ -1340,7 +1457,6 @@ void Application::RenderMenuBar()
         if (ImGui::MenuItem("Strings")) showStrings_ = true;
         if (ImGui::MenuItem("AI Assistant")) ImGui::SetWindowFocus("AI ASSISTANT");
         ImGui::Separator();
-        if (ImGui::MenuItem("AI Settings...")) aiCopilotPanel.OpenSettings();
         if (ImGui::MenuItem("Extensions...")) showExtensions_ = true;
         const auto extensionCommands = extensionManager.Commands();
         if (!extensionCommands.empty() && ImGui::BeginMenu("Extension commands"))
@@ -1361,6 +1477,13 @@ void Application::RenderMenuBar()
             }
             ImGui::EndMenu();
         }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Settings"))
+    {
+        if (ImGui::MenuItem("Account...")) showAccount_ = true;
+        if (ImGui::MenuItem("AI...")) aiCopilotPanel.OpenSettings();
         ImGui::EndMenu();
     }
 

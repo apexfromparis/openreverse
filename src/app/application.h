@@ -13,6 +13,7 @@
 #include "core/analysis_session.h"
 #include "core/dump_loader.h"
 #include "extensions/extension_manager.h"
+#include "auth/auth_client.h"
 
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
@@ -126,6 +127,7 @@ private:
     panels::OffsetsPanel        offsetsPanel;
     panels::AICopilotPanel      aiCopilotPanel;
     panels::VersionIntelligencePanel versionIntelligencePanel;
+    auth::DesktopAuthClient accountAuth_;
 
     bool             showGotoModal_ = false;
     char             gotoAddressBuf_[32] = "0";
@@ -141,10 +143,12 @@ private:
     bool             showConsole_ = false;
     bool             showVersionIntelligence_ = false;
     bool             showExtensions_ = false;
+    bool             showAccount_ = false;
     bool             showDumpImportModal_ = false;
     bool             requestDumpImportPopup_ = false;
     std::string      pendingDumpPath_;
     std::string      dumpImportError_;
+    std::string      accountUiMessage_;
     std::vector<DumpModuleMetadata> pendingDumpModules_;
     int              pendingDumpModuleIndex_ = 0;
     int              dumpArchitectureIndex_ = 1;
@@ -160,6 +164,7 @@ private:
     void RenderDumpImportDialog();
     void RenderExtensionPanels();
     void RenderExtensionsWindow();
+    void RenderAccountWindow();
     bool ShowProjectTargetDialog(std::string& filePath) const;
 };
 

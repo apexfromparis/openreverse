@@ -8,6 +8,11 @@ reconstructed as release notes.
 
 ### Changed
 
+- Added an optional native account foundation with WorkOS public-client PKCE
+  S256, an ephemeral loopback callback, explicit auth states, replay/timeout/
+  cancellation protection, Windows account credential storage, minimal account
+  settings, and offline security regression tests. Production provider
+  configuration and live verification remain pending.
 - Added a versioned Windows x64 native extension ABI, bounded manifests,
   controlled read-only analysis queries, commands, navigation, host-rendered
   panels, lifecycle diagnostics, extension-owned project state, compatibility

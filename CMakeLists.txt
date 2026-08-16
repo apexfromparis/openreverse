@@ -83,6 +83,7 @@ target_link_libraries(OpenReverse PRIVATE
     advapi32
     bcrypt
     dbghelp
+    ws2_32
 )
 
 target_compile_definitions(OpenReverse PRIVATE
@@ -200,6 +201,31 @@ if(BUILD_TESTING)
         NOMINMAX
     )
     add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
+
+    add_executable(OpenReverseAuthTests
+        tests/auth_tests.cpp
+        src/auth/account_api.cpp
+        src/auth/auth_callback.cpp
+        src/auth/auth_session.cpp
+        src/auth/loopback_callback.cpp
+        src/auth/pkce.cpp
+        src/auth/secure_credentials.cpp
+    )
+    target_include_directories(OpenReverseAuthTests PRIVATE src)
+    target_link_libraries(OpenReverseAuthTests PRIVATE
+        nlohmann_json::nlohmann_json
+        advapi32
+        bcrypt
+        winhttp
+        ws2_32
+    )
+    target_compile_definitions(OpenReverseAuthTests PRIVATE
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+    add_test(NAME OpenReverse.Auth COMMAND OpenReverseAuthTests)
 
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
     set_target_properties(OpenReverseTestFixture PROPERTIES

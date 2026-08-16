@@ -1,6 +1,6 @@
 # OpenReverse architecture
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 ## Composition
 
@@ -150,6 +150,25 @@ The application owns callback ordering and unloads extensions in reverse order
 after shutdown callbacks. Native in-process extensions are trusted code, not a
 sandbox boundary. Out-of-process isolation remains research.
 
+## Optional account authentication
+
+`src/auth` implements a separate native public-client account boundary. WorkOS
+AuthKit Authorization Code + PKCE S256 uses an ephemeral `127.0.0.1` callback;
+the pending verifier and random state live only for one bounded transaction.
+The callback parser accepts a code and state, never final credentials.
+
+`AuthSession` owns the account state machine, `IAccountApi` isolates provider
+exchange/refresh/logout behavior, and `DesktopAuthClient` owns asynchronous
+callback and network work. A short-lived access token stays in memory. A
+refresh credential and bounded account metadata use Windows Credential Manager
+under an account-specific target. AI BYOK storage remains a different
+namespace, and account logout does not mutate projects or AI keys. See
+[Desktop authentication](AUTHENTICATION.md).
+
+Authentication is not an entitlement boundary and does not gate Community
+features. Billing, licensing, subscriptions, hosted services, and authoritative
+entitlements remain outside this repository phase.
+
 ## Lifecycle and safety
 
 Detach and shutdown cancel jobs, wait for the worker, clear database and panel
@@ -174,3 +193,9 @@ atomic replacement, target mismatch/missing handling, session rebasing, and
 denied-access messaging. Controlled Version Intelligence fixtures cover indexed
 matching, ambiguity, false positives, deterministic changes, relationship-aware
 migrations, cancellation, and persisted decisions.
+
+`OpenReverse.Auth` runs without provider network access. It covers RFC 7636
+vectors, cryptographic verifier/state properties, strict callback parsing,
+credential-field injection, state mismatch, replay, timeout, cancellation,
+exchange and refresh failures, logout, loopback binding, and isolated Windows
+Credential Manager store/read/replace/delete behavior.

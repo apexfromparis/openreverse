@@ -38,6 +38,8 @@ modules, and optional AI context visible together.
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
+- Optional native account foundation using Authorization Code + PKCE S256,
+  loopback-only callbacks, and separate Windows account credential storage
 - Versioned Windows x64 native extension API with bounded manifests, read-only
   analysis queries, controlled commands/navigation/panels, and extension-owned
   `.orev` state
@@ -105,6 +107,7 @@ Outputs are written to `build/windows-x64/bin/Release/`:
 - `OpenReverse.exe`
 - `OpenReverse-2.0.0-Setup.exe`
 - `OpenReverseCoreTests.exe`
+- `OpenReverseAuthTests.exe`
 - `OpenReverseTestFixture.exe`
 
 See [Building](docs/BUILDING.md) for details.
@@ -135,6 +138,11 @@ Because this is a Windows GUI-subsystem executable, automation should use
 The [architecture](docs/ARCHITECTURE.md) and
 [analysis pipeline](docs/ANALYSIS_PIPELINE.md) documents describe target
 ownership, scheduling, and analysis boundaries.
+
+Account authentication is optional and never gates Community analysis. Its
+native PKCE flow, loopback callback, secure storage, and current provider-
+configuration blocker are documented in
+[Desktop authentication](docs/AUTHENTICATION.md).
 
 AI is optional. Selected context may include target names, disassembly,
 strings, and generated summaries. Remote endpoints must use HTTPS; plaintext
