@@ -12,6 +12,7 @@
 #include "core/analysis_database.h"
 #include "core/analysis_session.h"
 #include "core/dump_loader.h"
+#include "extensions/extension_manager.h"
 
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
@@ -64,6 +65,7 @@ public:
     AnalysisScheduler analysisScheduler;
     AnalysisSession  analysisSession;
     AnalysisDatabase& analysisDatabase;
+    extensions::ExtensionManager extensionManager;
     ai::AIService    aiService;
     panels::AnalysisPanel analysisPanel;
     OpenReverseEditorPanel openReverseEditorPanel;
@@ -91,6 +93,7 @@ public:
     void ShowOpenDumpDialog();
     void ShowOpenProjectDialog();
     void RestoreProjectUiAfterAnalysis();
+    void NotifyExtensionsSessionChanged();
     void NavigateToAddress(uint64_t address);
 
     std::string      loadedFilePath;
@@ -137,6 +140,7 @@ private:
     bool             showBookmarks_ = false;
     bool             showConsole_ = false;
     bool             showVersionIntelligence_ = false;
+    bool             showExtensions_ = false;
     bool             showDumpImportModal_ = false;
     bool             requestDumpImportPopup_ = false;
     std::string      pendingDumpPath_;
@@ -154,6 +158,8 @@ private:
     void RenderStatusBar();
     void RenderDockspace();
     void RenderDumpImportDialog();
+    void RenderExtensionPanels();
+    void RenderExtensionsWindow();
     bool ShowProjectTargetDialog(std::string& filePath) const;
 };
 

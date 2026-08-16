@@ -150,6 +150,7 @@ void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult r
     if (!functions_.empty())
         SelectFunction(app, functions_[0].startAddress);
     app.RestoreProjectUiAfterAnalysis();
+    app.NotifyExtensionsSessionChanged();
 }
 
 void AnalysisPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs)

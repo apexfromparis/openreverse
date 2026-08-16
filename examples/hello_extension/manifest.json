@@ -1,0 +1,16 @@
+{
+  "id": "org.openreverse.hello",
+  "name": "OpenReverse Hello Extension",
+  "version": "0.1.0",
+  "api_version": 1,
+  "minimum_openreverse_version": "2.0.0",
+  "author": "OpenReverse Community",
+  "description": "Minimal read-only extension API example.",
+  "entrypoint": "OpenReverseHelloExtension.dll",
+  "capabilities": [
+    "analysis.read",
+    "navigation",
+    "ui.panel",
+    "ui.command"
+  ]
+}

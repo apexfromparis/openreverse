@@ -364,6 +364,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 const int result = SHCreateDirectoryExA(nullptr, g_ctx.installDir.c_str(), nullptr);
                 if (result != ERROR_SUCCESS && result != ERROR_FILE_EXISTS && result != ERROR_ALREADY_EXISTS)
                     FailOperation(hwnd, 1, L"The installation directory could not be created.");
+                else
+                {
+                    const std::string extensionDirectory = g_ctx.installDir + "\\extensions";
+                    const int extensionResult = SHCreateDirectoryExA(nullptr,
+                        extensionDirectory.c_str(), nullptr);
+                    if (extensionResult != ERROR_SUCCESS && extensionResult != ERROR_FILE_EXISTS &&
+                        extensionResult != ERROR_ALREADY_EXISTS)
+                        FailOperation(hwnd, 1, L"The extensions directory could not be created.");
+                    else
+                        AppendLog(L"Create folder: " + Widen(extensionDirectory));
+                }
             }
             else if (g_ctx.step == 2)
             {

@@ -18,6 +18,8 @@
 #include "core/string_scanner.h"
 #include "core/version_intelligence.h"
 #include "core/xref_scanner.h"
+#include "extensions/extension_manifest.h"
+#include "extensions/extension_manager.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
 
@@ -30,12 +32,14 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <map>
 #include <vector>
 
 namespace {
@@ -163,6 +167,49 @@ std::vector<uint8_t> BuildMinimalPE64()
     std::memcpy(bytes.data() + 0x410, entryCode, sizeof(entryCode));
     bytes[0x750] = 0xA5;
     return bytes;
+}
+
+class TemporaryDirectory {
+public:
+    explicit TemporaryDirectory(const char* label)
+    {
+        path_ = std::filesystem::temp_directory_path() /
+            (std::string("openreverse-") + label + "-" +
+             std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+        std::filesystem::create_directories(path_);
+    }
+
+    ~TemporaryDirectory()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+
+    const std::filesystem::path& Path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+void WriteTextFile(const std::filesystem::path& path, const std::string& text)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!stream) throw std::runtime_error("test fixture file write failed");
+}
+
+std::string ExtensionManifestText(const std::string& id, const std::string& entrypoint,
+                                  uint32_t apiVersion = 1,
+                                  const std::string& minimumVersion = "2.0.0",
+                                  const std::string& capabilities =
+                                      "\"analysis.read\",\"navigation\",\"ui.panel\",\"ui.command\"")
+{
+    return "{\"id\":\"" + id + "\",\"name\":\"Fixture\",\"version\":\"0.1.0\"," +
+        "\"api_version\":" + std::to_string(apiVersion) +
+        ",\"minimum_openreverse_version\":\"" + minimumVersion +
+        "\",\"author\":\"Tests\",\"description\":\"Compatibility fixture\"," +
+        "\"entrypoint\":\"" + entrypoint + "\",\"capabilities\":[" + capabilities + "]}";
 }
 
 std::vector<uint8_t> BuildPE64WithRuntimeFunctions()
@@ -1565,6 +1612,8 @@ void TestProjectPersistence()
     migration.evidence = {"unique signature", "matching CFG"};
     project.user.migrations.push_back(migration);
     project.user.settings["address.display"] = "module+rva";
+    project.extensionState["org.openreverse.unknown"] =
+        "{\"schema_version\":3,\"items\":[1,\"preserved\"]}";
     project.ui.currentRva = 0x210;
     project.ui.workspace = "editor";
     project.ui.openPanels = {"analysis", "bookmarks", "console"};
@@ -1612,11 +1661,23 @@ void TestProjectPersistence()
            parsed.user.structures.size() == 1 && parsed.user.migrations.size() == 1 &&
            parsed.analysis.offsets.size() == 1 && parsed.analysis.signatures.size() == 1 &&
            parsed.user.settings.at("address.display") == "module+rva" &&
+           parsed.extensionState.at("org.openreverse.unknown") ==
+               "{\"items\":[1,\"preserved\"],\"schema_version\":3}" &&
            parsed.ui.currentRva == 0x210 && parsed.hasVersionComparison &&
            parsed.versionComparison.functions.size() == 1 &&
            parsed.versionComparison.functions[0].decisionNewRva == 0x240 &&
            parsed.versionComparison.migrations[0].decision == openreverse::VersionDecision::Rejected,
            "project round-trip preserves annotations, analysis evidence, decisions, settings, and UI");
+
+    std::string canonicalState;
+    Expect(openreverse::ProjectStore::ValidateExtensionState(
+               "org.openreverse.example", "{\"enabled\":true}", canonicalState, error) &&
+           canonicalState == "{\"enabled\":true}" &&
+           !openreverse::ProjectStore::ValidateExtensionState(
+               "../escape", "{}", canonicalState, error) &&
+           !openreverse::ProjectStore::ValidateExtensionState(
+               "org.openreverse.example", "[1,2,3]", canonicalState, error),
+           "extension project state requires a bounded object scoped by a canonical extension ID");
 
     auto legacyProject = project;
     legacyProject.hasVersionComparison = false;
@@ -1672,6 +1733,10 @@ void TestProjectPersistence()
     session.SetLoadedProject(project, projectPath, true);
     Expect(session.FindFunctionAnnotation(0x200) != nullptr && !session.IsDirty(),
            "analysis session owns restored project annotations without marking them dirty");
+    Expect(session.SetExtensionState("org.openreverse.example", "{\"value\":7}", error) &&
+           session.ExtensionState("org.openreverse.example") &&
+           *session.ExtensionState("org.openreverse.example") == "{\"value\":7}",
+           "analysis sessions own bounded extension state without understanding its schema");
     Expect(!session.SetVersionDecision("function:0x200", openreverse::VersionDecision::Accepted, 0x999) &&
            session.SetVersionDecision("function:0x200", openreverse::VersionDecision::Rejected) &&
            session.SetVersionDecision("function:0x200", openreverse::VersionDecision::Accepted, 0x240) &&
@@ -1748,6 +1813,196 @@ void TestDumpImportAndDeniedAccess()
            "denied process access reports safe offline alternatives without bypass guidance");
 }
 
+void TestExtensionBoundary()
+{
+    using namespace openreverse::extensions;
+    SemanticVersion version;
+    Expect(ParseSemanticVersion("1.2.3", version) && version.major == 1 &&
+           version.minor == 2 && version.patch == 3,
+           "extension semantic versions use an explicit three-component format");
+    Expect(!ParseSemanticVersion("1.2.3.4", version) &&
+           !ParseSemanticVersion("01.2.3", version),
+           "extension semantic versions reject extra and non-canonical components");
+    Expect(IsValidExtensionId("org.openreverse.example") &&
+           !IsValidExtensionId("../example") && !IsValidExtensionId("Upper.Example"),
+           "extension IDs reject traversal and non-canonical characters");
+
+    TemporaryDirectory fixtures("extension-boundary");
+    const auto root = fixtures.Path() / "extensions";
+    std::filesystem::create_directories(root);
+    const auto helloSource = std::filesystem::path(OPENREVERSE_TEST_HELLO_EXTENSION);
+    const auto missingEntrypointSource =
+        std::filesystem::path(OPENREVERSE_TEST_MISSING_ENTRYPOINT_EXTENSION);
+    const auto failingSource = std::filesystem::path(OPENREVERSE_TEST_FAILING_EXTENSION);
+    const auto stateSource = std::filesystem::path(OPENREVERSE_TEST_STATE_EXTENSION);
+    Expect(std::filesystem::is_regular_file(helloSource) &&
+           std::filesystem::is_regular_file(missingEntrypointSource) &&
+           std::filesystem::is_regular_file(failingSource) &&
+           std::filesystem::is_regular_file(stateSource),
+           "extension compatibility DLL fixtures were built");
+
+    const auto valid = root / "01-valid";
+    WriteTextFile(valid / "manifest.json",
+        ExtensionManifestText("org.openreverse.hello", "OpenReverseHelloExtension.dll"));
+    std::filesystem::copy_file(helloSource, valid / "OpenReverseHelloExtension.dll");
+
+    const auto state = root / "01b-state";
+    WriteTextFile(state / "manifest.json",
+        ExtensionManifestText("org.openreverse.state-fixture", "state.dll", 1, "2.0.0",
+                              "\"project.extension_state\""));
+    std::filesystem::copy_file(stateSource, state / "state.dll");
+
+    const auto duplicate = root / "02-duplicate";
+    WriteTextFile(duplicate / "manifest.json",
+        ExtensionManifestText("org.openreverse.hello", "duplicate.dll"));
+    WriteTextFile(root / "03-malformed" / "manifest.json", "{not-json");
+    WriteTextFile(root / "04-api" / "manifest.json",
+        ExtensionManifestText("org.openreverse.api", "api.dll", 99));
+    WriteTextFile(root / "05-host" / "manifest.json",
+        ExtensionManifestText("org.openreverse.host", "host.dll", 1, "99.0.0"));
+    WriteTextFile(root / "06-unknown" / "manifest.json",
+        ExtensionManifestText("org.openreverse.unknown", "unknown.dll", 1, "2.0.0",
+                              "\"unknown.capability\""));
+    WriteTextFile(root / "07-unsupported" / "manifest.json",
+        ExtensionManifestText("org.openreverse.network", "network.dll", 1, "2.0.0",
+                              "\"network\""));
+    WriteTextFile(root / "08-missing" / "manifest.json",
+        ExtensionManifestText("org.openreverse.missing", "missing.dll"));
+
+    const auto noEntrypoint = root / "09-entrypoint";
+    WriteTextFile(noEntrypoint / "manifest.json",
+        ExtensionManifestText("org.openreverse.noentry", "missing-entrypoint.dll", 1,
+                              "2.0.0", ""));
+    std::filesystem::copy_file(missingEntrypointSource, noEntrypoint / "missing-entrypoint.dll");
+
+    const auto failing = root / "10-failing";
+    WriteTextFile(failing / "manifest.json",
+        ExtensionManifestText("org.openreverse.failing", "failing.dll", 1, "2.0.0", ""));
+    std::filesystem::copy_file(failingSource, failing / "failing.dll");
+    WriteTextFile(root / "11-traversal" / "manifest.json",
+        ExtensionManifestText("org.openreverse.traversal", "..\\\\escape.dll"));
+    std::filesystem::copy_file(helloSource, root / "random-unmanifested.dll");
+
+    uint64_t navigatedAddress = 0;
+    std::map<std::string, std::string> projectState;
+    ExtensionHostServices services;
+    services.currentTarget = [](ExtensionTargetSnapshot& target) {
+        target.name = "fixture.exe";
+        target.path = "fixture.exe";
+        target.sha256 = std::string(64, 'a');
+        target.architecture = OPENREVERSE_ARCHITECTURE_X64;
+        target.imageBase = 0x140000000ULL;
+        target.imageSize = 0x3000;
+        target.currentAddress = 0x140001000ULL;
+        target.analysisRevision = 7;
+        target.peTimestamp = 0x12345678;
+        target.functionCount = 2;
+        return true;
+    };
+    services.functionByIndex = [](uint32_t index, ExtensionFunctionSnapshot& function) {
+        if (index >= 2) return false;
+        function.name = index == 0 ? "entry" : "helper";
+        function.address = 0x140001000ULL + index * 0x100;
+        function.rva = 0x1000 + index * 0x100;
+        function.size = 16;
+        function.instructionCount = 4;
+        function.basicBlockCount = 1;
+        function.directCallCount = 0;
+        function.boundaryKnown = true;
+        return true;
+    };
+    services.navigateToAddress = [&](uint64_t address) {
+        navigatedAddress = address;
+        return address >= 0x140000000ULL && address < 0x140003000ULL;
+    };
+    services.hasProject = []() { return true; };
+    services.projectPath = []() { return std::string("fixture.orev"); };
+    services.getExtensionState = [&](const std::string& id, std::string& state) {
+        const auto found = projectState.find(id);
+        if (found == projectState.end()) return false;
+        state = found->second;
+        return true;
+    };
+    services.setExtensionState = [&](const std::string& id, const std::string& state,
+                                     std::string&) {
+        projectState[id] = state;
+        return true;
+    };
+
+    ExtensionManager manager;
+    manager.Configure(services, {2, 0, 0});
+    Expect(!manager.DiscoverAndLoad(root),
+           "mixed valid and invalid extension directories report a bounded aggregate failure");
+    const auto loaded = manager.LoadedExtensions();
+    Expect(loaded.size() == 2 &&
+           std::any_of(loaded.begin(), loaded.end(), [](const LoadedExtensionInfo& extension) {
+               return extension.id == "org.openreverse.hello";
+           }) &&
+           std::any_of(loaded.begin(), loaded.end(), [](const LoadedExtensionInfo& extension) {
+               return extension.id == "org.openreverse.state-fixture";
+           }),
+           "only compatible manifest-backed extensions load");
+    Expect(projectState["org.openreverse.state-fixture"] ==
+               "{\"schema\":1,\"value\":\"fixture\"}",
+           "extension-specific project state crosses the ABI in both directions");
+    const auto hasDiagnostic = [&](ExtensionDiagnosticKind kind) {
+        return std::any_of(manager.Diagnostics().begin(), manager.Diagnostics().end(),
+            [&](const ExtensionDiagnostic& diagnostic) { return diagnostic.kind == kind; });
+    };
+    Expect(hasDiagnostic(ExtensionDiagnosticKind::DuplicateId) &&
+           hasDiagnostic(ExtensionDiagnosticKind::ManifestError) &&
+           hasDiagnostic(ExtensionDiagnosticKind::IncompatibleApi) &&
+           hasDiagnostic(ExtensionDiagnosticKind::IncompatibleHost) &&
+           hasDiagnostic(ExtensionDiagnosticKind::UnsupportedCapability) &&
+           hasDiagnostic(ExtensionDiagnosticKind::MissingModule) &&
+           hasDiagnostic(ExtensionDiagnosticKind::MissingEntrypoint) &&
+           hasDiagnostic(ExtensionDiagnosticKind::InitializationFailure),
+           "extension diagnostics distinguish all compatibility and initialization failures");
+
+    const auto commands = manager.Commands();
+    bool available = false;
+    std::string error;
+    Expect(commands.size() == 1 &&
+           manager.IsCommandAvailable(commands[0].id, available, error) == OPENREVERSE_OK &&
+           available && manager.ExecuteCommand(commands[0].id, error) == OPENREVERSE_OK &&
+           navigatedAddress == 0x140001000ULL,
+           "the example command queries analysis and requests controlled navigation");
+    const auto panels = manager.Panels();
+    std::string panelText;
+    Expect(panels.size() == 1 &&
+           manager.RenderPanelText(panels[0].id, panelText, error) == OPENREVERSE_OK &&
+           panelText.find("Detected functions: 2") != std::string::npos,
+           "the example panel returns bounded host-rendered UTF-8 text");
+    manager.NotifySessionChanged(9, true);
+    Expect(hasDiagnostic(ExtensionDiagnosticKind::CallbackFailure),
+           "a failing lifecycle callback is diagnosed without corrupting the host");
+    manager.NotifyProjectOpened();
+    manager.NotifyProjectClosed();
+    manager.Shutdown();
+
+    const auto emptyRoot = fixtures.Path() / "empty";
+    std::filesystem::create_directories(emptyRoot);
+    ExtensionManager emptyManager;
+    emptyManager.Configure(services, {2, 0, 0});
+    Expect(emptyManager.DiscoverAndLoad(emptyRoot) && emptyManager.LoadedExtensions().empty(),
+           "Community operates normally with zero installed extensions");
+
+    const auto callbackRoot = fixtures.Path() / "callback" / "valid";
+    WriteTextFile(callbackRoot / "manifest.json",
+        ExtensionManifestText("org.openreverse.hello", "OpenReverseHelloExtension.dll"));
+    std::filesystem::copy_file(helloSource, callbackRoot / "OpenReverseHelloExtension.dll");
+    ExtensionHostServices unavailableServices = services;
+    unavailableServices.currentTarget = [](ExtensionTargetSnapshot&) { return false; };
+    ExtensionManager callbackManager;
+    callbackManager.Configure(std::move(unavailableServices), {2, 0, 0});
+    Expect(callbackManager.DiscoverAndLoad(callbackRoot.parent_path()) &&
+           callbackManager.IsCommandAvailable("org.openreverse.hello.navigate-first",
+                                              available, error) ==
+               OPENREVERSE_ERROR_NO_ACTIVE_SESSION && !available,
+           "extension callback failures remain structured and do not corrupt the host");
+    callbackManager.Shutdown();
+}
+
 } // namespace
 
 int main()
@@ -1773,6 +2028,7 @@ int main()
     TestVersionIntelligence();
     TestProjectPersistence();
     TestDumpImportAndDeniedAccess();
+    TestExtensionBoundary();
 
     if (failures != 0)
     {

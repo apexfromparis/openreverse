@@ -53,6 +53,73 @@ std::string EnsureProjectExtension(std::string path)
 Application::Application()
     : analysisDatabase(analysisSession.Database())
 {
+    extensions::ExtensionHostServices services;
+    services.currentTarget = [this](extensions::ExtensionTargetSnapshot& snapshot) {
+        const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
+        if (!analysis && !analysisDatabase.GetModules().empty())
+            analysis = &analysisDatabase.GetModules().begin()->second;
+        if (!analysis) return false;
+        snapshot.name = analysis->module.name;
+        snapshot.path = analysis->module.path;
+        snapshot.sha256 = analysis->identity.sha256;
+        snapshot.architecture = analysis->is64Bit
+            ? OPENREVERSE_ARCHITECTURE_X64 : OPENREVERSE_ARCHITECTURE_X86;
+        snapshot.imageBase = analysis->module.baseAddress;
+        snapshot.imageSize = analysis->module.size;
+        snapshot.currentAddress = currentAddress;
+        snapshot.analysisRevision = analysis->revision;
+        snapshot.peTimestamp = analysis->pe.timestamp;
+        snapshot.functionCount = static_cast<uint32_t>(std::min<size_t>(
+            analysis->functions.size(), (std::numeric_limits<uint32_t>::max)()));
+        return true;
+    };
+    services.functionByIndex = [this](uint32_t index, extensions::ExtensionFunctionSnapshot& snapshot) {
+        const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
+        if (!analysis && !analysisDatabase.GetModules().empty())
+            analysis = &analysisDatabase.GetModules().begin()->second;
+        if (!analysis || index >= analysis->functions.size()) return false;
+        const FunctionInfo& function = analysis->functions[index];
+        snapshot.name = function.name;
+        snapshot.address = function.startAddress;
+        snapshot.rva = function.startAddress >= analysis->module.baseAddress
+            ? function.startAddress - analysis->module.baseAddress : function.startAddress;
+        snapshot.size = function.size;
+        snapshot.instructionCount = static_cast<uint32_t>(std::min<size_t>(
+            function.cfg.decodedInstructionCount, (std::numeric_limits<uint32_t>::max)()));
+        snapshot.basicBlockCount = static_cast<uint32_t>(std::min<size_t>(
+            function.cfg.basicBlocks.size(), (std::numeric_limits<uint32_t>::max)()));
+        snapshot.directCallCount = static_cast<uint32_t>(std::min<size_t>(
+            function.callTargets.size(), (std::numeric_limits<uint32_t>::max)()));
+        snapshot.boundaryKnown = function.boundaryKnown;
+        return true;
+    };
+    services.navigateToAddress = [this](uint64_t address) {
+        const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(address);
+        if (!analysis) return false;
+        NavigateToAddress(address);
+        return true;
+    };
+    services.hasProject = [this]() { return analysisSession.HasProject(); };
+    services.projectPath = [this]() { return analysisSession.ProjectPath(); };
+    services.getExtensionState = [this](const std::string& id, std::string& state) {
+        const std::string* stored = analysisSession.ExtensionState(id);
+        if (!stored) return false;
+        state = *stored;
+        return true;
+    };
+    services.setExtensionState = [this](const std::string& id, const std::string& state,
+                                        std::string& error) {
+        return analysisSession.SetExtensionState(id, state, error);
+    };
+    extensionManager.Configure(std::move(services), {kVersionMajor, kVersionMinor, kVersionPatch});
+    extensionManager.DiscoverAndLoad(extensions::ExtensionManager::DefaultExtensionRoot());
+    for (const auto& diagnostic : extensionManager.Diagnostics())
+    {
+        const LogLevel level = diagnostic.kind == extensions::ExtensionDiagnosticKind::Loaded
+            ? LogLevel::Info : LogLevel::Warning;
+        Logger::Get().Log(level, "Extension %s: %s", diagnostic.extensionId.empty()
+            ? "discovery" : diagnostic.extensionId.c_str(), diagnostic.message.c_str());
+    }
     Logger::Get().Log(LogLevel::Info, "OpenReverse initialized. Ready to analyze.");
 }
 
@@ -68,11 +135,14 @@ void Application::Shutdown()
     shutdown_ = true;
     analysisScheduler.Shutdown();
     DetachFromProcess();
+    if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
+    extensionManager.Shutdown();
 }
 
 bool Application::AttachToProcess(DWORD pid)
 {
     DetachFromProcess();
+    if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
     analysisSession.ClearProject();
 
     processHandle = processManager.OpenProcess(pid);
@@ -107,6 +177,8 @@ bool Application::AttachToProcess(DWORD pid)
 
     Logger::Get().Log(LogLevel::Info, "Attached to %s (PID: %d, %s)",
         attachedProcessName.c_str(), pid, is64Bit ? "x64" : "x86");
+
+    extensionManager.NotifySessionChanged(targetGeneration, true);
 
     return true;
 }
@@ -143,6 +215,7 @@ void Application::DetachFromProcess()
     offlinePEInfo = PEInfo{};
     is64Bit = false;
     currentAddress = 0;
+    extensionManager.NotifySessionChanged(targetGeneration, false);
 }
 
 void Application::ShowOpenFileDialog()
@@ -291,6 +364,7 @@ bool Application::OpenProjectFile(const std::string& filePath)
     }
 
     project.target.path = targetPath;
+    if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
     analysisSession.SetLoadedProject(std::move(project), filePath, restoreTargetBoundState);
     openingProjectTarget_ = true;
     bool opened = false;
@@ -321,6 +395,7 @@ bool Application::OpenProjectFile(const std::string& filePath)
         analysisSession.ClearProject();
         return false;
     }
+    extensionManager.NotifyProjectOpened();
     Logger::Get().Log(LogLevel::Info, "Opened OpenReverse project: %s%s", filePath.c_str(),
         restoreTargetBoundState ? "" : " (changed target; annotations not restored)");
     return true;
@@ -411,7 +486,9 @@ bool Application::SaveProjectFile(bool saveAs)
         MessageBoxA(nullptr, error.c_str(), "Save OpenReverse project", MB_OK | MB_ICONERROR);
         return false;
     }
+    const bool hadProject = analysisSession.HasProject();
     analysisSession.MarkSaved(std::move(project), outputPath);
+    if (!hadProject) extensionManager.NotifyProjectOpened();
     Logger::Get().Log(LogLevel::Info, "Saved OpenReverse project: %s", outputPath.c_str());
     return true;
 }
@@ -421,7 +498,11 @@ bool Application::OpenBinaryFile(const std::string& filePath)
     try
     {
         DetachFromProcess();
-        if (!openingProjectTarget_) analysisSession.ClearProject();
+        if (!openingProjectTarget_)
+        {
+            if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
+            analysisSession.ClearProject();
+        }
         std::cout << "[*] Parsing PE headers and mapping sections..." << std::endl;
 
         std::vector<uint8_t> rawFile;
@@ -450,6 +531,7 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         targetKind = AnalysisTargetKind::PEFile;
         attachedPID = 0;
         currentAddress = info.imageBase + info.entryPoint;
+        extensionManager.NotifySessionChanged(targetGeneration, true);
 
         memoryReader.SetOfflineBuffer(&offlineImageBuffer, info.imageBase);
         disassembler.Init(is64Bit);
@@ -564,7 +646,11 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
         }
 
         DetachFromProcess();
-        if (!openingProjectTarget_) analysisSession.ClearProject();
+        if (!openingProjectTarget_)
+        {
+            if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
+            analysisSession.ClearProject();
+        }
 
         loadedFilePath = filePath;
         attachedProcessName = dump.module.name;
@@ -579,6 +665,7 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
         offlineImageBuffer = std::move(dump.imageBytes);
         offlinePEInfo = dump.pe;
         currentAddress = dump.pe.imageBase + dump.pe.entryPoint;
+        extensionManager.NotifySessionChanged(targetGeneration, true);
         memoryReader.SetOfflineBuffer(&offlineImageBuffer, dump.pe.imageBase);
         disassembler.Init(is64Bit);
         moduleManager.Clear();
@@ -698,8 +785,76 @@ void Application::Render()
     if (isDevMode || showBookmarks_) bookmarksPanel.Render(*this);
     if (isDevMode || showConsole_) consolePanel.Render(*this);
     if (showVersionIntelligence_) versionIntelligencePanel.Render(*this, &showVersionIntelligence_);
+    RenderExtensionPanels();
+    if (showExtensions_) RenderExtensionsWindow();
 
     RenderStatusBar();
+}
+
+void Application::RenderExtensionPanels()
+{
+    for (const auto& panel : extensionManager.Panels())
+    {
+        if (!panel.visible) continue;
+        bool visible = panel.visible;
+        const std::string windowTitle = panel.title + "###extension-panel-" + panel.id;
+        if (ImGui::Begin(windowTitle.c_str(), &visible))
+        {
+            std::string text;
+            std::string error;
+            if (extensionManager.RenderPanelText(panel.id, text, error) == OPENREVERSE_OK)
+                ImGui::TextUnformatted(text.c_str());
+            else
+                ImGui::TextColored(ImVec4(0.94f, 0.28f, 0.28f, 1.0f), "%s", error.c_str());
+        }
+        ImGui::End();
+        if (visible != panel.visible) extensionManager.SetPanelVisible(panel.id, visible);
+    }
+}
+
+void Application::RenderExtensionsWindow()
+{
+    if (!ImGui::Begin("Extensions", &showExtensions_))
+    {
+        ImGui::End();
+        return;
+    }
+    ImGui::Text("Extension API v%u", OPENREVERSE_EXTENSION_API_VERSION);
+    ImGui::TextDisabled("Native extensions run in-process and must be trusted.");
+    ImGui::Separator();
+    const auto loaded = extensionManager.LoadedExtensions();
+    ImGui::Text("Loaded extensions: %zu", loaded.size());
+    for (const auto& extension : loaded)
+        ImGui::BulletText("%s %u.%u.%u (%s)", extension.name.c_str(), extension.version.major,
+            extension.version.minor, extension.version.patch, extension.id.c_str());
+    ImGui::Separator();
+    ImGui::TextUnformatted("Load diagnostics");
+    if (ImGui::BeginTable("ExtensionDiagnostics", 3,
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
+    {
+        ImGui::TableSetupColumn("Extension");
+        ImGui::TableSetupColumn("Status");
+        ImGui::TableSetupColumn("Message");
+        ImGui::TableHeadersRow();
+        for (const auto& diagnostic : extensionManager.Diagnostics())
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(diagnostic.extensionId.empty() ? "Discovery" :
+                diagnostic.extensionId.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(extensions::ExtensionDiagnosticKindName(diagnostic.kind));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextWrapped("%s", diagnostic.message.c_str());
+        }
+        ImGui::EndTable();
+    }
+    ImGui::End();
+}
+
+void Application::NotifyExtensionsSessionChanged()
+{
+    extensionManager.NotifySessionChanged(targetGeneration, isAttached);
 }
 
 void Application::RenderDumpImportDialog()
@@ -1141,6 +1296,19 @@ void Application::RenderMenuBar()
         ImGui::MenuItem("Bookmarks", nullptr, &showBookmarks_);
         ImGui::MenuItem("Console", nullptr, &showConsole_);
         ImGui::MenuItem("Version Intelligence", nullptr, &showVersionIntelligence_);
+        const auto extensionPanels = extensionManager.Panels();
+        if (!extensionPanels.empty() && ImGui::BeginMenu("Extension panels"))
+        {
+            for (const auto& panel : extensionPanels)
+            {
+                bool visible = panel.visible;
+                ImGui::PushID(panel.id.c_str());
+                if (ImGui::MenuItem(panel.title.c_str(), nullptr, &visible))
+                    extensionManager.SetPanelVisible(panel.id, visible);
+                ImGui::PopID();
+            }
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
 
@@ -1173,6 +1341,26 @@ void Application::RenderMenuBar()
         if (ImGui::MenuItem("AI Assistant")) ImGui::SetWindowFocus("AI ASSISTANT");
         ImGui::Separator();
         if (ImGui::MenuItem("AI Settings...")) aiCopilotPanel.OpenSettings();
+        if (ImGui::MenuItem("Extensions...")) showExtensions_ = true;
+        const auto extensionCommands = extensionManager.Commands();
+        if (!extensionCommands.empty() && ImGui::BeginMenu("Extension commands"))
+        {
+            for (const auto& command : extensionCommands)
+            {
+                bool available = false;
+                std::string error;
+                extensionManager.IsCommandAvailable(command.id, available, error);
+                ImGui::PushID(command.id.c_str());
+                if (ImGui::MenuItem(command.displayName.c_str(), nullptr, false, available))
+                {
+                    if (extensionManager.ExecuteCommand(command.id, error) != OPENREVERSE_OK)
+                        Logger::Get().Log(LogLevel::Warning, "Extension command %s: %s",
+                            command.id.c_str(), error.c_str());
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
 

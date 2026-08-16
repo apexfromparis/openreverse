@@ -1,9 +1,14 @@
 #pragma once
 
+#include <cstdint>
+
 namespace openreverse {
 
 inline constexpr char kVersion[] = "@PROJECT_VERSION@";
 inline constexpr wchar_t kVersionWide[] = L"@PROJECT_VERSION@";
+inline constexpr uint32_t kVersionMajor = @PROJECT_VERSION_MAJOR@;
+inline constexpr uint32_t kVersionMinor = @PROJECT_VERSION_MINOR@;
+inline constexpr uint32_t kVersionPatch = @PROJECT_VERSION_PATCH@;
 inline constexpr char kInstallerFileName[] = "OpenReverse-@PROJECT_VERSION@-Setup.exe";
 
 } // namespace openreverse

@@ -111,6 +111,7 @@ struct OpenReverseProject {
     ProjectAnalysisState analysis;
     ProjectUserState user;
     ProjectUiState ui;
+    std::map<std::string, std::string> extensionState;
     bool hasVersionComparison = false;
     VersionComparison versionComparison;
 };
@@ -143,6 +144,10 @@ public:
                                                    const std::string& pathOverride = {});
     static bool ComputeFileSha256(const std::string& path, std::string& sha256,
                                   std::string& error);
+    static bool ValidateExtensionState(const std::string& extensionId,
+                                       const std::string& jsonObject,
+                                       std::string& canonicalJson,
+                                       std::string& error);
 };
 
 } // namespace openreverse

@@ -113,6 +113,7 @@ OpenReverseProject AnalysisSession::BuildSnapshot(const ProjectTarget& target,
         snapshot.hasVersionComparison = true;
         snapshot.versionComparison = project_.versionComparison;
     }
+    if (hasProject_) snapshot.extensionState = project_.extensionState;
     snapshot.analysis.offsets = analysis.offsets;
     snapshot.analysis.signatures = analysis.signatures;
     snapshot.analysis.structures.reserve(analysis.structures.size());
@@ -329,6 +330,32 @@ bool AnalysisSession::SetVersionDecision(const std::string& stableId, VersionDec
         }
         project_.user.migrations.push_back(std::move(persisted));
     }
+    MarkDirty();
+    return true;
+}
+
+const std::string* AnalysisSession::ExtensionState(const std::string& extensionId) const
+{
+    if (!hasProject_) return nullptr;
+    const auto found = project_.extensionState.find(extensionId);
+    return found == project_.extensionState.end() ? nullptr : &found->second;
+}
+
+bool AnalysisSession::SetExtensionState(const std::string& extensionId,
+                                        const std::string& jsonObject,
+                                        std::string& error)
+{
+    if (!hasProject_)
+    {
+        error = "No active OpenReverse project";
+        return false;
+    }
+    std::string canonical;
+    if (!ProjectStore::ValidateExtensionState(extensionId, jsonObject, canonical, error))
+        return false;
+    const auto found = project_.extensionState.find(extensionId);
+    if (found != project_.extensionState.end() && found->second == canonical) return true;
+    project_.extensionState[extensionId] = std::move(canonical);
     MarkDirty();
     return true;
 }

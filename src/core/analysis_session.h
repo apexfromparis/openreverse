@@ -47,6 +47,10 @@ public:
     bool SetVersionDecision(const std::string& stableId, VersionDecision decision,
                             uint64_t selectedNewRva = 0);
 
+    const std::string* ExtensionState(const std::string& extensionId) const;
+    bool SetExtensionState(const std::string& extensionId, const std::string& jsonObject,
+                           std::string& error);
+
 private:
     AnalysisDatabase database_;
     OpenReverseProject project_;

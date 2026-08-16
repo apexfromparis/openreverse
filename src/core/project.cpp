@@ -27,6 +27,10 @@ constexpr size_t kMaximumStructureFields = 200000;
 constexpr size_t kMaximumMigrations = 100000;
 constexpr size_t kMaximumSettings = 256;
 constexpr size_t kMaximumPanels = 64;
+constexpr size_t kMaximumExtensionStates = 128;
+constexpr size_t kMaximumExtensionStateBytes = 256 * 1024;
+constexpr size_t kMaximumExtensionStateNodes = 10000;
+constexpr size_t kMaximumExtensionStateDepth = 16;
 constexpr size_t kMaximumComparisonFunctions = 200000;
 constexpr size_t kMaximumComparisonCandidates = 1000000;
 constexpr size_t kMaximumComparisonMigrations = 400000;
@@ -99,6 +103,76 @@ bool EqualDigest(const std::string& left, const std::string& right)
             std::tolower(static_cast<unsigned char>(left[index])) ^
             std::tolower(static_cast<unsigned char>(right[index])));
     return difference == 0;
+}
+
+bool IsExtensionId(const std::string& id)
+{
+    if (id.size() < 3 || id.size() > 128 ||
+        !std::isalnum(static_cast<unsigned char>(id.front())))
+        return false;
+    bool previousDot = false;
+    for (unsigned char character : id)
+    {
+        const bool dot = character == '.';
+        if (!(std::islower(character) || std::isdigit(character) || dot || character == '-'))
+            return false;
+        if (dot && previousDot) return false;
+        previousDot = dot;
+    }
+    return !previousDot && id.find('.') != std::string::npos;
+}
+
+bool ValidateExtensionStateNode(const json& value, size_t depth, size_t& nodes)
+{
+    if (depth > kMaximumExtensionStateDepth || ++nodes > kMaximumExtensionStateNodes)
+        return false;
+    if (value.is_string()) return value.get_ref<const std::string&>().size() <= kMaximumCommentLength;
+    if (value.is_number_float()) return std::isfinite(value.get<double>());
+    if (value.is_array())
+    {
+        if (value.size() > 4096) return false;
+        for (const auto& child : value)
+            if (!ValidateExtensionStateNode(child, depth + 1, nodes)) return false;
+    }
+    else if (value.is_object())
+    {
+        if (value.size() > 4096) return false;
+        for (const auto& [key, child] : value.items())
+            if (key.size() > kMaximumNameLength ||
+                !ValidateExtensionStateNode(child, depth + 1, nodes)) return false;
+    }
+    return !value.is_binary() && !value.is_discarded();
+}
+
+bool ParseExtensionState(const std::string& extensionId, const std::string& text,
+                         json& state, std::string& error)
+{
+    if (!IsExtensionId(extensionId))
+    {
+        error = "Extension state ID is invalid";
+        return false;
+    }
+    if (text.empty() || text.size() > kMaximumExtensionStateBytes)
+    {
+        error = "Extension state is empty or exceeds 256 KiB";
+        return false;
+    }
+    try
+    {
+        state = json::parse(text);
+    }
+    catch (const std::exception& exception)
+    {
+        error = std::string("Extension state JSON is invalid: ") + exception.what();
+        return false;
+    }
+    size_t nodes = 0;
+    if (!state.is_object() || !ValidateExtensionStateNode(state, 0, nodes))
+    {
+        error = "Extension state must be a bounded JSON object";
+        return false;
+    }
+    return true;
 }
 
 bool FinishSha256(BCRYPT_ALG_HANDLE algorithm, BCRYPT_HASH_HANDLE hash,
@@ -454,6 +528,16 @@ json BuildProjectRoot(const OpenReverseProject& project)
         });
     }
 
+    json extensionState = json::object();
+    for (const auto& [extensionId, stateText] : project.extensionState)
+    {
+        json state;
+        std::string error;
+        if (!ParseExtensionState(extensionId, stateText, state, error))
+            throw std::runtime_error(error);
+        extensionState[extensionId] = std::move(state);
+    }
+
     json root = {
         {"format", "openreverse-project"},
         {"version", project.version},
@@ -483,7 +567,8 @@ json BuildProjectRoot(const OpenReverseProject& project)
             {"current_rva", Hex(project.ui.currentRva)},
             {"workspace", project.ui.workspace},
             {"open_panels", project.ui.openPanels}
-        }}
+        }},
+        {"extensions", std::move(extensionState)}
     };
     if (project.hasVersionComparison)
         root["version_intelligence"] = VersionComparisonJson(project.versionComparison);
@@ -828,6 +913,21 @@ bool ParseProjectRoot(const json& root, OpenReverseProject& project, std::string
             throw std::runtime_error("Version Intelligence state is invalid, unsupported, or exceeds limits");
         project.hasVersionComparison = true;
     }
+    if (root.contains("extensions"))
+    {
+        const auto& extensions = root["extensions"];
+        if (!extensions.is_object() || extensions.size() > kMaximumExtensionStates)
+            throw std::runtime_error("Extension state collection is invalid or exceeds limits");
+        for (const auto& [extensionId, stateValue] : extensions.items())
+        {
+            const std::string stateText = stateValue.dump();
+            json validated;
+            std::string stateError;
+            if (!ParseExtensionState(extensionId, stateText, validated, stateError))
+                throw std::runtime_error(stateError);
+            project.extensionState.emplace(extensionId, validated.dump());
+        }
+    }
     return true;
 }
 
@@ -868,6 +968,19 @@ bool ProjectStore::Serialize(const OpenReverseProject& project, std::string& jso
         error = std::string("Could not serialize OpenReverse project: ") + exception.what();
         return false;
     }
+}
+
+bool ProjectStore::ValidateExtensionState(const std::string& extensionId,
+                                          const std::string& jsonObject,
+                                          std::string& canonicalJson,
+                                          std::string& error)
+{
+    canonicalJson.clear();
+    error.clear();
+    json state;
+    if (!ParseExtensionState(extensionId, jsonObject, state, error)) return false;
+    canonicalJson = state.dump();
+    return canonicalJson.size() <= kMaximumExtensionStateBytes;
 }
 
 bool ProjectStore::Parse(const std::string& jsonText, OpenReverseProject& project,

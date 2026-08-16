@@ -67,6 +67,7 @@ add_executable(OpenReverse WIN32
 
 target_include_directories(OpenReverse PRIVATE
     src
+    sdk/include
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${capstone_SOURCE_DIR}/include
 )
@@ -175,11 +176,14 @@ if(BUILD_TESTING)
         src/core/string_scanner.cpp
         src/core/version_intelligence.cpp
         src/core/xref_scanner.cpp
+        src/extensions/extension_manifest.cpp
+        src/extensions/extension_manager.cpp
         src/utils/helpers.cpp
         src/utils/logger.cpp
     )
     target_include_directories(OpenReverseCoreTests PRIVATE
         src
+        sdk/include
         ${capstone_SOURCE_DIR}/include
     )
     target_link_libraries(OpenReverseCoreTests PRIVATE
@@ -200,5 +204,62 @@ if(BUILD_TESTING)
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
     set_target_properties(OpenReverseTestFixture PROPERTIES
         OUTPUT_NAME "OpenReverseTestFixture"
+    )
+
+    add_library(OpenReverseHelloExtension MODULE
+        examples/hello_extension/hello_extension.cpp
+    )
+    target_include_directories(OpenReverseHelloExtension PRIVATE sdk/include)
+    target_compile_definitions(OpenReverseHelloExtension PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(OpenReverseHelloExtension PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "OpenReverseHelloExtension"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/sdk-examples"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/sdk-examples"
+    )
+
+    add_library(OpenReverseMissingEntrypointExtension MODULE
+        tests/fixtures/extensions/missing_entrypoint.cpp
+    )
+    set_target_properties(OpenReverseMissingEntrypointExtension PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "OpenReverseMissingEntrypointExtension"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
+    )
+
+    add_library(OpenReverseFailingExtension MODULE
+        tests/fixtures/extensions/failing_extension.cpp
+    )
+    target_include_directories(OpenReverseFailingExtension PRIVATE sdk/include)
+    target_compile_definitions(OpenReverseFailingExtension PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(OpenReverseFailingExtension PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "OpenReverseFailingExtension"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
+    )
+
+    add_library(OpenReverseStateExtension MODULE
+        tests/fixtures/extensions/state_extension.cpp
+    )
+    target_include_directories(OpenReverseStateExtension PRIVATE sdk/include)
+    target_compile_definitions(OpenReverseStateExtension PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(OpenReverseStateExtension PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "OpenReverseStateExtension"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
+    )
+
+    add_dependencies(OpenReverseCoreTests OpenReverseHelloExtension
+        OpenReverseMissingEntrypointExtension OpenReverseFailingExtension
+        OpenReverseStateExtension)
+    target_compile_definitions(OpenReverseCoreTests PRIVATE
+        OPENREVERSE_TEST_HELLO_EXTENSION="$<TARGET_FILE:OpenReverseHelloExtension>"
+        OPENREVERSE_TEST_MISSING_ENTRYPOINT_EXTENSION="$<TARGET_FILE:OpenReverseMissingEntrypointExtension>"
+        OPENREVERSE_TEST_FAILING_EXTENSION="$<TARGET_FILE:OpenReverseFailingExtension>"
+        OPENREVERSE_TEST_STATE_EXTENSION="$<TARGET_FILE:OpenReverseStateExtension>"
+        OPENREVERSE_TEST_HELLO_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/examples/hello_extension/manifest.json"
     )
 endif()
