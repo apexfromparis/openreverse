@@ -6,6 +6,7 @@
 #include "core/signature_engine.h"
 #include "core/analysis_scheduler.h"
 #include "core/analysis_database.h"
+#include "core/analysis_session.h"
 #include "core/data_analyzer.h"
 #include "core/function_analyzer.h"
 #include "core/memory_reader.h"
@@ -13,7 +14,9 @@
 #include "core/pattern_scanner.h"
 #include "core/pe_parser.h"
 #include "core/process_manager.h"
+#include "core/project.h"
 #include "core/string_scanner.h"
+#include "core/version_intelligence.h"
 #include "core/xref_scanner.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
@@ -1185,6 +1188,514 @@ void TestBinaryDiffAndMigration()
            "equally strong migration matches remain explicitly ambiguous");
 }
 
+openreverse::FunctionInfo NamedFunction(std::initializer_list<uint8_t> code, uint64_t address,
+                                        const char* name)
+{
+    auto function = AnalyzeCFG(std::vector<uint8_t>(code), address);
+    function.name = name;
+    function.boundaryKnown = true;
+    function.size = function.analyzedSize;
+    return function;
+}
+
+void TestVersionIntelligence()
+{
+    const uint64_t oldBase = 0x140000000ULL;
+    const uint64_t newBase = 0x180000000ULL;
+    openreverse::VersionAnalysisTarget oldTarget;
+    openreverse::VersionAnalysisTarget newTarget;
+    oldTarget.identity = {"build-a.exe", "", std::string(64, 'a'), "x64", 1, 0x3000, oldBase};
+    newTarget.identity = {"build-b.exe", "", std::string(64, 'b'), "x64", 2, 0x3000, newBase};
+    oldTarget.analysis.module = {"build-a.exe", "", oldBase, 0x3000};
+    newTarget.analysis.module = {"build-b.exe", "", newBase, 0x3000};
+    oldTarget.analysis.is64Bit = true;
+    newTarget.analysis.is64Bit = true;
+
+    auto movedOld = NamedFunction({0x85, 0xC9, 0x74, 0x01, 0xC3, 0xC3}, oldBase + 0x1000, "moved");
+    auto movedNew = NamedFunction({0x85, 0xC9, 0x74, 0x01, 0xC3, 0xC3}, newBase + 0x1100, "moved_v2");
+    auto changedOld = NamedFunction({0x48, 0x83, 0xC0, 0x01, 0xC3}, oldBase + 0x1200, "changed");
+    auto changedNew = NamedFunction({0x48, 0x83, 0xC0, 0x01, 0x90, 0xC3}, newBase + 0x1250, "changed_v2");
+    auto cfgOld = NamedFunction({0x85, 0xC9, 0x74, 0x02, 0x31, 0xC0, 0xC3}, oldBase + 0x1300, "cfg_old");
+    auto cfgNew = NamedFunction({0x85, 0xC9, 0x75, 0x02, 0x31, 0xC0, 0xC3}, newBase + 0x1350, "cfg_new");
+    auto stringOld = NamedFunction({0x48, 0x31, 0xC0, 0xC3}, oldBase + 0x1400, "shared_string_old");
+    auto stringUnrelated = NamedFunction({0x48, 0xFF, 0xC1, 0xC3}, newBase + 0x1450, "shared_string_unrelated");
+    auto ambiguousOld = NamedFunction({0x31, 0xC0, 0xC3}, oldBase + 0x1500, "ambiguous");
+    auto ambiguousA = NamedFunction({0x31, 0xC0, 0xC3}, newBase + 0x1550, "ambiguous_a");
+    auto ambiguousB = NamedFunction({0x31, 0xC0, 0xC3}, newBase + 0x1580, "ambiguous_b");
+    auto removed = NamedFunction({0x0F, 0x31, 0x48, 0x31, 0xD2, 0xC3}, oldBase + 0x1600, "removed");
+    auto added = NamedFunction({0x48, 0xF7, 0xD1, 0xC3}, newBase + 0x1650, "new_function");
+    auto calleeOld = NamedFunction({0x83, 0xC0, 0x07, 0x90, 0x90, 0xC3}, oldBase + 0x1700, "callee");
+    auto calleeNew = NamedFunction({0x83, 0xC0, 0x07, 0x90, 0x90, 0xC3}, newBase + 0x1750, "callee_v2");
+    auto parentOld = NamedFunction({0x48, 0x89, 0xC8, 0x83, 0xC0, 0x03, 0xC3}, oldBase + 0x1800, "parent");
+    auto parentNew = NamedFunction({0x48, 0x89, 0xC8, 0x83, 0xC0, 0x04, 0xC3}, newBase + 0x1850, "parent_v2");
+    parentOld.callTargets = {calleeOld.startAddress};
+    parentNew.callTargets = {calleeNew.startAddress};
+    auto sameSizeUnrelated = NamedFunction({0x48, 0x29, 0xD8, 0xC3}, newBase + 0x1900, "same_size_unrelated");
+
+    oldTarget.analysis.functions = {movedOld, changedOld, cfgOld, stringOld, ambiguousOld,
+                                    removed, calleeOld, parentOld};
+    newTarget.analysis.functions = {movedNew, changedNew, cfgNew, stringUnrelated, ambiguousA,
+                                    ambiguousB, added, calleeNew, parentNew, sameSizeUnrelated};
+
+    oldTarget.analysis.strings.push_back({oldBase + 0x2200, "shared-text", openreverse::StringEncoding::ASCII, 11});
+    newTarget.analysis.strings.push_back({newBase + 0x2210, "shared-text", openreverse::StringEncoding::ASCII, 11});
+    oldTarget.analysis.xrefs.push_back({stringOld.startAddress, oldBase + 0x2200,
+        openreverse::XRefType::String, 0, 8, stringOld.startAddress, "lea", "build-a.exe"});
+    newTarget.analysis.xrefs.push_back({stringUnrelated.startAddress, newBase + 0x2210,
+        openreverse::XRefType::String, 0, 8, stringUnrelated.startAddress, "lea", "build-b.exe"});
+
+    openreverse::GlobalCandidate oldGlobal;
+    oldGlobal.address = oldBase + 0x2050;
+    oldGlobal.rva = 0x2050;
+    oldGlobal.sectionName = ".data";
+    oldGlobal.kind = openreverse::GlobalKind::WritableData;
+    oldGlobal.readCount = 1;
+    oldGlobal.sourceFunctions = {movedOld.startAddress};
+    oldGlobal.accessSites = {movedOld.startAddress};
+    openreverse::GlobalCandidate newGlobal = oldGlobal;
+    newGlobal.address = newBase + 0x2070;
+    newGlobal.rva = 0x2070;
+    newGlobal.sourceFunctions = {movedNew.startAddress};
+    newGlobal.accessSites = {movedNew.startAddress};
+    oldTarget.analysis.globals.push_back(oldGlobal);
+    newTarget.analysis.globals.push_back(newGlobal);
+
+    openreverse::FieldAccessCandidate oldField;
+    oldField.instructionAddress = movedOld.startAddress;
+    oldField.functionAddress = movedOld.startAddress;
+    oldField.displacement = 0x1A8;
+    oldField.offset = 0x1A8;
+    oldField.operandSize = 4;
+    oldField.access = openreverse::DataAccessType::Read;
+    oldField.originKind = openreverse::RegisterOriginKind::Argument;
+    oldField.originRegister = "rcx";
+    oldField.argumentIndex = 1;
+    auto newField = oldField;
+    newField.instructionAddress = movedNew.startAddress;
+    newField.functionAddress = movedNew.startAddress;
+    newField.displacement = 0x1B0;
+    newField.offset = 0x1B0;
+    oldTarget.analysis.fieldAccesses.push_back(oldField);
+    newTarget.analysis.fieldAccesses.push_back(newField);
+
+    openreverse::OffsetRecord functionOffset;
+    functionOffset.stableId = "function:1000";
+    functionOffset.kind = openreverse::OffsetKind::FunctionRva;
+    functionOffset.rva = 0x1000;
+    functionOffset.sourceFunction = movedOld.startAddress;
+    openreverse::OffsetRecord globalOffset;
+    globalOffset.stableId = "global:2050";
+    globalOffset.kind = openreverse::OffsetKind::GlobalRva;
+    globalOffset.rva = 0x2050;
+    openreverse::OffsetRecord fieldOffset;
+    fieldOffset.stableId = "field:1000:1:424";
+    fieldOffset.kind = openreverse::OffsetKind::StructureField;
+    fieldOffset.sourceFunction = movedOld.startAddress;
+    fieldOffset.fieldOffset = 0x1A8;
+    oldTarget.analysis.offsets = {functionOffset, globalOffset, fieldOffset};
+
+    auto raw = BuildMinimalPE64();
+    openreverse::PEParser parser;
+    oldTarget.analysis.pe = parser.ParseBuffer(raw.data(), raw.size());
+    newTarget.analysis.pe = oldTarget.analysis.pe;
+    oldTarget.analysis.pe.imageBase = oldBase;
+    newTarget.analysis.pe.imageBase = newBase;
+    openreverse::PEParser::BuildMappedImage(raw, oldTarget.analysis.pe, oldTarget.mappedImage);
+    openreverse::PEParser::BuildMappedImage(raw, newTarget.analysis.pe, newTarget.mappedImage);
+    oldTarget.rawFileSize = raw.size();
+    newTarget.rawFileSize = raw.size();
+
+    const std::vector<uint8_t> uniquePattern{0x10,0x21,0x32,0x43,0x54,0x65,0x76,0x87,0x98,0xA9,0xBA,0xCB};
+    const std::vector<uint8_t> duplicatePattern{0xDE,0xAD,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA};
+    std::copy(uniquePattern.begin(), uniquePattern.end(), newTarget.mappedImage.begin() + 0x11A0);
+    std::copy(duplicatePattern.begin(), duplicatePattern.end(), newTarget.mappedImage.begin() + 0x11C0);
+    std::copy(duplicatePattern.begin(), duplicatePattern.end(), newTarget.mappedImage.begin() + 0x11E0);
+
+    const std::vector<uint8_t> oldFieldCode{
+        0x8B, 0x81, 0xA8, 0x01, 0x00, 0x00, 0x66, 0x90, 0x40, 0x90, 0x90, 0xC3
+    };
+    const std::vector<uint8_t> newFieldCode{
+        0x8B, 0x81, 0xB0, 0x01, 0x00, 0x00, 0x66, 0x90, 0x40, 0x90, 0x90, 0xC3
+    };
+    std::copy(oldFieldCode.begin(), oldFieldCode.end(), oldTarget.mappedImage.begin() + 0x1040);
+    std::copy(newFieldCode.begin(), newFieldCode.end(), newTarget.mappedImage.begin() + 0x1060);
+
+    std::vector<uint8_t> oldRipCode{
+        0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x75, 0x01, 0xC3
+    };
+    std::vector<uint8_t> newRipCode = oldRipCode;
+    const int32_t oldRipDisplacement = static_cast<int32_t>(0x2050 - (0x1080 + 7));
+    const int32_t newRipDisplacement = static_cast<int32_t>(0x2070 - (0x10A0 + 7));
+    std::memcpy(oldRipCode.data() + 3, &oldRipDisplacement, sizeof(oldRipDisplacement));
+    std::memcpy(newRipCode.data() + 3, &newRipDisplacement, sizeof(newRipDisplacement));
+    std::copy(oldRipCode.begin(), oldRipCode.end(), oldTarget.mappedImage.begin() + 0x1080);
+    std::copy(newRipCode.begin(), newRipCode.end(), newTarget.mappedImage.begin() + 0x10A0);
+
+    openreverse::SignatureRecord uniqueSignature;
+    uniqueSignature.stableId = "stable";
+    uniqueSignature.pattern.reserve(uniquePattern.size());
+    for (uint8_t byte : uniquePattern) uniqueSignature.pattern.push_back({byte, false});
+    uniqueSignature.relationship.kind = openreverse::SignatureTargetKind::FunctionRva;
+    uniqueSignature.targetFunction = movedOld.startAddress;
+    uniqueSignature.targetOffset = 0x1000;
+    openreverse::SignatureRecord brokenSignature = uniqueSignature;
+    brokenSignature.stableId = "broken";
+    brokenSignature.pattern[0].value = 0xFE;
+    openreverse::SignatureRecord duplicateSignature = uniqueSignature;
+    duplicateSignature.stableId = "duplicate";
+    duplicateSignature.pattern.clear();
+    for (uint8_t byte : duplicatePattern) duplicateSignature.pattern.push_back({byte, false});
+
+    openreverse::Disassembler signatureDisassembler;
+    Expect(signatureDisassembler.Init(true), "version signature fixture initializes x64 decoder");
+    openreverse::SignatureEngine signatureEngine;
+    openreverse::SignatureGenerationOptions signatureOptions;
+    signatureOptions.minimumBytes = 12;
+    signatureOptions.maximumBytes = 16;
+    signatureOptions.imageBase = oldBase;
+    signatureOptions.imageSize = oldTarget.analysis.module.size;
+    openreverse::SignatureRelationship fieldRelationship;
+    fieldRelationship.kind = openreverse::SignatureTargetKind::FieldDisplacement;
+    fieldRelationship.operandIndex = 1;
+    const auto fieldInstructions = signatureDisassembler.Disassemble(
+        oldTarget.mappedImage.data() + 0x1040, oldFieldCode.size(), oldBase + 0x1040, 16);
+    auto fieldSignature = signatureEngine.Generate(fieldInstructions, 0, fieldRelationship, signatureOptions);
+    fieldSignature.stableId = "field-relation";
+
+    openreverse::SignatureRelationship ripRelationship;
+    ripRelationship.kind = openreverse::SignatureTargetKind::RipRelativeOperand;
+    ripRelationship.operandIndex = 1;
+    const auto ripInstructions = signatureDisassembler.Disassemble(
+        oldTarget.mappedImage.data() + 0x1080, oldRipCode.size(), oldBase + 0x1080, 16);
+    auto ripSignature = signatureEngine.Generate(ripInstructions, 0, ripRelationship, signatureOptions);
+    ripSignature.stableId = "rip-relation";
+
+    oldTarget.analysis.signatures = {uniqueSignature, brokenSignature, duplicateSignature,
+                                     fieldSignature, ripSignature};
+    auto newSignature = uniqueSignature;
+    newSignature.targetFunction = movedNew.startAddress;
+    newSignature.targetOffset = 0x1100;
+    newTarget.analysis.signatures.push_back(newSignature);
+
+    openreverse::VersionIntelligenceEngine engine;
+    const auto comparison = engine.Compare(oldTarget, newTarget);
+    Expect(comparison.error.empty() && !comparison.cancelled &&
+           comparison.scoredCandidatePairs < oldTarget.analysis.functions.size() * newTarget.analysis.functions.size(),
+           "version comparison uses indexed candidates instead of an all-pairs scan");
+    const auto findFunction = [&](uint64_t oldRva) -> const openreverse::VersionFunctionMatch* {
+        const auto found = std::find_if(comparison.functions.begin(), comparison.functions.end(),
+            [&](const openreverse::VersionFunctionMatch& match) { return match.oldRva == oldRva; });
+        return found == comparison.functions.end() ? nullptr : &*found;
+    };
+    const auto* movedMatch = findFunction(0x1000);
+    const auto* changedMatch = findFunction(0x1200);
+    const auto* ambiguousMatch = findFunction(0x1500);
+    const auto* removedMatch = findFunction(0x1600);
+    const auto* stringFalseMatch = findFunction(0x1400);
+    const auto* parentMatch = findFunction(0x1800);
+    Expect(movedMatch && movedMatch->suggestedState == openreverse::VersionMatchState::Exact &&
+           movedMatch->candidates.front().newRva == 0x1100,
+           "an identical function moved to a new RVA is an exact normalized match");
+    Expect(changedMatch && !changedMatch->candidates.empty() &&
+           changedMatch->candidates.front().changes.instructionDelta == 1,
+           "a changed function remains reviewable with deterministic instruction deltas");
+    Expect(ambiguousMatch && ambiguousMatch->suggestedState == openreverse::VersionMatchState::Ambiguous,
+           "two equally plausible candidates remain ambiguous");
+    Expect(removedMatch && removedMatch->suggestedState == openreverse::VersionMatchState::Removed,
+           "a removed function is represented explicitly");
+    Expect(std::find(comparison.newFunctionRvas.begin(), comparison.newFunctionRvas.end(), 0x1650) !=
+           comparison.newFunctionRvas.end(), "a new function is represented explicitly");
+    Expect(std::find(comparison.newFunctionRvas.begin(), comparison.newFunctionRvas.end(), 0x1900) !=
+           comparison.newFunctionRvas.end(), "an unrelated same-size function is not force-matched");
+    Expect(!stringFalseMatch || stringFalseMatch->suggestedState != openreverse::VersionMatchState::StrongCandidate,
+           "a shared common string cannot create an aggressive unrelated match");
+    Expect(parentMatch && !parentMatch->candidates.empty() &&
+           std::any_of(parentMatch->candidates.front().evidence.begin(),
+               parentMatch->candidates.front().evidence.end(), [](const openreverse::VersionEvidence& evidence) {
+                   return evidence.kind == openreverse::VersionEvidenceKind::MatchedCallees && evidence.score == 1.0;
+               }), "a previously strong callee mapping contributes explicit parent evidence");
+    const auto exactCount = std::count_if(comparison.functions.begin(), comparison.functions.end(),
+        [](const openreverse::VersionFunctionMatch& match) {
+            return match.suggestedState == openreverse::VersionMatchState::Exact;
+        });
+    const auto ambiguousCount = std::count_if(comparison.functions.begin(), comparison.functions.end(),
+        [](const openreverse::VersionFunctionMatch& match) {
+            return match.suggestedState == openreverse::VersionMatchState::Ambiguous;
+        });
+    const auto removedCount = std::count_if(comparison.functions.begin(), comparison.functions.end(),
+        [](const openreverse::VersionFunctionMatch& match) {
+            return match.suggestedState == openreverse::VersionMatchState::Removed;
+        });
+    Expect(exactCount >= 2 && ambiguousCount >= 1 && removedCount >= 1 &&
+           comparison.newFunctionRvas.size() >= 2,
+           "comparison quality counts expose exact, ambiguous, removed, and new outcomes");
+
+    const auto findMigration = [&](const std::string& stableId) -> const openreverse::VersionMigrationCandidate* {
+        const auto found = std::find_if(comparison.migrations.begin(), comparison.migrations.end(),
+            [&](const openreverse::VersionMigrationCandidate& migration) { return migration.stableId == stableId; });
+        return found == comparison.migrations.end() ? nullptr : &*found;
+    };
+    const auto* globalMigration = findMigration("global:0x2050");
+    const auto* stableSignature = findMigration("signature:stable");
+    const auto* broken = findMigration("signature:broken");
+    const auto* duplicate = findMigration("signature:duplicate");
+    const auto* fieldSignatureMigration = findMigration("signature:field-relation");
+    const auto* ripSignatureMigration = findMigration("signature:rip-relation");
+    Expect(globalMigration && globalMigration->newRva == 0x2070 &&
+           globalMigration->suggestedState == openreverse::VersionMatchState::StrongCandidate,
+           "global migration follows matched-function access relationships");
+    Expect(stableSignature && stableSignature->newRva == 0x11A0 &&
+           stableSignature->suggestedState == openreverse::VersionMatchState::StrongCandidate,
+           "a unique stable signature produces a reviewable migration");
+    Expect(broken && broken->suggestedState == openreverse::VersionMatchState::Unmatched,
+           "a broken signature remains unmatched");
+    Expect(duplicate && duplicate->suggestedState == openreverse::VersionMatchState::Ambiguous,
+           "multiple signature matches remain ambiguous");
+    Expect(fieldSignatureMigration && fieldSignatureMigration->oldValue == 0x1A8 &&
+           fieldSignatureMigration->newValue == 0x1B0 &&
+           fieldSignatureMigration->suggestedState == openreverse::VersionMatchState::StrongCandidate,
+           "a relationship-aware signature resolves old and new structure displacements");
+    Expect(ripSignatureMigration && ripSignatureMigration->oldRva == 0x2050 &&
+           ripSignatureMigration->newRva == 0x2070 &&
+           ripSignatureMigration->suggestedState == openreverse::VersionMatchState::StrongCandidate,
+           "a relationship-aware signature resolves old and new RIP-relative targets");
+    const auto fieldMigration = std::find_if(comparison.migrations.begin(), comparison.migrations.end(),
+        [](const openreverse::VersionMigrationCandidate& migration) {
+            return migration.kind == openreverse::VersionMigrationKind::StructureField;
+        });
+    Expect(fieldMigration != comparison.migrations.end() && fieldMigration->oldValue == 0x1A8 &&
+           fieldMigration->newValue == 0x1B0 &&
+           fieldMigration->suggestedState == openreverse::VersionMatchState::StrongCandidate,
+           "structure fields migrate only with matched function, provenance, width, access, and instruction role");
+    const auto* functionOffsetMigration = findMigration("offset:function:1000");
+    const auto* globalOffsetMigration = findMigration("offset:global:2050");
+    Expect(functionOffsetMigration && functionOffsetMigration->newRva == 0x1100 &&
+           globalOffsetMigration && globalOffsetMigration->newRva == 0x2070,
+           "typed function and global offsets follow their corresponding migration evidence");
+
+    openreverse::CancellationSource cancellation;
+    cancellation.Cancel();
+    const auto token = cancellation.Token();
+    const auto cancelled = engine.Compare(oldTarget, newTarget, &token);
+    Expect(cancelled.cancelled, "version comparison honors cancellation");
+}
+
+void TestProjectPersistence()
+{
+    char tempDirectory[MAX_PATH]{};
+    GetTempPathA(MAX_PATH, tempDirectory);
+    const std::string suffix = std::to_string(GetCurrentProcessId());
+    const std::string targetPath = std::string(tempDirectory) + "openreverse-project-target-" + suffix + ".bin";
+    const std::string projectPath = std::string(tempDirectory) + "openreverse-project-" + suffix + ".orev";
+    DeleteFileA(targetPath.c_str());
+    DeleteFileA(projectPath.c_str());
+
+    const auto targetBytes = BuildMinimalPE64();
+    {
+        std::ofstream file(targetPath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(targetBytes.data()),
+                   static_cast<std::streamsize>(targetBytes.size()));
+    }
+
+    openreverse::OpenReverseProject project;
+    project.target.kind = openreverse::ProjectTargetKind::PEFile;
+    project.target.path = targetPath;
+    project.target.architecture = "x64";
+    project.target.imageBase = 0x140000000ULL;
+    project.target.moduleSize = 0x3000;
+    std::string error;
+    Expect(openreverse::ProjectStore::ComputeFileSha256(targetPath, project.target.sha256, error),
+           "project target identity hashes the original file");
+    project.target.module.name = "fixture.exe";
+    project.target.module.sha256 = project.target.sha256;
+    project.target.module.peTimestamp = 0x12345678;
+    project.target.module.imageSize = 0x3000;
+    project.target.module.imageBase = project.target.imageBase;
+
+    openreverse::OffsetRecord offset;
+    offset.stableId = "user:123";
+    offset.name = "g_state";
+    offset.kind = openreverse::OffsetKind::UserDefined;
+    offset.address = project.target.imageBase + 0x123;
+    offset.rva = 0x123;
+    offset.sourceFunction = project.target.imageBase + 0x200;
+    offset.sourceInstruction = project.target.imageBase + 0x210;
+    offset.evidence = openreverse::EvidenceLevel::Known;
+    offset.provenance = {"user selection"};
+    project.analysis.offsets.push_back(offset);
+
+    openreverse::SignatureRecord signature;
+    signature.stableId = "signature:fixture";
+    signature.pattern = openreverse::PatternScanner::ParsePattern("48 8B ?? FF");
+    signature.targetFunction = project.target.imageBase + 0x200;
+    signature.targetOffset = 0x123;
+    signature.sourceVersion = "fixture-v1";
+    project.analysis.signatures.push_back(signature);
+
+    openreverse::ProjectStructure structure;
+    structure.stableId = "structure:200:1:rcx";
+    structure.name = "FixtureState";
+    structure.sourceFunctionRva = 0x200;
+    structure.baseRegister = "rcx";
+    structure.argumentIndex = 1;
+    structure.estimatedSize = 0x20;
+    structure.evidence = openreverse::EvidenceLevel::Inferred;
+    structure.evidenceScore = 4;
+    structure.accepted = true;
+    openreverse::ProjectStructureField field;
+    field.offset = 8;
+    field.size = 4;
+    field.name = "flags";
+    field.type = "uint32_t";
+    field.comment = "confirmed by the reviewer";
+    structure.fields.push_back(field);
+    project.analysis.structures.push_back(structure);
+    project.user.structures.push_back(structure);
+    project.user.functions.push_back({0x200, "ValidateFixture", "reviewed entry point"});
+    project.user.bookmarks.push_back({0x210, "Validation branch", "inspect call", 0xFF33AA55});
+
+    openreverse::ProjectMigrationDecision migration;
+    migration.stableId = "migration:g_state";
+    migration.kind = openreverse::OffsetKind::GlobalRva;
+    migration.oldRva = 0x123;
+    migration.newRva = 0x180;
+    migration.oldValue = 0x1A8;
+    migration.newValue = 0x1B0;
+    migration.decision = openreverse::ProjectMigrationDecisionKind::Accepted;
+    migration.evidence = {"unique signature", "matching CFG"};
+    project.user.migrations.push_back(migration);
+    project.user.settings["address.display"] = "module+rva";
+    project.ui.currentRva = 0x210;
+    project.ui.workspace = "editor";
+    project.ui.openPanels = {"analysis", "bookmarks", "console"};
+    project.hasVersionComparison = true;
+    project.versionComparison.oldTarget = {"fixture-v1.exe", "old.exe", std::string(64, '1'),
+        "x64", 1, 0x3000, 0x140000000ULL};
+    project.versionComparison.newTarget = {"fixture-v2.exe", targetPath, project.target.sha256,
+        "x64", 2, 0x3000, project.target.imageBase};
+    openreverse::VersionFunctionMatch persistedMatch;
+    persistedMatch.stableId = "function:0x200";
+    persistedMatch.oldRva = 0x200;
+    persistedMatch.oldName = "ValidateFixture";
+    persistedMatch.suggestedState = openreverse::VersionMatchState::StrongCandidate;
+    persistedMatch.decision = openreverse::VersionDecision::Accepted;
+    persistedMatch.decisionNewRva = 0x240;
+    openreverse::VersionFunctionCandidate persistedCandidate;
+    persistedCandidate.newRva = 0x240;
+    persistedCandidate.newName = "ValidateFixtureV2";
+    persistedCandidate.similarityScore = 0.88;
+    persistedCandidate.suggestedState = openreverse::VersionMatchState::StrongCandidate;
+    persistedCandidate.evidence.push_back({openreverse::VersionEvidenceKind::NormalizedCode,
+        0.9, 10, 11, "normalized code"});
+    persistedCandidate.changes.instructionDelta = 1;
+    persistedMatch.candidates.push_back(persistedCandidate);
+    project.versionComparison.functions.push_back(persistedMatch);
+    openreverse::VersionMigrationCandidate persistedMigration;
+    persistedMigration.stableId = "offset:global:123";
+    persistedMigration.kind = openreverse::VersionMigrationKind::Offset;
+    persistedMigration.offsetKind = openreverse::OffsetKind::GlobalRva;
+    persistedMigration.oldRva = 0x123;
+    persistedMigration.newRva = 0x180;
+    persistedMigration.suggestedState = openreverse::VersionMatchState::StrongCandidate;
+    persistedMigration.decision = openreverse::VersionDecision::Rejected;
+    persistedMigration.evidence.push_back({openreverse::VersionEvidenceKind::Globals,
+        0.85, 2, 2, "matched global relationship"});
+    project.versionComparison.migrations.push_back(persistedMigration);
+
+    std::string serialized;
+    Expect(openreverse::ProjectStore::Serialize(project, serialized, error) &&
+           serialized.find("openreverse-project") != std::string::npos,
+           "versioned OpenReverse projects serialize with integrity metadata");
+    openreverse::OpenReverseProject parsed;
+    Expect(openreverse::ProjectStore::Parse(serialized, parsed, error) &&
+           parsed.user.functions.size() == 1 && parsed.user.bookmarks.size() == 1 &&
+           parsed.user.structures.size() == 1 && parsed.user.migrations.size() == 1 &&
+           parsed.analysis.offsets.size() == 1 && parsed.analysis.signatures.size() == 1 &&
+           parsed.user.settings.at("address.display") == "module+rva" &&
+           parsed.ui.currentRva == 0x210 && parsed.hasVersionComparison &&
+           parsed.versionComparison.functions.size() == 1 &&
+           parsed.versionComparison.functions[0].decisionNewRva == 0x240 &&
+           parsed.versionComparison.migrations[0].decision == openreverse::VersionDecision::Rejected,
+           "project round-trip preserves annotations, analysis evidence, decisions, settings, and UI");
+
+    auto legacyProject = project;
+    legacyProject.hasVersionComparison = false;
+    legacyProject.versionComparison = {};
+    std::string legacyJson;
+    Expect(openreverse::ProjectStore::Serialize(legacyProject, legacyJson, error) &&
+           openreverse::ProjectStore::Parse(legacyJson, parsed, error) && !parsed.hasVersionComparison,
+           "version-1 projects without the additive Version Intelligence section remain compatible");
+
+    Expect(openreverse::ProjectStore::SaveAtomic(projectPath, project, error),
+           "project save publishes a new file atomically");
+    project.user.functions[0].comment = "saved replacement";
+    Expect(openreverse::ProjectStore::SaveAtomic(projectPath, project, error),
+           "project save atomically replaces an existing project");
+    openreverse::OpenReverseProject loaded;
+    Expect(openreverse::ProjectStore::Load(projectPath, loaded, error) &&
+           loaded.user.functions[0].comment == "saved replacement",
+           "project load observes the complete replacement rather than a partial write");
+
+    std::string corrupted = serialized;
+    const size_t architecture = corrupted.find("\"architecture\": \"x64\"");
+    if (architecture != std::string::npos) corrupted[architecture + 17] = 'y';
+    Expect(!openreverse::ProjectStore::Parse(corrupted, parsed, error) &&
+           error.find("integrity") != std::string::npos,
+           "project corruption is rejected by the integrity digest");
+    Expect(!openreverse::ProjectStore::Parse("{not-json", parsed, error) && !error.empty(),
+           "malformed project JSON reports an explicit error");
+
+    std::string unsupported = serialized;
+    const size_t version = unsupported.find("\"version\": 1");
+    if (version != std::string::npos) unsupported.replace(version, 12, "\"version\": 99");
+    Expect(!openreverse::ProjectStore::Parse(unsupported, parsed, error) &&
+           error.find("Unsupported") != std::string::npos,
+           "unsupported project versions fail explicitly before integrity validation");
+
+    auto verification = openreverse::ProjectStore::VerifyTarget(project);
+    Expect(verification.status == openreverse::ProjectTargetVerificationStatus::Match,
+           "project target verification accepts the matching SHA-256 identity");
+    {
+        const uint8_t changed[] = {9, 8, 7, 6};
+        std::ofstream file(targetPath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(changed), sizeof(changed));
+    }
+    verification = openreverse::ProjectStore::VerifyTarget(project);
+    Expect(verification.status == openreverse::ProjectTargetVerificationStatus::HashMismatch,
+           "project target verification detects a changed target");
+    DeleteFileA(targetPath.c_str());
+    verification = openreverse::ProjectStore::VerifyTarget(project);
+    Expect(verification.status == openreverse::ProjectTargetVerificationStatus::Missing,
+           "project target verification distinguishes a missing target");
+
+    openreverse::AnalysisSession session;
+    session.SetLoadedProject(project, projectPath, true);
+    Expect(session.FindFunctionAnnotation(0x200) != nullptr && !session.IsDirty(),
+           "analysis session owns restored project annotations without marking them dirty");
+    Expect(!session.SetVersionDecision("function:0x200", openreverse::VersionDecision::Accepted, 0x999) &&
+           session.SetVersionDecision("function:0x200", openreverse::VersionDecision::Rejected) &&
+           session.SetVersionDecision("function:0x200", openreverse::VersionDecision::Accepted, 0x240) &&
+           session.VersionIntelligence() &&
+           session.VersionIntelligence()->functions[0].decision == openreverse::VersionDecision::Accepted &&
+           session.VersionIntelligence()->functions[0].decisionNewRva == 0x240 &&
+           session.IsDirty(), "analysis session persists explicit Version Intelligence decisions");
+    openreverse::ModuleAnalysisResult result;
+    result.module.baseAddress = 0x180000000ULL;
+    result.module.size = 0x3000;
+    result.offsets.push_back(offset);
+    session.ApplyPersistedAnalysis(result);
+    Expect(result.offsets.size() == 1 && result.offsets[0].address == 0x180000123ULL &&
+           result.offsets[0].sourceFunction == 0x180000200ULL && result.signatures.size() == 1 &&
+           result.signatures[0].targetFunction == 0x180000200ULL,
+           "analysis session restores project evidence using RVAs at a new image base");
+    session.SetLoadedProject(project, projectPath, false);
+    Expect(session.RequiresSaveAs() && session.FindFunctionAnnotation(0x200) == nullptr &&
+           session.Project().analysis.offsets.empty(),
+           "changed-target sessions suppress target-bound state and require Save As");
+
+    DeleteFileA(projectPath.c_str());
+}
+
 void TestDumpImportAndDeniedAccess()
 {
     char tempPath[MAX_PATH]{};
@@ -1259,6 +1770,8 @@ int main()
     TestSignatures();
     TestOffsetProjectsAndIdentity();
     TestBinaryDiffAndMigration();
+    TestVersionIntelligence();
+    TestProjectPersistence();
     TestDumpImportAndDeniedAccess();
 
     if (failures != 0)

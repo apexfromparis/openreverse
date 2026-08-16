@@ -157,6 +157,7 @@ if(BUILD_TESTING)
         tests/core_tests.cpp
         src/core/address_space.cpp
         src/core/analysis_database.cpp
+        src/core/analysis_session.cpp
         src/core/analysis_scheduler.cpp
         src/core/binary_diff.cpp
         src/core/data_analyzer.cpp
@@ -168,9 +169,11 @@ if(BUILD_TESTING)
         src/core/pattern_scanner.cpp
         src/core/pe_parser.cpp
         src/core/process_manager.cpp
+        src/core/project.cpp
         src/core/signature_engine.cpp
         src/core/offset_model.cpp
         src/core/string_scanner.cpp
+        src/core/version_intelligence.cpp
         src/core/xref_scanner.cpp
         src/utils/helpers.cpp
         src/utils/logger.cpp
