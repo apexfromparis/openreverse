@@ -587,6 +587,97 @@ void TestMalformedPEs()
            "virtual-only forwarder strings are not fabricated from file offset zero");
 }
 
+void TestBoundedParserMutationCorpus()
+{
+    openreverse::PEParser parser;
+    const auto validPE = BuildMinimalPE64();
+    bool peThrew = false;
+    try
+    {
+        (void)parser.ParseBuffer(nullptr, 0);
+        for (size_t size = 1; size < validPE.size(); ++size)
+            (void)parser.ParseBuffer(validPE.data(), size);
+
+        uint32_t state = 0x4F524556U;
+        for (size_t iteration = 0; iteration < 512; ++iteration)
+        {
+            auto mutated = validPE;
+            const size_t changes = 1 + iteration % 4;
+            for (size_t change = 0; change < changes; ++change)
+            {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                const size_t offset = state % mutated.size();
+                mutated[offset] ^= static_cast<uint8_t>(state >> 24);
+            }
+            const auto info = parser.ParseBuffer(mutated.data(), mutated.size());
+            if (info.valid)
+            {
+                std::vector<uint8_t> mapped;
+                Expect(openreverse::PEParser::BuildMappedImage(mutated, info, mapped) &&
+                       mapped.size() <= 256ULL * 1024ULL * 1024ULL,
+                       "valid mutated PEs map within the global image budget");
+            }
+        }
+    }
+    catch (...)
+    {
+        peThrew = true;
+    }
+    Expect(!peThrew, "truncated and deterministically mutated PE inputs never escape exceptions");
+
+    bool projectThrew = false;
+    try
+    {
+        uint32_t state = 0x50524F4AU;
+        for (size_t iteration = 0; iteration < 256; ++iteration)
+        {
+            const size_t length = iteration * 4;
+            std::string input(length, '\0');
+            for (char& character : input)
+            {
+                state = state * 1664525U + 1013904223U;
+                character = static_cast<char>(state >> 24);
+            }
+            openreverse::OpenReverseProject project;
+            std::string error;
+            (void)openreverse::ProjectStore::Parse(input, project, error);
+        }
+    }
+    catch (...)
+    {
+        projectThrew = true;
+    }
+    Expect(!projectThrew, "bounded malformed project inputs never escape exceptions");
+
+    TemporaryDirectory manifests("manifest-mutations");
+    const auto manifestPath = manifests.Path() / "manifest.json";
+    bool manifestThrew = false;
+    try
+    {
+        uint32_t state = 0x4D414E49U;
+        for (size_t iteration = 0; iteration < 128; ++iteration)
+        {
+            std::string input(iteration * 8 + 1, '\0');
+            for (char& character : input)
+            {
+                state = state * 1103515245U + 12345U;
+                character = static_cast<char>((state >> 16) & 0x7F);
+            }
+            WriteTextFile(manifestPath, input);
+            openreverse::extensions::ExtensionManifest manifest;
+            std::string error;
+            (void)openreverse::extensions::ParseExtensionManifest(manifestPath, manifest, error);
+        }
+    }
+    catch (...)
+    {
+        manifestThrew = true;
+    }
+    Expect(!manifestThrew, "bounded malformed extension manifests never escape exceptions");
+}
+
 void TestBuiltExecutablePE()
 {
     char executablePath[MAX_PATH]{};
@@ -2297,6 +2388,7 @@ int main()
     TestAddressSpacesAndRuntimeFunctions();
     TestMappedAnalysisPipeline();
     TestMalformedPEs();
+    TestBoundedParserMutationCorpus();
     TestBuiltExecutablePE();
     TestLiveExecutableSections();
     TestDecodedFunctionCalls();

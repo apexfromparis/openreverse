@@ -27,23 +27,23 @@ void AICopilotPanel::RenderSettings(Application& app)
     UIManager::SectionLabel("Provider presets");
     if (ImGui::Button("Ollama / Qwen Coder"))
     {
-        strncpy(provider_, "Ollama", sizeof(provider_) - 1);
-        strncpy(baseUrl_, "http://localhost:11434/v1", sizeof(baseUrl_) - 1);
-        strncpy(model_, "qwen2.5-coder:7b", sizeof(model_) - 1);
+        strncpy_s(provider_, "Ollama", _TRUNCATE);
+        strncpy_s(baseUrl_, "http://localhost:11434/v1", _TRUNCATE);
+        strncpy_s(model_, "qwen2.5-coder:7b", _TRUNCATE);
     }
     ImGui::SameLine();
     if (ImGui::Button("LM Studio"))
     {
-        strncpy(provider_, "LM Studio", sizeof(provider_) - 1);
-        strncpy(baseUrl_, "http://localhost:1234/v1", sizeof(baseUrl_) - 1);
-        strncpy(model_, "qwen2.5-coder-7b-instruct", sizeof(model_) - 1);
+        strncpy_s(provider_, "LM Studio", _TRUNCATE);
+        strncpy_s(baseUrl_, "http://localhost:1234/v1", _TRUNCATE);
+        strncpy_s(model_, "qwen2.5-coder-7b-instruct", _TRUNCATE);
     }
     ImGui::SameLine();
     if (ImGui::Button("OpenRouter"))
     {
-        strncpy(provider_, "OpenRouter", sizeof(provider_) - 1);
-        strncpy(baseUrl_, "https://openrouter.ai/api/v1", sizeof(baseUrl_) - 1);
-        strncpy(model_, "qwen/qwen-2.5-coder-32b-instruct", sizeof(model_) - 1);
+        strncpy_s(provider_, "OpenRouter", _TRUNCATE);
+        strncpy_s(baseUrl_, "https://openrouter.ai/api/v1", _TRUNCATE);
+        strncpy_s(model_, "qwen/qwen-2.5-coder-32b-instruct", _TRUNCATE);
     }
 
     UIManager::SectionLabel("Connection");

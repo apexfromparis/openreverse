@@ -54,8 +54,7 @@ void ScannerPanel::Render(Application& app)
     {
         if (selectedPreset_ > 0 && selectedPreset_ < 9)
         {
-            strncpy(patternInput_, presetPatterns[selectedPreset_], sizeof(patternInput_) - 1);
-            patternInput_[sizeof(patternInput_) - 1] = 0;
+            strncpy_s(patternInput_, presetPatterns[selectedPreset_], _TRUNCATE);
         }
     }
     ImGui::SameLine();

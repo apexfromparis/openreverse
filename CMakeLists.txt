@@ -62,13 +62,23 @@ foreach(_dia_root IN LISTS _openreverse_dia_roots)
 endforeach()
 message(STATUS "OpenReverse DIA provider: ${OPENREVERSE_HAS_DIA}")
 
+option(OPENREVERSE_ENABLE_MSVC_ANALYZE
+    "Enable MSVC code analysis for first-party targets" OFF)
+
 function(openreverse_enable_dia target_name)
     if(OPENREVERSE_HAS_DIA)
         target_include_directories(${target_name} PRIVATE ${OPENREVERSE_DIA_INCLUDE_DIR})
         target_link_libraries(${target_name} PRIVATE ${OPENREVERSE_DIA_GUIDS_LIBRARY} oleaut32)
-        target_compile_definitions(${target_name} PRIVATE OPENREVERSE_HAS_DIA=1)
+        target_compile_definitions(${target_name} PUBLIC OPENREVERSE_HAS_DIA=1)
     else()
-        target_compile_definitions(${target_name} PRIVATE OPENREVERSE_HAS_DIA=0)
+        target_compile_definitions(${target_name} PUBLIC OPENREVERSE_HAS_DIA=0)
+    endif()
+endfunction()
+
+function(openreverse_enable_first_party_warnings target_name)
+    target_compile_options(${target_name} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+    if(OPENREVERSE_ENABLE_MSVC_ANALYZE AND MSVC)
+        target_compile_options(${target_name} PRIVATE /analyze)
     endif()
 endfunction()
 
@@ -86,33 +96,142 @@ target_include_directories(imgui_lib PUBLIC
 )
 target_link_libraries(imgui_lib PUBLIC d3d11 d3dcompiler dxgi)
 
-file(GLOB_RECURSE OPENREVERSE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+set(OPENREVERSE_CORE_SOURCES
+    src/core/address_space.cpp
+    src/core/analysis_database.cpp
+    src/core/analysis_scheduler.cpp
+    src/core/analysis_session.cpp
+    src/core/binary_diff.cpp
+    src/core/data_analyzer.cpp
+    src/core/dia_symbol_provider.cpp
+    src/core/disassembler.cpp
+    src/core/dump_loader.cpp
+    src/core/function_analyzer.cpp
+    src/core/instruction_semantics.cpp
+    src/core/memory_reader.cpp
+    src/core/module_analyzer.cpp
+    src/core/module_manager.cpp
+    src/core/offset_model.cpp
+    src/core/pattern_scanner.cpp
+    src/core/pe_parser.cpp
+    src/core/process_manager.cpp
+    src/core/project.cpp
+    src/core/signature_engine.cpp
+    src/core/string_scanner.cpp
+    src/core/version_intelligence.cpp
+    src/core/xref_scanner.cpp
+    src/utils/helpers.cpp
+    src/utils/logger.cpp
+)
+
+add_library(OpenReverseCore STATIC ${OPENREVERSE_CORE_SOURCES})
+target_include_directories(OpenReverseCore PUBLIC
+    src
+    sdk/include
+    ${capstone_SOURCE_DIR}/include
+)
+target_link_libraries(OpenReverseCore PUBLIC
+    capstone
+    nlohmann_json::nlohmann_json
+    psapi
+    bcrypt
+    dbghelp
+)
+target_compile_definitions(OpenReverseCore PUBLIC
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+)
+openreverse_enable_dia(OpenReverseCore)
+openreverse_enable_first_party_warnings(OpenReverseCore)
+
+add_library(OpenReverseAuth STATIC
+    src/auth/account_api.cpp
+    src/auth/auth_callback.cpp
+    src/auth/auth_client.cpp
+    src/auth/auth_session.cpp
+    src/auth/loopback_callback.cpp
+    src/auth/pkce.cpp
+    src/auth/secure_credentials.cpp
+)
+target_include_directories(OpenReverseAuth PUBLIC src)
+target_link_libraries(OpenReverseAuth PUBLIC
+    nlohmann_json::nlohmann_json advapi32 bcrypt winhttp ws2_32
+)
+target_compile_definitions(OpenReverseAuth PUBLIC
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+)
+openreverse_enable_first_party_warnings(OpenReverseAuth)
+
+add_library(OpenReverseExtensions STATIC
+    src/extensions/extension_manifest.cpp
+    src/extensions/extension_manager.cpp
+)
+target_include_directories(OpenReverseExtensions PUBLIC src sdk/include)
+target_link_libraries(OpenReverseExtensions PUBLIC nlohmann_json::nlohmann_json)
+target_compile_definitions(OpenReverseExtensions PUBLIC
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+)
+openreverse_enable_first_party_warnings(OpenReverseExtensions)
+
+add_library(OpenReverseTextEditor STATIC src/ui/vendor/TextEditor.cpp)
+target_include_directories(OpenReverseTextEditor PUBLIC src)
+target_link_libraries(OpenReverseTextEditor PUBLIC imgui_lib)
+target_compile_definitions(OpenReverseTextEditor PUBLIC
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+)
+
+add_library(OpenReverseUI STATIC
+    src/ui/panels/ai_copilot.cpp
+    src/ui/panels/analysis_panel.cpp
+    src/ui/panels/bookmarks_panel.cpp
+    src/ui/panels/console_panel.cpp
+    src/ui/panels/data_inspector.cpp
+    src/ui/panels/disasm_view.cpp
+    src/ui/panels/hex_editor.cpp
+    src/ui/panels/memory_map.cpp
+    src/ui/panels/modules_panel.cpp
+    src/ui/panels/offsets_panel.cpp
+    src/ui/panels/openreverse_editor.cpp
+    src/ui/panels/pe_viewer.cpp
+    src/ui/panels/process_list.cpp
+    src/ui/panels/scanner_panel.cpp
+    src/ui/panels/strings_panel.cpp
+    src/ui/panels/version_intelligence_panel.cpp
+    src/ui/ui_manager.cpp
+)
+target_include_directories(OpenReverseUI PUBLIC src)
+target_link_libraries(OpenReverseUI PUBLIC OpenReverseCore OpenReverseTextEditor imgui_lib)
+target_compile_definitions(OpenReverseUI PUBLIC
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+)
+openreverse_enable_first_party_warnings(OpenReverseUI)
 
 configure_file(installer/app.rc.in installer/app.rc @ONLY)
 
 add_executable(OpenReverse WIN32
-    ${OPENREVERSE_SOURCES}
+    src/main.cpp
+    src/ai/ai_service.cpp
+    src/app/application.cpp
+    src/app/automator.cpp
+    src/cli/cli_repl.cpp
+    installer/app.manifest
     ${CMAKE_CURRENT_BINARY_DIR}/installer/app.rc
 )
 
 target_include_directories(OpenReverse PRIVATE
     src
-    sdk/include
     ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${capstone_SOURCE_DIR}/include
 )
 
 target_link_libraries(OpenReverse PRIVATE
-    imgui_lib
-    capstone
-    nlohmann_json::nlohmann_json
-    psapi
+    OpenReverseCore
+    OpenReverseAuth
+    OpenReverseExtensions
+    OpenReverseUI
     dwmapi
     comdlg32
     winhttp
     advapi32
     bcrypt
-    dbghelp
     ws2_32
 )
 
@@ -122,9 +241,16 @@ target_compile_definitions(OpenReverse PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )
-openreverse_enable_dia(OpenReverse)
+openreverse_enable_first_party_warnings(OpenReverse)
 
 set_target_properties(OpenReverse PROPERTIES OUTPUT_NAME "OpenReverse")
+
+add_executable(OpenReverseValidation tools/validation_main.cpp)
+target_link_libraries(OpenReverseValidation PRIVATE OpenReverseCore)
+target_compile_definitions(OpenReverseValidation PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+)
+openreverse_enable_first_party_warnings(OpenReverseValidation)
 
 if(OPENREVERSE_HAS_DIA AND EXISTS "${OPENREVERSE_DIA_RUNTIME}")
     add_custom_command(TARGET OpenReverse POST_BUILD
@@ -193,6 +319,7 @@ target_compile_definitions(OpenReverse_Setup PRIVATE
     NOMINMAX
     OPENREVERSE_INSTALLS_DIA=${OPENREVERSE_INSTALLER_HAS_DIA}
 )
+openreverse_enable_first_party_warnings(OpenReverse_Setup)
 
 set_target_properties(OpenReverse_Setup PROPERTIES
     OUTPUT_NAME "OpenReverse-${PROJECT_VERSION}-Setup"
@@ -202,80 +329,23 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(OpenReverseCoreTests
         tests/core_tests.cpp
-        src/core/address_space.cpp
-        src/core/analysis_database.cpp
-        src/core/analysis_session.cpp
-        src/core/analysis_scheduler.cpp
-        src/core/binary_diff.cpp
-        src/core/data_analyzer.cpp
-        src/core/dia_symbol_provider.cpp
-        src/core/disassembler.cpp
-        src/core/dump_loader.cpp
-        src/core/function_analyzer.cpp
-        src/core/instruction_semantics.cpp
-        src/core/memory_reader.cpp
-        src/core/module_analyzer.cpp
-        src/core/pattern_scanner.cpp
-        src/core/pe_parser.cpp
-        src/core/process_manager.cpp
-        src/core/project.cpp
-        src/core/signature_engine.cpp
-        src/core/offset_model.cpp
-        src/core/string_scanner.cpp
-        src/core/version_intelligence.cpp
-        src/core/xref_scanner.cpp
-        src/extensions/extension_manifest.cpp
-        src/extensions/extension_manager.cpp
-        src/utils/helpers.cpp
-        src/utils/logger.cpp
-    )
-    target_include_directories(OpenReverseCoreTests PRIVATE
-        src
-        sdk/include
-        ${capstone_SOURCE_DIR}/include
     )
     target_link_libraries(OpenReverseCoreTests PRIVATE
-        capstone
-        nlohmann_json::nlohmann_json
-        psapi
-        bcrypt
-        dbghelp
+        OpenReverseCore
+        OpenReverseExtensions
     )
-    target_compile_definitions(OpenReverseCoreTests PRIVATE
-        UNICODE
-        _UNICODE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-    )
-    openreverse_enable_dia(OpenReverseCoreTests)
+    openreverse_enable_first_party_warnings(OpenReverseCoreTests)
     add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
 
     add_executable(OpenReverseAuthTests
         tests/auth_tests.cpp
-        src/auth/account_api.cpp
-        src/auth/auth_callback.cpp
-        src/auth/auth_session.cpp
-        src/auth/loopback_callback.cpp
-        src/auth/pkce.cpp
-        src/auth/secure_credentials.cpp
     )
-    target_include_directories(OpenReverseAuthTests PRIVATE src)
-    target_link_libraries(OpenReverseAuthTests PRIVATE
-        nlohmann_json::nlohmann_json
-        advapi32
-        bcrypt
-        winhttp
-        ws2_32
-    )
-    target_compile_definitions(OpenReverseAuthTests PRIVATE
-        UNICODE
-        _UNICODE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-    )
+    target_link_libraries(OpenReverseAuthTests PRIVATE OpenReverseAuth)
+    openreverse_enable_first_party_warnings(OpenReverseAuthTests)
     add_test(NAME OpenReverse.Auth COMMAND OpenReverseAuthTests)
 
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
+    openreverse_enable_first_party_warnings(OpenReverseTestFixture)
     target_compile_options(OpenReverseTestFixture PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Zi>)
     target_link_options(OpenReverseTestFixture PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/DEBUG:FULL>)
     set_target_properties(OpenReverseTestFixture PROPERTIES
@@ -291,6 +361,12 @@ if(BUILD_TESTING)
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/static_open_test.ps1
             -Application $<TARGET_FILE:OpenReverse>
+            -Fixture $<TARGET_FILE:OpenReverseTestFixture>
+    )
+    add_test(NAME OpenReverse.CorpusValidation
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus_validation_test.ps1
+            -Validator $<TARGET_FILE:OpenReverseValidation>
             -Fixture $<TARGET_FILE:OpenReverseTestFixture>
     )
 
@@ -343,6 +419,7 @@ if(BUILD_TESTING)
     add_dependencies(OpenReverseCoreTests OpenReverseTestFixture OpenReverseHelloExtension
         OpenReverseMissingEntrypointExtension OpenReverseFailingExtension
         OpenReverseStateExtension)
+    add_dependencies(OpenReverseValidation OpenReverseTestFixture)
     target_compile_definitions(OpenReverseCoreTests PRIVATE
         OPENREVERSE_TEST_HELLO_EXTENSION="$<TARGET_FILE:OpenReverseHelloExtension>"
         OPENREVERSE_TEST_MISSING_ENTRYPOINT_EXTENSION="$<TARGET_FILE:OpenReverseMissingEntrypointExtension>"

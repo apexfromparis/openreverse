@@ -62,7 +62,9 @@ struct ModuleAnalysisResult {
     std::chrono::milliseconds peDuration{0};
     std::chrono::milliseconds codeDuration{0};
     std::chrono::milliseconds cfgDuration{0};
+    std::chrono::milliseconds dataDuration{0};
     std::chrono::milliseconds stringDuration{0};
+    std::chrono::milliseconds signatureDuration{0};
     std::chrono::milliseconds totalDuration{0};
 };
 

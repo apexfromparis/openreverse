@@ -31,7 +31,7 @@ bool GenerateSecureRandom(size_t byteCount, std::vector<uint8_t>& output,
     if (BCryptGenRandom(nullptr, output.data(), static_cast<ULONG>(output.size()),
                         BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
     {
-        std::fill(output.begin(), output.end(), 0);
+        std::fill(output.begin(), output.end(), uint8_t{0});
         output.clear();
         error = "Windows cryptographic random generation failed";
         return false;

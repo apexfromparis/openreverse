@@ -770,15 +770,11 @@ bool ParseVersionComparison(const json& value, VersionComparison& comparison)
 
 bool MigrateProjectDocument(json& root, uint32_t& version, std::string& error)
 {
-    while (version < kOpenReverseProjectVersion)
+    if (version < kOpenReverseProjectVersion)
     {
-        switch (version)
-        {
-        default:
-            error = "No safe OpenReverse project migration is registered from version " +
-                std::to_string(version);
-            return false;
-        }
+        error = "No safe OpenReverse project migration is registered from version " +
+            std::to_string(version);
+        return false;
     }
     root["version"] = version;
     return true;

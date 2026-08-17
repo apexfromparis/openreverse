@@ -255,9 +255,6 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
     result.codeBudgetReached = remainingCode == 0;
     result.instructionBudgetReached = remainingInstructions == 0;
     result.functionLimitReached = functions.size() >= options.maxFunctions;
-    const auto codeFinished = std::chrono::steady_clock::now();
-    result.codeDuration = std::chrono::duration_cast<std::chrono::milliseconds>(codeFinished - peFinished);
-
     if (result.cancelled)
         return result;
     if (analyzedRanges.empty())
@@ -342,6 +339,8 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
     }
 
     const auto cfgStarted = std::chrono::steady_clock::now();
+    result.codeDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        cfgStarted - peFinished);
     size_t remainingCfgInstructions = options.maxCfgInstructions;
     for (auto& function : result.functions)
     {
@@ -372,6 +371,7 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
     const auto cfgFinished = std::chrono::steady_clock::now();
     result.cfgDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
         cfgFinished - cfgStarted);
+    const auto dataStarted = cfgFinished;
     for (const auto& function : result.functions)
     {
         const size_t remainingFields = 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000);
@@ -379,6 +379,18 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
         auto fields = FindFieldAccesses(function, remainingFields);
         result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
     }
+
+    result.xrefs = xrefScanner.GetAllEntries();
+    AssignXRefFunctions(result.xrefs, result.functions);
+    result.globals = FindGlobalCandidates(module, result.pe, result.xrefs);
+    AssignFieldFunctions(result.fieldAccesses, result.functions);
+    result.structures = InferStructures(result.fieldAccesses);
+    BuildTypedOffsets(result);
+    for (auto& function : result.functions)
+        function.xrefCount = static_cast<int>(xrefScanner.FindXRefsTo(function.startAddress).size());
+    const auto dataFinished = std::chrono::steady_clock::now();
+    result.dataDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        dataFinished - dataStarted);
 
     size_t remainingStrings = options.maxStringBytes;
     size_t readableSectionCount = 0;
@@ -409,16 +421,8 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
     }
     result.stringBudgetReached = remainingStrings == 0;
     const auto stringsFinished = std::chrono::steady_clock::now();
-    result.stringDuration = std::chrono::duration_cast<std::chrono::milliseconds>(stringsFinished - cfgFinished);
-
-    result.xrefs = xrefScanner.GetAllEntries();
-    AssignXRefFunctions(result.xrefs, result.functions);
-    result.globals = FindGlobalCandidates(module, result.pe, result.xrefs);
-    AssignFieldFunctions(result.fieldAccesses, result.functions);
-    result.structures = InferStructures(result.fieldAccesses);
-    BuildTypedOffsets(result);
-    for (auto& function : result.functions)
-        function.xrefCount = static_cast<int>(xrefScanner.FindXRefsTo(function.startAddress).size());
+    result.stringDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        stringsFinished - dataFinished);
 
     if (progress) progress(1.0f);
     result.totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -590,6 +594,8 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
     }
 
     const auto cfgStarted = std::chrono::steady_clock::now();
+    result.codeDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        cfgStarted - started);
     size_t remainingCfgInstructions = options.maxCfgInstructions;
     for (auto& function : result.functions)
     {
@@ -622,6 +628,7 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
     const auto cfgFinished = std::chrono::steady_clock::now();
     result.cfgDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
         cfgFinished - cfgStarted);
+    const auto dataStarted = cfgFinished;
     for (const auto& function : result.functions)
     {
         const size_t remainingFields = 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000);
@@ -639,6 +646,9 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
     for (auto& function : result.functions)
         function.xrefCount = static_cast<int>(std::count_if(result.xrefs.begin(), result.xrefs.end(),
             [&](const XRefEntry& xref) { return xref.toAddress == function.startAddress; }));
+    const auto dataFinished = std::chrono::steady_clock::now();
+    result.dataDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        dataFinished - dataStarted);
 
     size_t remainingStrings = options.maxStringBytes;
     size_t readableSections = 0;
@@ -666,7 +676,11 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
             progress(0.55f + 0.25f * static_cast<float>(readableIndex) / readableSections);
     }
     result.stringBudgetReached = remainingStrings == 0;
+    const auto stringsFinished = std::chrono::steady_clock::now();
+    result.stringDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        stringsFinished - dataFinished);
 
+    const auto signatureStarted = stringsFinished;
     SignatureEngine signatureEngine;
     std::sort(allInstructions.begin(), allInstructions.end(),
         [](const Instruction& left, const Instruction& right) { return left.address < right.address; });
@@ -711,6 +725,8 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
         result.signatures.push_back(std::move(signature));
         ++generatedSignatures;
     }
+    result.signatureDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - signatureStarted);
 
     if (progress) progress(1.0f);
     result.totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
