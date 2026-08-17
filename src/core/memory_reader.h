@@ -45,7 +45,8 @@ public:
 
     bool WriteMemory(HANDLE processHandle, uint64_t address, const void* buffer, size_t size);
 
-    size_t DumpToFile(HANDLE processHandle, uint64_t address, size_t size, const char* filePath);
+    size_t DumpToFile(HANDLE processHandle, uint64_t address, size_t size,
+                      const std::string& filePath);
 
     template<typename T>
     T Read(HANDLE processHandle, uint64_t address)

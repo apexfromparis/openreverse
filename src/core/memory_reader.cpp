@@ -1,5 +1,6 @@
 #include "memory_reader.h"
 #include <fstream>
+#include <filesystem>
 #include <algorithm>
 #include <limits>
 #include <utility>
@@ -211,14 +212,15 @@ bool MemoryReader::WriteMemory(HANDLE processHandle, uint64_t address, const voi
     return ok && bytesWritten == size;
 }
 
-size_t MemoryReader::DumpToFile(HANDLE processHandle, uint64_t address, size_t size, const char* filePath)
+size_t MemoryReader::DumpToFile(HANDLE processHandle, uint64_t address, size_t size,
+                                const std::string& filePath)
 {
-    if ((!processHandle && !offlineBuffer_) || !filePath || size == 0)
+    if ((!processHandle && !offlineBuffer_) || filePath.empty() || size == 0)
         return 0;
     std::vector<uint8_t> data = ReadBytes(processHandle, address, size);
     if (data.empty())
         return 0;
-    std::ofstream out(filePath, std::ios::binary);
+    std::ofstream out(std::filesystem::u8path(filePath), std::ios::binary);
     if (!out)
         return 0;
     out.write(reinterpret_cast<const char*>(data.data()), data.size());

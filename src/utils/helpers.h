@@ -140,7 +140,9 @@ inline char PrintableChar(uint8_t c)
 inline std::string ToLower(const std::string& s)
 {
     std::string result = s;
-    std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
     return result;
 }
 
@@ -186,7 +188,9 @@ inline std::string TypeToString(DWORD type)
     }
 }
 
-bool OpenSaveFileDialog(char* outPath, int outPathSize, const char* defaultName = "dump.bin");
+std::wstring Utf8ToWide(const std::string& value);
+std::string WideToUtf8(const wchar_t* value);
+bool OpenSaveFileDialog(std::string& outPath, const char* defaultName = "dump.bin");
 
 } // namespace helpers
 } // namespace openreverse

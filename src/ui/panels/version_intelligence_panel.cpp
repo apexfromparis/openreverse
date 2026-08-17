@@ -148,17 +148,18 @@ const VersionFunctionCandidate* SelectedCandidate(const VersionFunctionMatch& ma
 
 void VersionIntelligencePanel::SelectOldTarget()
 {
-    std::vector<char> fileName(32768, '\0');
-    OPENFILENAMEA dialog{};
+    std::vector<wchar_t> fileName(32768, L'\0');
+    OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
-    dialog.lpstrFilter = "OpenReverse project or PE binary (*.orev;*.sys;*.exe;*.dll)\0*.orev;*.sys;*.exe;*.dll\0All Files (*.*)\0*.*\0";
+    dialog.lpstrFilter = L"OpenReverse project or PE binary (*.orev;*.sys;*.exe;*.dll)\0"
+                         L"*.orev;*.sys;*.exe;*.dll\0All Files (*.*)\0*.*\0";
     dialog.lpstrFile = fileName.data();
     dialog.nMaxFile = static_cast<DWORD>(fileName.size());
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-    dialog.lpstrTitle = "Select the old OpenReverse project or PE binary";
-    if (GetOpenFileNameA(&dialog))
+    dialog.lpstrTitle = L"Select the old OpenReverse project or PE binary";
+    if (GetOpenFileNameW(&dialog))
     {
-        oldPath_ = fileName.data();
+        oldPath_ = helpers::WideToUtf8(fileName.data());
         status_.clear();
     }
 }

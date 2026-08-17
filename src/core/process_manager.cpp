@@ -1,4 +1,8 @@
 #include "process_manager.h"
+#include "utils/helpers.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace openreverse {
 
@@ -31,9 +35,7 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
             ProcessInfo info;
             info.pid = pe.th32ProcessID;
 
-            char name[MAX_PATH];
-            WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, name, MAX_PATH, nullptr, nullptr);
-            info.name = name;
+            info.name = helpers::WideToUtf8(pe.szExeFile);
             info.is64bit = false;
             info.memoryUsage = 0;
             info.path.clear();
@@ -41,13 +43,20 @@ std::vector<ProcessInfo> ProcessManager::ListProcesses()
             HANDLE hProc = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, info.pid);
             if (hProc)
             {
-                wchar_t pathBuf[MAX_PATH];
-                DWORD pathSize = MAX_PATH;
-                if (QueryFullProcessImageNameW(hProc, 0, pathBuf, &pathSize))
+                std::vector<wchar_t> pathBuffer(1024, L'\0');
+                while (pathBuffer.size() <= 32768)
                 {
-                    char pathNarrow[MAX_PATH];
-                    WideCharToMultiByte(CP_UTF8, 0, pathBuf, -1, pathNarrow, MAX_PATH, nullptr, nullptr);
-                    info.path = pathNarrow;
+                    DWORD pathSize = static_cast<DWORD>(pathBuffer.size());
+                    if (QueryFullProcessImageNameW(hProc, 0, pathBuffer.data(), &pathSize))
+                    {
+                        if (pathSize >= pathBuffer.size()) break;
+                        pathBuffer[pathSize] = L'\0';
+                        info.path = helpers::WideToUtf8(pathBuffer.data());
+                        break;
+                    }
+                    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || pathBuffer.size() == 32768)
+                        break;
+                    pathBuffer.resize((std::min<size_t>)(pathBuffer.size() * 2, 32768), L'\0');
                 }
 
                 BOOL isWow64 = FALSE;

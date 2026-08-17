@@ -1,9 +1,11 @@
 #include "module_manager.h"
 #include "pe_parser.h"
+#include "utils/helpers.h"
 #include <algorithm>
 #include <iterator>
 #include <limits>
 #include <utility>
+#include <vector>
 
 namespace openreverse {
 
@@ -13,35 +15,56 @@ void ModuleManager::RefreshModules(HANDLE processHandle)
     if (!processHandle)
         return;
 
-    HMODULE hMods[1024]{};
+    std::vector<HMODULE> modules(256);
     DWORD cbNeeded = 0;
-
-    if (EnumProcessModulesEx(processHandle, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_ALL))
+    if (!EnumProcessModulesEx(processHandle, modules.data(),
+                              static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
+                              &cbNeeded, LIST_MODULES_ALL))
+        return;
+    if (cbNeeded > modules.size() * sizeof(HMODULE))
     {
-        size_t count = (std::min)(static_cast<size_t>(cbNeeded / sizeof(HMODULE)), std::size(hMods));
+        const size_t requested = cbNeeded / sizeof(HMODULE) + 1;
+        if (requested > 16384) return;
+        modules.resize(requested);
+        if (!EnumProcessModulesEx(processHandle, modules.data(),
+                                  static_cast<DWORD>(modules.size() * sizeof(HMODULE)),
+                                  &cbNeeded, LIST_MODULES_ALL))
+            return;
+    }
+    {
+        const size_t count = (std::min)(static_cast<size_t>(cbNeeded / sizeof(HMODULE)), modules.size());
         for (size_t i = 0; i < count; ++i)
         {
             ModuleInfo mod{};
-            mod.baseAddress = (uint64_t)hMods[i];
+            mod.baseAddress = reinterpret_cast<uint64_t>(modules[i]);
 
-            wchar_t modName[MAX_PATH];
-            if (GetModuleBaseNameW(processHandle, hMods[i], modName, MAX_PATH))
+            std::vector<wchar_t> nameBuffer(1024, L'\0');
+            const DWORD nameLength = GetModuleBaseNameW(processHandle, modules[i],
+                nameBuffer.data(), static_cast<DWORD>(nameBuffer.size()));
+            if (nameLength != 0 && nameLength < nameBuffer.size())
             {
-                char name[MAX_PATH];
-                WideCharToMultiByte(CP_UTF8, 0, modName, -1, name, MAX_PATH, nullptr, nullptr);
-                mod.name = name;
+                nameBuffer[nameLength] = L'\0';
+                mod.name = helpers::WideToUtf8(nameBuffer.data());
             }
 
-            wchar_t modPath[MAX_PATH];
-            if (GetModuleFileNameExW(processHandle, hMods[i], modPath, MAX_PATH))
+            std::vector<wchar_t> pathBuffer(1024, L'\0');
+            while (pathBuffer.size() <= 32768)
             {
-                char path[MAX_PATH];
-                WideCharToMultiByte(CP_UTF8, 0, modPath, -1, path, MAX_PATH, nullptr, nullptr);
-                mod.path = path;
+                const DWORD length = GetModuleFileNameExW(processHandle, modules[i],
+                    pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+                if (length == 0) break;
+                if (length < pathBuffer.size() - 1)
+                {
+                    pathBuffer[length] = L'\0';
+                    mod.path = helpers::WideToUtf8(pathBuffer.data());
+                    break;
+                }
+                if (pathBuffer.size() == 32768) break;
+                pathBuffer.resize((std::min<size_t>)(pathBuffer.size() * 2, 32768), L'\0');
             }
 
             MODULEINFO mi{};
-            if (GetModuleInformation(processHandle, hMods[i], &mi, sizeof(mi)))
+            if (GetModuleInformation(processHandle, modules[i], &mi, sizeof(mi)))
             {
                 mod.size = mi.SizeOfImage;
             }
@@ -101,7 +124,7 @@ const ModuleInfo* ModuleManager::FindModuleByAddress(uint64_t address) const
 {
     for (const auto& m : modules_)
     {
-        if (address >= m.baseAddress && address < m.baseAddress + m.size)
+        if (address >= m.baseAddress && address - m.baseAddress < m.size)
             return &m;
     }
     return nullptr;

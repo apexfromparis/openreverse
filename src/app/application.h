@@ -12,6 +12,7 @@
 #include "core/analysis_database.h"
 #include "core/analysis_session.h"
 #include "core/dump_loader.h"
+#include "core/module_analyzer.h"
 #include "extensions/extension_manager.h"
 
 #include "ui/panels/process_list.h"
@@ -89,6 +90,9 @@ public:
     bool OpenDumpFile(const std::string& filePath, const DumpImportOptions& options = {});
     bool OpenProjectFile(const std::string& filePath);
     bool SaveProjectFile(bool saveAs = false);
+    bool AnalyzeCurrentModuleSynchronously();
+    void PublishModuleAnalysis(ModuleAnalysisResult result);
+    const ModuleAnalysisState* CurrentAnalysis() const;
     void ShowOpenFileDialog();
     void ShowOpenDumpDialog();
     void ShowOpenProjectDialog();

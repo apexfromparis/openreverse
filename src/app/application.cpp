@@ -16,6 +16,7 @@
 #include <iostream>
 #include <exception>
 #include <cstring>
+#include <cwchar>
 #include <stdexcept>
 #include <set>
 #include <utility>
@@ -46,6 +47,29 @@ std::string EnsureProjectExtension(std::string path)
         [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
     if (extension != ".orev") path += ".orev";
     return path;
+}
+
+bool SelectFilePath(const wchar_t* filter, const wchar_t* title, bool save,
+                    std::string& path, const std::string& defaultName = {},
+                    const wchar_t* defaultExtension = nullptr)
+{
+    std::vector<wchar_t> fileName(32768, L'\0');
+    const std::wstring wideDefault = helpers::Utf8ToWide(defaultName);
+    if (!wideDefault.empty())
+        wcsncpy_s(fileName.data(), fileName.size(), wideDefault.c_str(), _TRUNCATE);
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = fileName.data();
+    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
+    dialog.lpstrDefExt = defaultExtension;
+    dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER |
+        (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    dialog.lpstrTitle = title;
+    const BOOL selected = save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog);
+    if (!selected) return false;
+    path = helpers::WideToUtf8(fileName.data());
+    return !path.empty();
 }
 
 } // namespace
@@ -218,56 +242,107 @@ void Application::DetachFromProcess()
     extensionManager.NotifySessionChanged(targetGeneration, false);
 }
 
+const ModuleAnalysisState* Application::CurrentAnalysis() const
+{
+    const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
+    if (!analysis && !analysisDatabase.GetModules().empty())
+        analysis = &analysisDatabase.GetModules().begin()->second;
+    return analysis;
+}
+
+void Application::PublishModuleAnalysis(ModuleAnalysisResult result)
+{
+    if (!result.success)
+    {
+        if (!result.cancelled)
+            Logger::Get().Log(LogLevel::Error, "Module analysis failed: %s", result.error.c_str());
+        return;
+    }
+    analysisSession.ApplyPersistedAnalysis(result);
+    analysisDatabase.ReplaceModuleAnalysis(result.module, is64Bit, result.pe,
+        result.functions, result.xrefs, result.strings, result.globals, result.fieldAccesses,
+        result.structures, result.offsets, result.signatures, result.identity,
+        result.symbols, result.symbolTypes, result.symbolIdentity);
+
+    xrefScanner.ReplaceEntries(result.xrefs);
+    stringResults = result.strings;
+    Logger::Get().Log(LogLevel::Info,
+        "Module analysis: %zu functions, %zu Xrefs, %zu strings, %zu globals, %zu structures, "
+        "%lld ms (PE %lld, code %lld, CFG %lld, strings %lld)",
+        result.functions.size(), result.xrefs.size(), result.strings.size(),
+        result.globals.size(), result.structures.size(),
+        static_cast<long long>(result.totalDuration.count()),
+        static_cast<long long>(result.peDuration.count()),
+        static_cast<long long>(result.codeDuration.count()),
+        static_cast<long long>(result.cfgDuration.count()),
+        static_cast<long long>(result.stringDuration.count()));
+    if (result.codeBudgetReached || result.instructionBudgetReached ||
+        result.cfgInstructionBudgetReached || result.functionLimitReached ||
+        result.stringBudgetReached || result.timeBudgetReached)
+        Logger::Get().Log(LogLevel::Warning, "Module analysis stopped at a configured limit");
+    RestoreProjectUiAfterAnalysis();
+    NotifyExtensionsSessionChanged();
+}
+
+bool Application::AnalyzeCurrentModuleSynchronously()
+{
+    if (!isAttached || !processHandle) return false;
+    const ModuleInfo* module = moduleManager.FindModuleByAddress(currentAddress);
+    if (!module && !moduleManager.GetModules().empty())
+        module = &moduleManager.GetModules().front();
+    if (!module)
+    {
+        Logger::Get().Log(LogLevel::Warning, "No module found to analyze.");
+        return false;
+    }
+    ModuleAnalyzer analyzer;
+    auto result = analyzer.AnalyzeLive(processHandle, *module, is64Bit);
+    if (!result.success)
+    {
+        if (!result.cancelled)
+            Logger::Get().Log(LogLevel::Error, "Module analysis failed: %s", result.error.c_str());
+        return false;
+    }
+    PublishModuleAnalysis(std::move(result));
+    return true;
+}
+
 void Application::ShowOpenFileDialog()
 {
-    OPENFILENAMEA ofn = {};
-    char fileName[MAX_PATH] = "";
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = nullptr;
-    ofn.lpstrFilter = "PE Executable & Driver Files (*.sys;*.exe;*.dll)\0*.sys;*.exe;*.dll\0Windows Driver (.sys)\0*.sys\0All Files (*.*)\0*.*\0";
-    ofn.lpstrFile = fileName;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    ofn.lpstrTitle = "Open Windows Kernel Driver (.sys) or Executable (.exe/.dll)";
-
-    if (GetOpenFileNameA(&ofn))
-    {
-        OpenBinaryFile(fileName);
-    }
+    std::string path;
+    if (SelectFilePath(
+        L"PE Executable & Driver Files (*.sys;*.exe;*.dll)\0*.sys;*.exe;*.dll\0"
+        L"Windows Driver (.sys)\0*.sys\0All Files (*.*)\0*.*\0",
+        L"Open Windows Kernel Driver (.sys) or Executable (.exe/.dll)", false, path))
+        OpenBinaryFile(path);
 }
 
 void Application::ShowOpenDumpDialog()
 {
-    OPENFILENAMEA dialog{};
-    char fileName[MAX_PATH] = "";
-    dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = nullptr;
-    dialog.lpstrFilter = "Memory dumps (*.dmp;*.mdmp;*.bin)\0*.dmp;*.mdmp;*.bin\0All Files (*.*)\0*.*\0";
-    dialog.lpstrFile = fileName;
-    dialog.nMaxFile = MAX_PATH;
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    dialog.lpstrTitle = "Open a mapped image, raw snapshot, or Windows minidump";
-    if (GetOpenFileNameA(&dialog))
+    std::string path;
+    if (SelectFilePath(L"Memory dumps (*.dmp;*.mdmp;*.bin)\0*.dmp;*.mdmp;*.bin\0"
+                       L"All Files (*.*)\0*.*\0",
+                       L"Open a mapped image, raw snapshot, or Windows minidump", false, path))
     {
         DumpLoader loader;
-        const auto detected = loader.Load(fileName);
+        const auto detected = loader.Load(path);
         if (detected.success)
         {
-            OpenDumpFile(fileName);
+            OpenDumpFile(path);
             return;
         }
 
-        pendingDumpPath_ = fileName;
+        pendingDumpPath_ = path;
         pendingDumpModules_ = detected.availableModules;
         pendingDumpModuleIndex_ = 0;
         dumpImportError_.clear();
         if (pendingDumpModules_.empty())
         {
-            WIN32_FILE_ATTRIBUTE_DATA fileData{};
-            if (GetFileAttributesExA(fileName, GetFileExInfoStandard, &fileData))
+            std::error_code sizeError;
+            const uintmax_t size = std::filesystem::file_size(
+                std::filesystem::u8path(path), sizeError);
+            if (!sizeError)
             {
-                const uint64_t size = (static_cast<uint64_t>(fileData.nFileSizeHigh) << 32) |
-                    fileData.nFileSizeLow;
                 snprintf(dumpModuleSizeBuf_, sizeof(dumpModuleSizeBuf_), "%llu",
                          static_cast<unsigned long long>(size));
             }
@@ -279,33 +354,18 @@ void Application::ShowOpenDumpDialog()
 
 void Application::ShowOpenProjectDialog()
 {
-    std::vector<char> fileName(32768, '\0');
-    OPENFILENAMEA dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = nullptr;
-    dialog.lpstrFilter = "OpenReverse projects (*.orev)\0*.orev\0All Files (*.*)\0*.*\0";
-    dialog.lpstrFile = fileName.data();
-    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
-    dialog.lpstrDefExt = "orev";
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-    dialog.lpstrTitle = "Open an OpenReverse project";
-    if (GetOpenFileNameA(&dialog)) OpenProjectFile(fileName.data());
+    std::string path;
+    if (SelectFilePath(L"OpenReverse projects (*.orev)\0*.orev\0All Files (*.*)\0*.*\0",
+                       L"Open an OpenReverse project", false, path, {}, L"orev"))
+        OpenProjectFile(path);
 }
 
 bool Application::ShowProjectTargetDialog(std::string& filePath) const
 {
-    std::vector<char> fileName(32768, '\0');
-    OPENFILENAMEA dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = nullptr;
-    dialog.lpstrFilter = "Supported targets (*.sys;*.exe;*.dll;*.dmp;*.mdmp;*.bin)\0*.sys;*.exe;*.dll;*.dmp;*.mdmp;*.bin\0All Files (*.*)\0*.*\0";
-    dialog.lpstrFile = fileName.data();
-    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-    dialog.lpstrTitle = "Locate the target referenced by this project";
-    if (!GetOpenFileNameA(&dialog)) return false;
-    filePath = fileName.data();
-    return true;
+    return SelectFilePath(
+        L"Supported targets (*.sys;*.exe;*.dll;*.dmp;*.mdmp;*.bin)\0"
+        L"*.sys;*.exe;*.dll;*.dmp;*.mdmp;*.bin\0All Files (*.*)\0*.*\0",
+        L"Locate the target referenced by this project", false, filePath);
 }
 
 bool Application::OpenProjectFile(const std::string& filePath)
@@ -461,24 +521,16 @@ bool Application::SaveProjectFile(bool saveAs)
     std::string outputPath = analysisSession.ProjectPath();
     if (saveAs || outputPath.empty() || analysisSession.RequiresSaveAs())
     {
-        std::vector<char> fileName(32768, '\0');
         std::string defaultName = std::filesystem::path(attachedProcessName).stem().string();
         if (defaultName.empty()) defaultName = "OpenReverseProject";
         for (char& character : defaultName)
             if (std::string("<>:\"/\\|?*").find(character) != std::string::npos) character = '_';
         defaultName += ".orev";
-        strncpy_s(fileName.data(), fileName.size(), defaultName.c_str(), _TRUNCATE);
-        OPENFILENAMEA dialog{};
-        dialog.lStructSize = sizeof(dialog);
-        dialog.hwndOwner = nullptr;
-        dialog.lpstrFilter = "OpenReverse projects (*.orev)\0*.orev\0All Files (*.*)\0*.*\0";
-        dialog.lpstrFile = fileName.data();
-        dialog.nMaxFile = static_cast<DWORD>(fileName.size());
-        dialog.lpstrDefExt = "orev";
-        dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
-        dialog.lpstrTitle = "Save OpenReverse project";
-        if (!GetSaveFileNameA(&dialog)) return false;
-        outputPath = EnsureProjectExtension(fileName.data());
+        if (!SelectFilePath(L"OpenReverse projects (*.orev)\0*.orev\0All Files (*.*)\0*.*\0",
+                            L"Save OpenReverse project", true, outputPath,
+                            defaultName, L"orev"))
+            return false;
+        outputPath = EnsureProjectExtension(std::move(outputPath));
     }
     if (!ProjectStore::SaveAtomic(outputPath, project, error))
     {
@@ -604,7 +656,7 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         else
             Logger::Get().Log(LogLevel::Warning, "%s", identityError.c_str());
 
-        analysisPanel.ApplyModuleAnalysis(*this, std::move(result));
+        PublishModuleAnalysis(std::move(result));
         Logger::Get().Log(LogLevel::Info,
             "Loaded offline PE: %s (%s, %zu bytes, %zu sections)",
             attachedProcessName.c_str(), is64Bit ? "x64" : "x86",
@@ -715,7 +767,7 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
             DetachFromProcess();
             return false;
         }
-        analysisPanel.ApplyModuleAnalysis(*this, std::move(analysis));
+        PublishModuleAnalysis(std::move(analysis));
         Logger::Get().Log(LogLevel::Info, "Loaded static dump: %s (%s, %zu bytes)",
             attachedProcessName.c_str(), is64Bit ? "x64" : "x86", offlineImageBuffer.size());
         return true;
@@ -1547,9 +1599,9 @@ std::string Application::GetAIContextSummary()
     const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
     if (!analysis && !analysisDatabase.GetModules().empty())
         analysis = &analysisDatabase.GetModules().begin()->second;
-    const auto& funcs = analysis ? analysis->functions : analysisPanel.GetFunctions();
-    if (!funcs.empty())
+    if (analysis && !analysis->functions.empty())
     {
+        const auto& funcs = analysis->functions;
         ss << "Analyzed Functions (" << funcs.size() << " detected): ";
         size_t limit = funcs.size() < 6 ? funcs.size() : 6;
         for (size_t i = 0; i < limit; ++i)
