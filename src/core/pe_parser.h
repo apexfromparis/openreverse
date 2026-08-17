@@ -47,6 +47,11 @@ struct PEInfo {
     uint32_t    importDirectoryRva = 0;
     uint32_t    exportDirectoryRva = 0;
     uint32_t    exportDirectorySize = 0;
+    uint32_t    debugDirectoryRva = 0;
+    uint32_t    debugDirectorySize = 0;
+    std::string pdbGuid;
+    uint32_t    pdbAge = 0;
+    std::string pdbPath;
     bool        runtimeFunctionDirectoryComplete = true;
     size_t      rejectedRuntimeFunctionCount = 0;
 
@@ -99,6 +104,10 @@ private:
     void ParseRuntimeFunctionsMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info);
     void ParseImportsMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info);
     void ParseExportsMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info);
+    void ParseCodeViewRaw(const uint8_t* data, size_t fileSize, PEInfo& info);
+    void ParseCodeViewMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info);
+    void ParseCodeViewLive(HANDLE processHandle, uint64_t baseAddress,
+                           uint64_t mappedImageSize, PEInfo& info);
 };
 
 } // namespace openreverse

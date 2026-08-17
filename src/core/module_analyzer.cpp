@@ -2,6 +2,7 @@
 
 #include "core/memory_reader.h"
 #include "core/signature_engine.h"
+#include "core/dia_symbol_provider.h"
 
 #include <algorithm>
 #include <limits>
@@ -127,6 +128,7 @@ void PreserveDiscoveryMetadata(const FunctionInfo& discovered, FunctionInfo& ana
 {
     analyzed.name = discovered.name;
     analyzed.source = discovered.source;
+    analyzed.provenance = discovered.provenance;
     analyzed.endAddress = discovered.endAddress;
     analyzed.size = discovered.size;
     analyzed.boundaryKnown = discovered.boundaryKnown;
@@ -275,6 +277,30 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
 
     result.functions = functionAnalyzer.DiscoverFunctionsFromRuntimeFunctions(
         result.functions, module.baseAddress, result.pe.runtimeFunctions, is64Bit);
+
+    ModuleIdentity liveSymbolIdentity;
+    liveSymbolIdentity.name = module.name;
+    liveSymbolIdentity.peTimestamp = result.pe.timestamp;
+    liveSymbolIdentity.imageSize = result.pe.sizeOfImage;
+    liveSymbolIdentity.imageBase = result.pe.imageBase;
+    liveSymbolIdentity.pdbGuid = result.pe.pdbGuid;
+    liveSymbolIdentity.pdbAge = result.pe.pdbAge;
+    if (!module.path.empty())
+    {
+        DiaSymbolProvider symbols;
+        if (symbols.Load(module.path, liveSymbolIdentity))
+        {
+            result.symbolsLoaded = true;
+            result.symbols = symbols.Symbols();
+            result.symbolTypes = symbols.Types();
+            result.symbolIdentity = symbols.Identity();
+            result.functions = functionAnalyzer.DiscoverFunctionsFromSymbols(
+                result.functions, module.baseAddress, module.size, result.symbols,
+                is64Bit, options.maxFunctions);
+        }
+        else
+            result.symbolDiagnostic = symbols.LastError();
+    }
 
     std::vector<uint64_t> exportAddresses;
     for (const auto& entry : result.pe.exports)
@@ -435,6 +461,9 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
         return false;
     };
 
+    std::string identityError;
+    ComputeModuleIdentity(mappedImage, pe, module.name, result.identity, identityError);
+
     Disassembler disassembler;
     if (!disassembler.Init(pe.is64bit))
     {
@@ -497,6 +526,22 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
 
     result.functions = functionAnalyzer.DiscoverFunctionsFromRuntimeFunctions(
         result.functions, module.baseAddress, pe.runtimeFunctions, pe.is64bit);
+    if (!module.path.empty())
+    {
+        DiaSymbolProvider symbols;
+        if (symbols.Load(module.path, result.identity))
+        {
+            result.symbolsLoaded = true;
+            result.symbols = symbols.Symbols();
+            result.symbolTypes = symbols.Types();
+            result.symbolIdentity = symbols.Identity();
+            result.functions = functionAnalyzer.DiscoverFunctionsFromSymbols(
+                result.functions, module.baseAddress, module.size, result.symbols,
+                pe.is64bit, options.maxFunctions);
+        }
+        else
+            result.symbolDiagnostic = symbols.LastError();
+    }
     std::vector<uint64_t> exports;
     for (const auto& entry : pe.exports)
         if (!entry.isForwarder) exports.push_back(module.baseAddress + entry.rva);
@@ -621,9 +666,6 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
             progress(0.55f + 0.25f * static_cast<float>(readableIndex) / readableSections);
     }
     result.stringBudgetReached = remainingStrings == 0;
-
-    std::string identityError;
-    ComputeModuleIdentity(mappedImage, pe, module.name, result.identity, identityError);
 
     SignatureEngine signatureEngine;
     std::sort(allInstructions.begin(), allInstructions.end(),

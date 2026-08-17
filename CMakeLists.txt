@@ -42,6 +42,36 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+set(OPENREVERSE_HAS_DIA OFF)
+set(_openreverse_dia_roots)
+if(DEFINED ENV{VSINSTALLDIR})
+    list(APPEND _openreverse_dia_roots "$ENV{VSINSTALLDIR}/DIA SDK")
+endif()
+file(GLOB _openreverse_detected_dia_roots LIST_DIRECTORIES true
+    "C:/Program Files (x86)/Microsoft Visual Studio/2022/*/DIA SDK")
+list(APPEND _openreverse_dia_roots ${_openreverse_detected_dia_roots})
+foreach(_dia_root IN LISTS _openreverse_dia_roots)
+    if(EXISTS "${_dia_root}/include/dia2.h" AND
+       EXISTS "${_dia_root}/lib/amd64/diaguids.lib")
+        set(OPENREVERSE_DIA_INCLUDE_DIR "${_dia_root}/include")
+        set(OPENREVERSE_DIA_GUIDS_LIBRARY "${_dia_root}/lib/amd64/diaguids.lib")
+        set(OPENREVERSE_DIA_RUNTIME "${_dia_root}/bin/amd64/msdia140.dll")
+        set(OPENREVERSE_HAS_DIA ON)
+        break()
+    endif()
+endforeach()
+message(STATUS "OpenReverse DIA provider: ${OPENREVERSE_HAS_DIA}")
+
+function(openreverse_enable_dia target_name)
+    if(OPENREVERSE_HAS_DIA)
+        target_include_directories(${target_name} PRIVATE ${OPENREVERSE_DIA_INCLUDE_DIR})
+        target_link_libraries(${target_name} PRIVATE ${OPENREVERSE_DIA_GUIDS_LIBRARY} oleaut32)
+        target_compile_definitions(${target_name} PRIVATE OPENREVERSE_HAS_DIA=1)
+    else()
+        target_compile_definitions(${target_name} PRIVATE OPENREVERSE_HAS_DIA=0)
+    endif()
+endfunction()
+
 add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -92,8 +122,22 @@ target_compile_definitions(OpenReverse PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
 )
+openreverse_enable_dia(OpenReverse)
 
 set_target_properties(OpenReverse PROPERTIES OUTPUT_NAME "OpenReverse")
+
+if(OPENREVERSE_HAS_DIA AND EXISTS "${OPENREVERSE_DIA_RUNTIME}")
+    add_custom_command(TARGET OpenReverse POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OPENREVERSE_DIA_RUNTIME}" "$<TARGET_FILE_DIR:OpenReverse>/msdia140.dll"
+        VERBATIM)
+    set(OPENREVERSE_DIA_RESOURCE_LINE
+        "102 RCDATA \"${OPENREVERSE_DIA_RUNTIME}\"")
+    set(OPENREVERSE_INSTALLER_HAS_DIA 1)
+else()
+    set(OPENREVERSE_DIA_RESOURCE_LINE "")
+    set(OPENREVERSE_INSTALLER_HAS_DIA 0)
+endif()
 
 set(OPENREVERSE_INSTALLER_PAYLOAD
     ${CMAKE_CURRENT_BINARY_DIR}/installer/OpenReverse.payload.exe
@@ -116,7 +160,7 @@ set_source_files_properties(
 )
 set_source_files_properties(
     ${CMAKE_CURRENT_BINARY_DIR}/installer/setup.rc
-    PROPERTIES OBJECT_DEPENDS ${OPENREVERSE_INSTALLER_PAYLOAD}
+    PROPERTIES OBJECT_DEPENDS "${OPENREVERSE_INSTALLER_PAYLOAD};${OPENREVERSE_DIA_RUNTIME}"
 )
 
 add_executable(OpenReverse_Setup WIN32
@@ -147,6 +191,7 @@ target_compile_definitions(OpenReverse_Setup PRIVATE
     _UNICODE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
+    OPENREVERSE_INSTALLS_DIA=${OPENREVERSE_INSTALLER_HAS_DIA}
 )
 
 set_target_properties(OpenReverse_Setup PROPERTIES
@@ -163,6 +208,7 @@ if(BUILD_TESTING)
         src/core/analysis_scheduler.cpp
         src/core/binary_diff.cpp
         src/core/data_analyzer.cpp
+        src/core/dia_symbol_provider.cpp
         src/core/disassembler.cpp
         src/core/dump_loader.cpp
         src/core/function_analyzer.cpp
@@ -201,6 +247,7 @@ if(BUILD_TESTING)
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
+    openreverse_enable_dia(OpenReverseCoreTests)
     add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
 
     add_executable(OpenReverseAuthTests
@@ -229,9 +276,17 @@ if(BUILD_TESTING)
     add_test(NAME OpenReverse.Auth COMMAND OpenReverseAuthTests)
 
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
+    target_compile_options(OpenReverseTestFixture PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Zi>)
+    target_link_options(OpenReverseTestFixture PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/DEBUG:FULL>)
     set_target_properties(OpenReverseTestFixture PROPERTIES
         OUTPUT_NAME "OpenReverseTestFixture"
     )
+    if(OPENREVERSE_HAS_DIA AND EXISTS "${OPENREVERSE_DIA_RUNTIME}")
+        add_custom_command(TARGET OpenReverseCoreTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENREVERSE_DIA_RUNTIME}" "$<TARGET_FILE_DIR:OpenReverseCoreTests>/msdia140.dll"
+            VERBATIM)
+    endif()
     add_test(NAME OpenReverse.StaticOpen
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/static_open_test.ps1
@@ -285,7 +340,7 @@ if(BUILD_TESTING)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-extensions"
     )
 
-    add_dependencies(OpenReverseCoreTests OpenReverseHelloExtension
+    add_dependencies(OpenReverseCoreTests OpenReverseTestFixture OpenReverseHelloExtension
         OpenReverseMissingEntrypointExtension OpenReverseFailingExtension
         OpenReverseStateExtension)
     target_compile_definitions(OpenReverseCoreTests PRIVATE
@@ -294,5 +349,7 @@ if(BUILD_TESTING)
         OPENREVERSE_TEST_FAILING_EXTENSION="$<TARGET_FILE:OpenReverseFailingExtension>"
         OPENREVERSE_TEST_STATE_EXTENSION="$<TARGET_FILE:OpenReverseStateExtension>"
         OPENREVERSE_TEST_HELLO_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/examples/hello_extension/manifest.json"
+        OPENREVERSE_TEST_FIXTURE_EXE="$<TARGET_FILE:OpenReverseTestFixture>"
+        OPENREVERSE_TEST_FIXTURE_PDB="$<TARGET_PDB_FILE:OpenReverseTestFixture>"
     )
 endif()

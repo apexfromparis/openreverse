@@ -128,7 +128,8 @@ void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult r
     app.analysisDatabase.ReplaceModuleAnalysis(result.module, app.is64Bit, result.pe,
                                                result.functions, result.xrefs, result.strings,
                                                result.globals, result.fieldAccesses, result.structures,
-                                               result.offsets, result.signatures, result.identity);
+                                               result.offsets, result.signatures, result.identity,
+                                               result.symbols, result.symbolTypes, result.symbolIdentity);
     functions_ = std::move(result.functions);
     app.xrefScanner.ReplaceEntries(std::move(result.xrefs));
     app.stringResults = std::move(result.strings);

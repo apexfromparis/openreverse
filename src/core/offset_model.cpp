@@ -212,6 +212,8 @@ bool ComputeModuleIdentity(const std::vector<uint8_t>& bytes, const PEInfo& pe,
     identity.peTimestamp = pe.timestamp;
     identity.imageSize = pe.sizeOfImage;
     identity.imageBase = pe.imageBase;
+    identity.pdbGuid = pe.pdbGuid;
+    identity.pdbAge = pe.pdbAge;
     return true;
 }
 

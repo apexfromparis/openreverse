@@ -7,6 +7,7 @@
 #include "core/string_scanner.h"
 #include "core/xref_scanner.h"
 #include "core/offset_model.h"
+#include "core/symbol_provider.h"
 
 #include <cstdint>
 #include <map>
@@ -27,6 +28,9 @@ struct ModuleAnalysisState {
     std::vector<OffsetRecord> offsets;
     std::vector<SignatureRecord> signatures;
     ModuleIdentity identity;
+    std::vector<SymbolRecord> symbols;
+    std::vector<SymbolTypeRecord> symbolTypes;
+    SymbolProviderIdentity symbolIdentity;
     std::map<uint64_t, size_t> functionByAddress;
     std::multimap<uint64_t, size_t> xrefsBySource;
     std::multimap<uint64_t, size_t> xrefsByTarget;
@@ -49,7 +53,10 @@ public:
                                    const std::vector<StructureCandidate>& structures = {},
                                    const std::vector<OffsetRecord>& offsets = {},
                                    const std::vector<SignatureRecord>& signatures = {},
-                                   const ModuleIdentity& identity = {});
+                                   const ModuleIdentity& identity = {},
+                                   const std::vector<SymbolRecord>& symbols = {},
+                                   const std::vector<SymbolTypeRecord>& symbolTypes = {},
+                                   const SymbolProviderIdentity& symbolIdentity = {});
     uint64_t MergeModuleAnalysis(const ModuleInfo& module, bool is64Bit, const PEInfo& pe,
                                  const std::vector<FunctionInfo>& functions,
                                  const std::vector<XRefEntry>& xrefs,
@@ -59,7 +66,10 @@ public:
                                  const std::vector<StructureCandidate>& structures = {},
                                  const std::vector<OffsetRecord>& offsets = {},
                                  const std::vector<SignatureRecord>& signatures = {},
-                                 const ModuleIdentity& identity = {});
+                                 const ModuleIdentity& identity = {},
+                                 const std::vector<SymbolRecord>& symbols = {},
+                                 const std::vector<SymbolTypeRecord>& symbolTypes = {},
+                                 const SymbolProviderIdentity& symbolIdentity = {});
 
     const ModuleAnalysisState* GetModule(uint64_t moduleBase) const;
     const ModuleAnalysisState* FindModuleContaining(uint64_t address) const;

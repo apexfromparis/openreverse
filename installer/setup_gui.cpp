@@ -69,9 +69,10 @@ struct WizardContext
     HBRUSH hBrushEdit = nullptr;
 
     int step = 0;
-    std::string installDir;
-    std::string targetExe;
-    std::string uninstallerExe;
+    std::wstring installDir;
+    std::wstring targetExe;
+    std::wstring uninstallerExe;
+    std::wstring diaRuntime;
     std::wstring failureMessage;
     bool deleteSelfOnExit = false;
 };
@@ -116,15 +117,48 @@ static void AppendLog(const std::wstring& line)
     SendMessageW(g_ctx.hwndLog, EM_SCROLLCARET, 0, 0);
 }
 
-static std::wstring Widen(const std::string& value)
+static std::wstring ModulePath()
 {
-    if (value.empty()) return {};
-    const int length = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
-    if (length <= 1) return {};
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), length);
-    result.pop_back();
+    std::wstring result(512, L'\0');
+    for (;;)
+    {
+        const DWORD length = GetModuleFileNameW(nullptr, result.data(),
+                                                static_cast<DWORD>(result.size()));
+        if (length == 0) return {};
+        if (length < result.size() - 1)
+        {
+            result.resize(length);
+            return result;
+        }
+        if (result.size() >= 32768) return {};
+        result.resize(result.size() * 2);
+    }
+}
+
+static std::wstring KnownFolderPath(REFKNOWNFOLDERID folder)
+{
+    PWSTR value = nullptr;
+    if (FAILED(SHGetKnownFolderPath(folder, KF_FLAG_DEFAULT, nullptr, &value))) return {};
+    std::wstring result(value);
+    CoTaskMemFree(value);
     return result;
+}
+
+static std::wstring TemporaryDirectory()
+{
+    std::wstring result(512, L'\0');
+    for (;;)
+    {
+        const DWORD length = GetTempPathW(static_cast<DWORD>(result.size()), result.data());
+        if (length == 0) return {};
+        if (length < result.size())
+        {
+            result.resize(length);
+            return result;
+        }
+        if (length > 32768) return {};
+        result.resize(static_cast<size_t>(length) + 1);
+    }
 }
 
 static std::wstring VersionedProduct()
@@ -132,10 +166,10 @@ static std::wstring VersionedProduct()
     return std::wstring(L"OpenReverse ") + openreverse::kVersionWide;
 }
 
-static bool WriteEmbeddedApplication()
+static bool WriteEmbeddedResource(WORD resourceId, const std::wstring& destination)
 {
     HMODULE module = GetModuleHandleW(nullptr);
-    HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(101), RT_RCDATA);
+    HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
     if (!resource) return false;
 
     HGLOBAL loaded = LoadResource(module, resource);
@@ -143,30 +177,30 @@ static bool WriteEmbeddedApplication()
     const void* data = loaded ? LockResource(loaded) : nullptr;
     if (!data || size == 0) return false;
 
-    HANDLE file = CreateFileA(g_ctx.targetExe.c_str(), GENERIC_WRITE, 0, nullptr,
+    HANDLE file = CreateFileW(destination.c_str(), GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
 
     DWORD written = 0;
     const bool success = WriteFile(file, data, size, &written, nullptr) && written == size;
     CloseHandle(file);
-    if (!success) DeleteFileA(g_ctx.targetExe.c_str());
+    if (!success) DeleteFileW(destination.c_str());
     return success;
 }
 
 static bool CopyUninstaller()
 {
-    char source[MAX_PATH] = {};
-    if (!GetModuleFileNameA(nullptr, source, MAX_PATH)) return false;
-    if (_stricmp(source, g_ctx.uninstallerExe.c_str()) == 0) return true;
-    return CopyFileA(source, g_ctx.uninstallerExe.c_str(), FALSE) != FALSE;
+    const std::wstring source = ModulePath();
+    if (source.empty()) return false;
+    if (_wcsicmp(source.c_str(), g_ctx.uninstallerExe.c_str()) == 0) return true;
+    return CopyFileW(source.c_str(), g_ctx.uninstallerExe.c_str(), FALSE) != FALSE;
 }
 
-static bool SetRegistryString(HKEY key, const char* name, const std::string& value)
+static bool SetRegistryString(HKEY key, const wchar_t* name, const std::wstring& value)
 {
-    return RegSetValueExA(key, name, 0, REG_SZ,
+    return RegSetValueExW(key, name, 0, REG_SZ,
         reinterpret_cast<const BYTE*>(value.c_str()),
-        static_cast<DWORD>(value.size() + 1)) == ERROR_SUCCESS;
+        static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
 }
 
 static void FailOperation(HWND hwnd, UINT timerId, const std::wstring& message)
@@ -304,9 +338,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             24, 195, 200, 20, hwnd, (HMENU)IDC_DEST_LABEL, nullptr, nullptr);
         SendMessageW(g_ctx.hwndDestLabel, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
 
-        WCHAR wInstallDir[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, g_ctx.installDir.c_str(), -1, wInstallDir, MAX_PATH);
-        g_ctx.hwndDestPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", wInstallDir,
+        g_ctx.hwndDestPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", g_ctx.installDir.c_str(),
             WS_CHILD | ES_AUTOHSCROLL | ES_READONLY,
             24, 218, 460, 24, hwnd, (HMENU)IDC_DEST_PATH, nullptr, nullptr);
         SendMessageW(g_ctx.hwndDestPath, WM_SETFONT, (WPARAM)g_ctx.hFontNormal, TRUE);
@@ -360,31 +392,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (g_ctx.step == 1)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 15, 0);
-                AppendLog(L"Create folder: " + Widen(g_ctx.installDir));
-                const int result = SHCreateDirectoryExA(nullptr, g_ctx.installDir.c_str(), nullptr);
+                AppendLog(L"Create folder: " + g_ctx.installDir);
+                const int result = SHCreateDirectoryExW(nullptr, g_ctx.installDir.c_str(), nullptr);
                 if (result != ERROR_SUCCESS && result != ERROR_FILE_EXISTS && result != ERROR_ALREADY_EXISTS)
                     FailOperation(hwnd, 1, L"The installation directory could not be created.");
                 else
                 {
-                    const std::string extensionDirectory = g_ctx.installDir + "\\extensions";
-                    const int extensionResult = SHCreateDirectoryExA(nullptr,
+                    const std::wstring extensionDirectory = g_ctx.installDir + L"\\extensions";
+                    const int extensionResult = SHCreateDirectoryExW(nullptr,
                         extensionDirectory.c_str(), nullptr);
                     if (extensionResult != ERROR_SUCCESS && extensionResult != ERROR_FILE_EXISTS &&
                         extensionResult != ERROR_ALREADY_EXISTS)
                         FailOperation(hwnd, 1, L"The extensions directory could not be created.");
                     else
-                        AppendLog(L"Create folder: " + Widen(extensionDirectory));
+                        AppendLog(L"Create folder: " + extensionDirectory);
                 }
             }
             else if (g_ctx.step == 2)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 45, 0);
                 AppendLog(L"Extract: OpenReverse.exe");
-                if (!WriteEmbeddedApplication())
+                if (!WriteEmbeddedResource(101, g_ctx.targetExe))
                 {
                     FailOperation(hwnd, 1, L"OpenReverse.exe could not be extracted.");
                     break;
                 }
+#if OPENREVERSE_INSTALLS_DIA
+                AppendLog(L"Extract: msdia140.dll");
+                if (!WriteEmbeddedResource(102, g_ctx.diaRuntime))
+                {
+                    FailOperation(hwnd, 1, L"The optional DIA symbol runtime could not be extracted.");
+                    break;
+                }
+#endif
                 AppendLog(L"Install: Uninstall.exe");
                 if (!CopyUninstaller())
                     FailOperation(hwnd, 1, L"The uninstaller could not be installed.");
@@ -392,17 +432,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             else if (g_ctx.step == 3)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 75, 0);
-                const std::wstring installDir = Widen(g_ctx.installDir);
-                const std::wstring targetExe = Widen(g_ctx.targetExe);
                 const std::wstring description = VersionedProduct();
 
                 if (SendMessageW(g_ctx.hwndChkDesktop, BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
-                    char desktopPath[MAX_PATH];
-                    if (SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, desktopPath) == S_OK)
+                    const std::wstring desktopPath = KnownFolderPath(FOLDERID_Desktop);
+                    if (!desktopPath.empty())
                     {
-                        const std::wstring shortcut = Widen(std::string(desktopPath) + "\\OpenReverse.lnk");
-                        if (!CreateShortcut(targetExe, installDir, shortcut, description))
+                        const std::wstring shortcut = desktopPath + L"\\OpenReverse.lnk";
+                        if (!CreateShortcut(g_ctx.targetExe, g_ctx.installDir, shortcut, description))
                         {
                             FailOperation(hwnd, 1, L"The Desktop shortcut could not be created.");
                             break;
@@ -412,11 +450,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 if (SendMessageW(g_ctx.hwndChkStartMenu, BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
-                    char startMenuPath[MAX_PATH];
-                    if (SHGetFolderPathA(nullptr, CSIDL_PROGRAMS, nullptr, SHGFP_TYPE_CURRENT, startMenuPath) == S_OK)
+                    const std::wstring startMenuPath = KnownFolderPath(FOLDERID_Programs);
+                    if (!startMenuPath.empty())
                     {
-                        const std::wstring shortcut = Widen(std::string(startMenuPath) + "\\OpenReverse.lnk");
-                        if (!CreateShortcut(targetExe, installDir, shortcut, description))
+                        const std::wstring shortcut = startMenuPath + L"\\OpenReverse.lnk";
+                        if (!CreateShortcut(g_ctx.targetExe, g_ctx.installDir, shortcut, description))
                         {
                             FailOperation(hwnd, 1, L"The Start Menu shortcut could not be created.");
                             break;
@@ -431,17 +469,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (SendMessageW(g_ctx.hwndChkRegistry, BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
                     HKEY hKey;
-                    if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse",
+                    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse",
                         0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
                     {
-                        const std::string uninstallCommand = "\"" + g_ctx.uninstallerExe + "\" --uninstall";
+                        const std::wstring uninstallCommand = L"\"" + g_ctx.uninstallerExe + L"\" --uninstall";
                         const bool registered =
-                            SetRegistryString(hKey, "DisplayName", "OpenReverse") &&
-                            SetRegistryString(hKey, "DisplayVersion", openreverse::kVersion) &&
-                            SetRegistryString(hKey, "Publisher", "OpenReverse Community") &&
-                            SetRegistryString(hKey, "InstallLocation", g_ctx.installDir) &&
-                            SetRegistryString(hKey, "DisplayIcon", g_ctx.targetExe) &&
-                            SetRegistryString(hKey, "UninstallString", uninstallCommand);
+                            SetRegistryString(hKey, L"DisplayName", L"OpenReverse") &&
+                            SetRegistryString(hKey, L"DisplayVersion", openreverse::kVersionWide) &&
+                            SetRegistryString(hKey, L"Publisher", L"OpenReverse Community") &&
+                            SetRegistryString(hKey, L"InstallLocation", g_ctx.installDir) &&
+                            SetRegistryString(hKey, L"DisplayIcon", g_ctx.targetExe) &&
+                            SetRegistryString(hKey, L"UninstallString", uninstallCommand);
                         RegCloseKey(hKey);
                         if (!registered)
                         {
@@ -473,38 +511,45 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 35, 0);
                 AppendLog(L"Delete shortcut: Desktop\\OpenReverse.lnk");
-                char desktopPath[MAX_PATH];
-                if (SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, desktopPath) == S_OK)
-                    DeleteFileA((std::string(desktopPath) + "\\OpenReverse.lnk").c_str());
+                const std::wstring desktopPath = KnownFolderPath(FOLDERID_Desktop);
+                if (!desktopPath.empty())
+                    DeleteFileW((desktopPath + L"\\OpenReverse.lnk").c_str());
             }
             else if (g_ctx.step == 2)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 70, 0);
                 AppendLog(L"Delete shortcut: Start Menu\\OpenReverse.lnk");
-                char startMenuPath[MAX_PATH];
-                if (SHGetFolderPathA(nullptr, CSIDL_PROGRAMS, nullptr, SHGFP_TYPE_CURRENT, startMenuPath) == S_OK)
-                    DeleteFileA((std::string(startMenuPath) + "\\OpenReverse.lnk").c_str());
+                const std::wstring startMenuPath = KnownFolderPath(FOLDERID_Programs);
+                if (!startMenuPath.empty())
+                    DeleteFileW((startMenuPath + L"\\OpenReverse.lnk").c_str());
             }
             else if (g_ctx.step == 3)
             {
                 SendMessageW(g_ctx.hwndProgress, PBM_SETPOS, 90, 0);
                 AppendLog(L"Delete registry key: Uninstall\\OpenReverse");
-                RegDeleteKeyA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse");
+                RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenReverse");
             }
             else if (g_ctx.step == 4)
             {
                 AppendLog(L"Delete: OpenReverse.exe");
-                if (!DeleteFileA(g_ctx.targetExe.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+                if (!DeleteFileW(g_ctx.targetExe.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
                 {
                     FailOperation(hwnd, 2, L"OpenReverse.exe is still in use and could not be removed.");
                     break;
                 }
+#if OPENREVERSE_INSTALLS_DIA
+                AppendLog(L"Delete: msdia140.dll");
+                if (!DeleteFileW(g_ctx.diaRuntime.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+                {
+                    FailOperation(hwnd, 2, L"msdia140.dll is still in use and could not be removed.");
+                    break;
+                }
+#endif
 
-                char self[MAX_PATH] = {};
-                GetModuleFileNameA(nullptr, self, MAX_PATH);
-                if (_stricmp(self, g_ctx.uninstallerExe.c_str()) != 0)
-                    DeleteFileA(g_ctx.uninstallerExe.c_str());
-                if (!RemoveDirectoryA(g_ctx.installDir.c_str()))
+                const std::wstring self = ModulePath();
+                if (_wcsicmp(self.c_str(), g_ctx.uninstallerExe.c_str()) != 0)
+                    DeleteFileW(g_ctx.uninstallerExe.c_str());
+                if (!RemoveDirectoryW(g_ctx.installDir.c_str()))
                 {
                     const DWORD error = GetLastError();
                     if (error == ERROR_DIR_NOT_EMPTY)
@@ -542,7 +587,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             {
                 if (SendMessageW(g_ctx.hwndChkRunNow, BM_GETCHECK, 0, 0) == BST_CHECKED)
                 {
-                    ShellExecuteA(nullptr, "open", g_ctx.targetExe.c_str(), nullptr, g_ctx.installDir.c_str(), SW_SHOW);
+                    ShellExecuteW(nullptr, L"open", g_ctx.targetExe.c_str(), nullptr,
+                                  g_ctx.installDir.c_str(), SW_SHOW);
                 }
                 PostQuitMessage(0);
             }
@@ -598,9 +644,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     {
         if (g_ctx.deleteSelfOnExit)
         {
-            wchar_t self[MAX_PATH] = {};
-            if (GetModuleFileNameW(nullptr, self, MAX_PATH))
-                MoveFileExW(self, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+            const std::wstring self = ModulePath();
+            if (!self.empty()) MoveFileExW(self.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
         }
         if (g_ctx.hFontNormal) DeleteObject(g_ctx.hFontNormal);
         if (g_ctx.hFontBold) DeleteObject(g_ctx.hFontBold);
@@ -613,35 +658,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow)
 {
     (void)hPrevInstance;
     (void)nCmdShow;
 
-    char localAppData[MAX_PATH] = { 0 };
-    SHGetFolderPathA(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localAppData);
-    g_ctx.installDir = std::string(localAppData) + "\\Programs\\OpenReverse";
-    g_ctx.targetExe = g_ctx.installDir + "\\OpenReverse.exe";
-    g_ctx.uninstallerExe = g_ctx.installDir + "\\Uninstall.exe";
+    const std::wstring localAppData = KnownFolderPath(FOLDERID_LocalAppData);
+    if (localAppData.empty())
+    {
+        MessageBoxW(nullptr, L"The current user's application-data folder is unavailable.",
+                    L"OpenReverse Setup", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    g_ctx.installDir = localAppData + L"\\Programs\\OpenReverse";
+    g_ctx.targetExe = g_ctx.installDir + L"\\OpenReverse.exe";
+    g_ctx.uninstallerExe = g_ctx.installDir + L"\\Uninstall.exe";
+    g_ctx.diaRuntime = g_ctx.installDir + L"\\msdia140.dll";
 
-    const std::string cmdLine = lpCmdLine ? lpCmdLine : "";
-    g_ctx.isUninstall = cmdLine.find("--uninstall") != std::string::npos ||
-        cmdLine.find("/uninstall") != std::string::npos;
-    const bool fromTemporaryCopy = cmdLine.find("--from-temp") != std::string::npos;
+    const std::wstring cmdLine = lpCmdLine ? lpCmdLine : L"";
+    g_ctx.isUninstall = cmdLine.find(L"--uninstall") != std::wstring::npos ||
+        cmdLine.find(L"/uninstall") != std::wstring::npos;
+    const bool fromTemporaryCopy = cmdLine.find(L"--from-temp") != std::wstring::npos;
 
     if (g_ctx.isUninstall && !fromTemporaryCopy)
     {
-        char self[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, self, MAX_PATH);
-        if (_stricmp(self, g_ctx.uninstallerExe.c_str()) == 0)
+        const std::wstring self = ModulePath();
+        if (_wcsicmp(self.c_str(), g_ctx.uninstallerExe.c_str()) == 0)
         {
-            char tempDir[MAX_PATH] = {};
-            GetTempPathA(MAX_PATH, tempDir);
-            const std::string tempUninstaller = std::string(tempDir) +
-                "OpenReverse-Uninstall-" + std::to_string(GetCurrentProcessId()) + ".exe";
-            if (!CopyFileA(self, tempUninstaller.c_str(), FALSE) ||
-                reinterpret_cast<INT_PTR>(ShellExecuteA(nullptr, "open", tempUninstaller.c_str(),
-                    "--uninstall --from-temp", nullptr, SW_SHOW)) <= 32)
+            const std::wstring tempDir = TemporaryDirectory();
+            const std::wstring tempUninstaller = tempDir + L"OpenReverse-Uninstall-" +
+                std::to_wstring(GetCurrentProcessId()) + L".exe";
+            if (tempDir.empty() || !CopyFileW(self.c_str(), tempUninstaller.c_str(), FALSE) ||
+                reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", tempUninstaller.c_str(),
+                    L"--uninstall --from-temp", nullptr, SW_SHOW)) <= 32)
             {
                 MessageBoxW(nullptr, L"The OpenReverse uninstaller could not be started.",
                     L"OpenReverse Uninstaller", MB_OK | MB_ICONERROR);
