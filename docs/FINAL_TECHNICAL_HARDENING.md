@@ -1,96 +1,131 @@
 # Final technical hardening
 
-Last verified against `7a947373a723a4a30e1f71b34e331112a9512602` on
-2026-08-17. This document records only issues confirmed in the current source;
-it is updated as the hardening pass closes them.
+Last updated: 2026-08-17
 
-## Baseline
+This pass started from `7a947373a723a4a30e1f71b34e331112a9512602`.
+The baseline Release build, installer, two CTest tests, and CLI smoke tests were
+green before implementation. Unrelated local commercial documents and a
+screenshot remained untracked and were not modified or staged.
 
-- Windows x64 Release configure/build: passed.
-- Installer `OpenReverse-2.0.0-Setup.exe`: built.
-- Release CTest: 2/2 passed.
-- CLI `--help`, `--version`, and static `open` fixture smoke tests: passed.
-- `HEAD` matched `origin/main`; four unrelated local documentation/screenshot
-  files were untracked and are intentionally excluded from this work.
+## Closed findings
 
-## P0 — correctness / security
+### P0 — correctness and security
 
-- `src/main.cpp` exposes a hidden `--decompile-exe` path that launches the
-  supplied executable before attaching. Its name falsely suggests static
-  analysis, and it passes a casted `std::string::c_str()` to mutable
-  `CreateProcessA` storage.
-- Static `open`, dump, and project paths are implemented as parsers/loaders, but
-  the invariant is not protected by an integration regression that detects
-  accidental target execution.
-- The D3D render-target, resize, presentation, window-class, and window-creation
-  paths ignore important HRESULT/Win32 failures and may dereference a missing
-  back buffer after device loss or initialization failure.
+- Removed the hidden `--decompile-exe`/`--decompile-pid` path that launched a
+  supplied executable under a misleading static-analysis name. No public CLI
+  analysis command calls `CreateProcess`.
+- Added a regression sentinel proving that normal and Unicode-path `open`
+  workflows do not execute the analyzed fixture. The removed legacy command is
+  also checked for fail-closed behavior.
+- Added checked Direct3D device/swap-chain/render-target/resize/present and
+  Win32 window initialization failure paths.
+- Kept binary, dump, project, and corpus input handling parser-only. Offline
+  targets are never loaded as executable modules.
 
-## P1 — analysis quality
+### P1 — analysis quality
 
-- Control-flow semantics are duplicated as mnemonic-string comparisons in
-  `Disassembler`, `FunctionAnalyzer`, and `DataAnalyzer`, despite Capstone IDs
-  and groups already being retained.
-- `ModuleAnalyzer` publishes discovered function records without computing
-  their CFGs. Only the selected UI/CLI function is analyzed on demand, so the
-  canonical database and Version Intelligence often see empty instruction and
-  CFG evidence.
-- `ISymbolProvider` has no concrete implementation. PE CodeView identity is not
-  parsed, DIA symbols/types are not ingested, and the controlled fixture PDB is
-  not validated. The installed Visual Studio Build Tools includes the DIA SDK,
-  so there is no local external blocker.
-- Register-origin propagation is linear within a section-wide instruction
-  stream. It neither starts from CFG predecessors nor rejects conflicting merge
-  origins explicitly. Field evidence therefore cannot distinguish stable
-  inter-block provenance from a coincidental linear decode.
-- Version Intelligence compares an instruction multiset plus one whole-function
-  ordered hash, but has no local ordered n-gram/block sequence evidence. Its
-  context builder repeatedly scans whole Xref/string/global/signature/field
-  collections for every function.
-- Signature migration evaluates each pattern independently against the new
-  image; no per-comparison scan result cache is shared.
-- Parser tests cover many malformed PE/project cases, but there is no dedicated
-  deterministic malformed-input corpus runner or fuzz/sanitizer job.
+- Centralized control-flow classification in a Capstone ID/group and operand
+  metadata helper. Function/CFG/data analysis no longer maintains separate
+  mnemonic allowlists for calls, jumps, returns, or traps.
+- The mapped and live module pipelines now publish a bounded CFG for each
+  analyzed function. Discovery provenance distinguishes runtime functions,
+  symbols, exports, entry points, direct calls, traversal, and heuristic seeds.
+- Added an optional DIA implementation that validates PE CodeView GUID/age,
+  reads public/function symbols and boundaries, and imports structures, fields,
+  and enums. A controlled MSVC fixture verifies identity and type data when the
+  DIA SDK is installed.
+- Added deterministic predecessor-state merging for register origins. Agreed
+  Windows x64 argument origins cross blocks; conflicting merges become
+  ambiguous. Direct-call return origins are bounded and field evidence retains
+  block, instruction, base/index/scale/displacement/width/access, origin, and
+  merge provenance.
+- Version Intelligence algorithm v2 adds ordered instruction n-grams, ordered
+  block hashes, typed CFG neighborhoods, symbol names, staged indexes, bounded
+  candidate work, and signature-scan reuse. V1 project decisions remain
+  readable. False-order, ambiguity, and 1,500-function scaling fixtures cover
+  the new behavior.
+- Added deterministic truncation/mutation loops for PE, project, and extension
+  manifest parsers. Existing pattern, auth callback, and project limit tests
+  remain active.
 
-## P2 — architecture / performance
+### P2 — architecture, performance, and Windows behavior
 
-- `AnalysisDatabase` is nominally canonical, while `AnalysisPanel`,
-  `stringResults`, and `XRefScanner` retain authoritative-looking mirrors.
-  Several CLI commands still read or trigger analysis through `AnalysisPanel`.
-- `Application` still owns target lifecycle, dialogs, project orchestration,
-  analysis publication, CLI-facing services, extension services, navigation,
-  and all panels.
-- CMake recursively globs all application sources and recompiles the same core
-  and authentication sources directly into test executables instead of using
-  explicit reusable first-party libraries.
-- Touched open/save and PE-loading workflows use ANSI APIs and fixed
-  `MAX_PATH` buffers, so valid Unicode and long paths are not consistently
-  supported.
-- Stage durations exist in `ModuleAnalysisResult`, but no machine-readable
-  validation report records counts, truncation, failures, and timings across a
-  local corpus.
-- CI builds/tests Release only, does not compile first-party code at `/W4`, and
-  has no Debug or practical static-analysis validation.
+- `AnalysisDatabase` is the canonical published function/CFG/Xref/string/data
+  state. `AnalysisPanel` no longer owns a function collection, and CLI queries
+  the database/session rather than UI panels or ImGui state.
+- `Application` now owns one explicit analysis publication path used by desktop
+  and CLI workflows. The remaining `stringResults`/`XRefScanner` mirrors are
+  compatibility caches for panels not yet migrated, not alternate analysis
+  producers.
+- Replaced the recursive source glob with explicit `OpenReverseCore`,
+  `OpenReverseAuth`, `OpenReverseExtensions`, `OpenReverseUI`, vendor editor,
+  application, and validation targets. Tests link reusable libraries.
+- First-party targets compile at `/W4`; vendored ImGui/editor code is excluded
+  from that policy. An opt-in `OPENREVERSE_ENABLE_MSVC_ANALYZE` switch enables
+  MSVC code analysis without making normal CI dependent on tool-version noise.
+- CI and local presets build and test Release and Debug.
+- Touched file dialogs, PE loading, process/module discovery, dump export, and
+  comparison/offset paths use wide Win32 APIs, UTF-8 conversion, dynamic
+  buffers, or `std::filesystem::path`. The application manifest opts into long
+  paths and UTF-8 active code page behavior.
+- Analysis results expose code/discovery, CFG, data/structures, strings,
+  signatures, and total stage durations.
+- `OpenReverseValidation` recursively analyzes a user-supplied PE directory
+  without executing files and writes bounded JSON records containing relative
+  paths, raw-file SHA-256, architecture, counts, budgets, errors, and timings.
+  Reports are ignored by Git.
 
-## P3 — product / UX
+### P3/P4 — product and engineering quality
 
-- The CFG workspace is a list of edges and basic-block cards, not a spatial,
-  cached, pannable/zoomable graph.
-- At least the Functions and Memory Map tables declare
-  `ImGuiTableFlags_Sortable` without consuming `ImGuiTableSortSpecs`.
-- Function navigation recomputes selected CFGs rather than using canonical
-  cached analysis, creating avoidable latency and inconsistent evidence.
+- Replaced the vertical CFG-card list with a cached layered graph. It renders
+  typed colored edges and arrowheads, entry/exit block styling, instructions,
+  zoom, pan, fit, and click navigation. Rendering is bounded to 512 visible
+  nodes with an explicit truncation notice.
+- Removed sortable flags from Functions and Memory Map until real sort-spec
+  handling exists.
+- Consolidated first-party UTF-8/wide helpers and removed touched unsafe
+  fixed-buffer copies and warning sources.
 
-## P4 — engineering polish
+## Validation added
 
-- Touched Win32 conversion/file-dialog code duplicates ANSI/UTF conversion and
-  fixed-buffer handling.
-- Technical-debt, architecture, pipeline, Version Intelligence, building, and
-  release-readiness documentation must be reconciled after implementation.
+- `OpenReverse.Core`: deterministic core, DIA fixture, Version Intelligence,
+  persistence, extension lifecycle, parser mutations, and scaling checks.
+- `OpenReverse.Auth`: offline authentication security/state tests.
+- `OpenReverse.StaticOpen`: normal and Unicode static-open execution sentinel.
+- `OpenReverse.CorpusValidation`: valid Unicode-path PE plus malformed PE,
+  machine-readable report, timings, hash, and no-execution sentinel.
 
-## Explicit scope exclusions
+## Remaining limitations
 
-This pass does not implement billing, Stripe, subscriptions, entitlements,
-licenses, hosted AI, a commercial backend, private Pro code, protected-process
-bypasses, anti-cheat bypasses, kernel drivers, stealth injection, or release
-publication/signing.
+- `Application` remains a broad composition root; target lifecycle and
+  navigation are coherent future extraction boundaries.
+- Some UI consumers still read compatibility Xref/string caches. Their source
+  is the canonical published result, but removing them requires panel-by-panel
+  migration.
+- The CFG layout is deterministic and interactive but not a full graph editor;
+  very large functions are deliberately truncated for rendering.
+- DIA is optional and requires a compatible DIA runtime. PDB download/symbol
+  server policy is not implemented.
+- Data flow is conservative, bounded origin propagation, not SSA, general
+  alias analysis, or whole-program interprocedural analysis.
+- The controlled corpus proves the workflow. A representative external
+  open-source/Windows binary corpus still needs repeatable beta-candidate runs.
+- Automated tests do not drive native dialogs, inspect ImGui pixels, or perform
+  a complete installer install/uninstall cycle.
+- MSVC AddressSanitizer was not made a default CI job; the Debug build,
+  deterministic mutation corpus, parser budgets, and optional `/analyze` path
+  are the stable Windows checks in this pass.
+- Authenticode signing and signed update/rollback infrastructure remain pending
+  legitimate release credentials and are not simulated.
+
+## Release-readiness recommendation
+
+**NOT READY FOR PUBLIC BETA.** Core automated gates are green, but a beta build
+should not be published until the new CFG/file workflows receive a manual
+Windows UI pass, the installer is exercised through install/launch/uninstall,
+and the validator completes on a documented representative redistributable
+binary corpus without unexplained failures or budget regressions.
+
+This pass intentionally does not implement Stripe, billing, subscriptions,
+entitlements, licenses, hosted AI, a commercial backend, private Pro code,
+anti-cheat/protected-process bypasses, a release tag, or a GitHub Release.

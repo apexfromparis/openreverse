@@ -1,41 +1,42 @@
 # Confirmed remaining analysis work
 
-Verified against the implemented 2026-08-12 analysis pass. The canonical
-product version remains `2.0.0` from the top-level CMake project.
+Verified after the 2026-08-17 technical-hardening pass. The canonical product
+version remains `2.0.0` from the top-level CMake project.
 
-## P0 Correctness
+## P0 correctness
 
-No release-blocking correctness issue is currently confirmed by the regression
-suite. Malformed/sparse real-world dumps and PE edge cases should continue to be
-reported with minimized fixtures when found.
+No release-blocking static-analysis execution or parser correctness issue is
+known from the automated suite. New malformed PE/dump cases should be minimized
+and added to the bounded mutation fixtures when discovered.
 
-## P1 Analysis quality
+## P1 analysis quality
 
-- `ISymbolProvider` has no DIA/PDB implementation, so symbol and type ground
-  truth is not yet imported.
-- register-origin propagation is block-local; predecessor merging, aliasing,
-  interprocedural flow, indirect targets, and pointer chains remain unresolved.
-- signature generation accepts relocation RVAs but the PE base-relocation
-  directory is not yet fed into the shared pipeline.
-- the minidump loader requires sufficiently complete captured module headers and
-  ranges; sparse modules fail explicitly instead of attempting reconstruction.
-- function fingerprinting exists as a core foundation, but the desktop Migration
-  view currently evaluates imported signatures rather than a full old/new
-  function-neighborhood comparison.
+- Extend optional DIA support only where controlled fixtures justify additional
+  source/type relationships; define symbol-server and privacy policy first.
+- Preserve the current conservative predecessor merging while researching
+  bounded indirect targets, tail calls, pointer chains, and deeper
+  interprocedural evidence. Do not label this general alias analysis.
+- Feed validated PE relocation-directory evidence into signature generation.
+- Extend Version Intelligence to old dump projects and measured indirect-call
+  neighborhoods without allowing weak matches to bootstrap each other.
+- Run `OpenReverseValidation` against a documented, legally redistributable
+  representative corpus and retain only aggregate regression baselines.
 
-## P2 Architecture
+## P2 architecture and performance
 
-- `AnalysisDatabase` is canonical, but remaining panel snapshots and several CLI
-  function queries are compatibility consumers rather than direct database
-  queries.
-- `Application` still combines target session, navigation, and UI orchestration.
-- structure/signature indexes are not present because current consumers iterate
-  once per database revision; add them when query patterns justify them.
+- Migrate remaining compatibility Xref/string panel caches to direct
+  `AnalysisDatabase` queries.
+- Extract target lifecycle or navigation from `Application` only when ownership
+  and lifetime tests can move with the boundary.
+- Use corpus stage timings to decide whether shared decoding, multi-pattern
+  signature matching, or additional database indexes are justified.
 
-## P3 Product and UX
+## P3 product and validation
 
-- persistent OpenReverse projects and an **Open Project** workflow do not exist.
-- accepted migration candidates cannot yet be saved as user decisions.
-- application/native-dialog/UI automation is absent; dump configuration and
-  installer interaction are verified manually.
-- the CFG view is navigable but has no deterministic spatial graph layout.
+- Manually verify the graphical CFG across DPI/window sizes and large cyclic
+  functions, then consider better routing/minimap behavior above the current
+  512-node rendering budget.
+- Add non-pixel workflow tests where desktop target switching or project
+  lifecycle logic can be isolated from native dialogs.
+- Exercise the installer through install, launch, repair/upgrade, and uninstall
+  on a clean Windows VM before the first public beta.

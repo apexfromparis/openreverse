@@ -74,9 +74,11 @@ source function, and typed access.
 Global candidates retain VA, RVA, section, access counts, source instructions,
 source functions, operand widths, and all contributing Xrefs. Field evidence
 retains base/index/scale/displacement/width/access and basic register origin.
-Block-local propagation follows straightforward `MOV` and `LEA` relationships,
-seeds RCX/RDX/R8/R9 as Windows x64 arguments 1–4, rejects stack locals, and stops
-when a transform is ambiguous.
+Propagation follows straightforward `MOV`, `LEA`, copies, and deterministic
+spill/reload relationships, seeds RCX/RDX/R8/R9 as Windows x64 arguments 1–4,
+and merges predecessor states across the CFG. Conflicting incoming origins are
+marked ambiguous instead of choosing one. Bounded direct-call return evidence
+is retained without claiming general interprocedural or alias analysis.
 
 Structure candidates group compatible fields by containing function and root
 argument/register evidence. They are explicitly inferred candidates, not
@@ -119,8 +121,11 @@ cancellation, and publishes only when the current target generation still
 matches. User decisions live in `AnalysisSession` and the additive version-1
 project section.
 
-`ISymbolProvider` defines optional symbol/type ingestion. No concrete DIA/PDB
-provider is shipped yet, so symbols are not required for analysis.
+`ISymbolProvider` defines optional symbol/type ingestion. The Windows DIA
+provider validates PE CodeView GUID/age association and imports public/function
+symbols, boundaries, structure fields, and enums when a compatible DIA runtime
+and PDB are available. Symbol provenance remains distinct from heuristic facts;
+analysis works normally without DIA or PDB files.
 
 ## Canonical state and indexes
 
@@ -128,8 +133,16 @@ provider is shipped yet, so symbols are not required for analysis.
 CFGs, Xrefs, strings, globals, fields, structures, offsets, signatures, and
 module identity. It rebuilds deterministic indexes for function addresses,
 source/target Xrefs, strings, and globals whenever a module snapshot changes.
-User-defined offsets survive automatic replacement. Some panels retain display
-snapshots, but they do not run separate analysis pipelines.
+User-defined offsets survive automatic replacement. `AnalysisPanel` and CLI
+query this database rather than owning alternate function collections. A small
+number of panels still consume compatibility Xref/string mirrors populated only
+from the canonical published result; they do not run separate pipelines.
+
+The build reflects these dependency boundaries with explicit reusable
+`OpenReverseCore`, `OpenReverseAuth`, `OpenReverseExtensions`, and
+`OpenReverseUI` libraries. Core does not depend on Dear ImGui. The CLI command
+implementation uses `Application` orchestration and canonical session/database
+queries, never panel state.
 
 ## Native extension boundary
 
@@ -178,19 +191,22 @@ saved-project alternatives; OpenReverse does not attempt protection bypasses.
 
 ## Verification
 
-The Release regression path is:
+The Release and Debug regression paths are:
 
 ```powershell
 cmake --build --preset windows-x64-release --parallel
-ctest --test-dir build/windows-x64 -C Release --output-on-failure
+ctest --preset windows-x64-release
+cmake --build --preset windows-x64-debug --parallel
+ctest --preset windows-x64-debug
 ```
 
 `OpenReverse.Core` covers raw/mapped addressing, `.pdata`, mapped dump loading,
 operand Xrefs, globals, field provenance, register propagation, signatures,
 function comparison, migration ambiguity, JSON, SHA-256 identity, database
 indexes, scheduler publication/cancellation, `.orev` round-trips, corruption,
-atomic replacement, target mismatch/missing handling, session rebasing, and
-denied-access messaging. Controlled Version Intelligence fixtures cover indexed
+atomic replacement, target mismatch/missing handling, session rebasing,
+deterministic malformed-input mutations, and denied-access messaging.
+Controlled Version Intelligence fixtures cover indexed
 matching, ambiguity, false positives, deterministic changes, relationship-aware
 migrations, cancellation, and persisted decisions.
 
@@ -198,4 +214,6 @@ migrations, cancellation, and persisted decisions.
 vectors, cryptographic verifier/state properties, strict callback parsing,
 credential-field injection, state mismatch, replay, timeout, cancellation,
 exchange and refresh failures, logout, loopback binding, and isolated Windows
-Credential Manager store/read/replace/delete behavior.
+Credential Manager store/read/replace/delete behavior. `OpenReverse.StaticOpen`
+protects the no-execution invariant, and `OpenReverse.CorpusValidation` checks a
+valid Unicode-path PE and malformed candidate through the JSON corpus tool.

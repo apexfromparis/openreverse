@@ -34,13 +34,16 @@ displacements are ignored in the code token, small semantic constants and stack
 displacements remain distinguishable, and field displacements are retained as
 separate provenance.
 
-Candidate generation builds indexes for normalized hashes, CFG topology,
-instruction-count buckets, strings, imports, and stable signature fragments.
+Candidate generation builds indexes for normalized hashes, ordered instruction
+n-grams, ordered block hashes, typed CFG neighborhood tokens,
+instruction-count buckets, symbol names, strings, imports, fields, and stable
+signature fragments.
 Only indexed candidates receive the more expensive multi-signal score. Matching
 then proceeds through exact normalized identity, stable signatures, structural
 similarity, referenced-data evidence, and caller/callee refinement. Only
 already exact or strong callees may strengthen a parent; weak guesses cannot
-bootstrap each other.
+bootstrap each other. Per-function and total candidate budgets bound expensive
+scoring, and signature scan results are reused within one comparison.
 
 Each candidate stores structured evidence for normalized code, CFG, calls,
 strings, imports, globals, signatures, runtime boundaries, and matched callees.
@@ -80,5 +83,7 @@ Core regression fixtures cover moved functions, one-instruction changes, CFG
 changes, unrelated functions sharing a string, deliberate ambiguity, removed
 and new functions, changed global RVAs, changed structure-field displacements,
 unique/broken/duplicate signatures, matched-callee evidence, common tiny
-wrappers, same-size unrelated functions, typed offset migration, cancellation,
-and `.orev` decision round-trips.
+wrappers, same-size unrelated functions, reordered instruction evidence,
+1,500-function indexed scaling, typed offset migration, cancellation, and
+`.orev` decision round-trips. Version Intelligence v1 comparison decisions
+remain readable after the algorithm-v2 upgrade.

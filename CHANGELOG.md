@@ -8,6 +8,17 @@ reconstructed as release notes.
 
 ### Changed
 
+- Hardened the deterministic analysis pipeline with Capstone metadata semantics,
+  canonical per-function CFG publication, inter-block register-origin merging,
+  optional DIA/PDB ground truth, and richer field provenance.
+- Upgraded Version Intelligence matching with ordered instruction/block
+  evidence, typed CFG neighborhoods, staged indexes, bounded candidate work,
+  cached signature scans, and stronger ambiguity/scaling regressions.
+- Added a navigable graphical CFG, Unicode/long-path Windows workflows,
+  reusable CMake libraries, first-party `/W4`, Release/Debug CI, parser mutation
+  coverage, and a static JSON corpus-validation tool.
+- Removed the misleading legacy executable-launch analysis command and added
+  execution-sentinel coverage for normal, Unicode, and corpus static opens.
 - Added an optional native account foundation with WorkOS public-client PKCE
   S256, an ephemeral loopback callback, explicit auth states, replay/timeout/
   cancellation protection, Windows account credential storage, minimal account
