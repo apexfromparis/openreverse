@@ -8,6 +8,7 @@
 #include "core/offset_model.h"
 #include "core/string_scanner.h"
 #include "core/xref_scanner.h"
+#include "core/symbol_provider.h"
 
 #include <chrono>
 #include <functional>
@@ -49,6 +50,11 @@ struct ModuleAnalysisResult {
     std::vector<OffsetRecord> offsets;
     std::vector<SignatureRecord> signatures;
     ModuleIdentity identity;
+    std::vector<SymbolRecord> symbols;
+    std::vector<SymbolTypeRecord> symbolTypes;
+    SymbolProviderIdentity symbolIdentity;
+    bool symbolsLoaded = false;
+    std::string symbolDiagnostic;
     size_t codeBytesAnalyzed = 0;
     size_t stringBytesAnalyzed = 0;
     size_t cfgFunctionsAnalyzed = 0;

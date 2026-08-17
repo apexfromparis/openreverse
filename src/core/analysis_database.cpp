@@ -101,7 +101,10 @@ uint64_t AnalysisDatabase::ReplaceModuleAnalysis(const ModuleInfo& module, bool 
                                                   const std::vector<StructureCandidate>& structures,
                                                   const std::vector<OffsetRecord>& offsets,
                                                   const std::vector<SignatureRecord>& signatures,
-                                                  const ModuleIdentity& identity)
+                                                  const ModuleIdentity& identity,
+                                                  const std::vector<SymbolRecord>& symbols,
+                                                  const std::vector<SymbolTypeRecord>& symbolTypes,
+                                                  const SymbolProviderIdentity& symbolIdentity)
 {
     std::vector<OffsetRecord> preservedUserOffsets;
     const auto previous = modules_.find(module.baseAddress);
@@ -130,6 +133,9 @@ uint64_t AnalysisDatabase::ReplaceModuleAnalysis(const ModuleInfo& module, bool 
     }
     state.signatures = signatures;
     state.identity = identity;
+    state.symbols = symbols;
+    state.symbolTypes = symbolTypes;
+    state.symbolIdentity = symbolIdentity;
     RebuildIndexes(state);
     state.revision = nextRevision_++;
     modules_[module.baseAddress] = std::move(state);
@@ -145,7 +151,10 @@ uint64_t AnalysisDatabase::MergeModuleAnalysis(const ModuleInfo& module, bool is
                                                 const std::vector<StructureCandidate>& structures,
                                                 const std::vector<OffsetRecord>& offsets,
                                                 const std::vector<SignatureRecord>& signatures,
-                                                const ModuleIdentity& identity)
+                                                const ModuleIdentity& identity,
+                                                const std::vector<SymbolRecord>& symbols,
+                                                const std::vector<SymbolTypeRecord>& symbolTypes,
+                                                const SymbolProviderIdentity& symbolIdentity)
 {
     auto& state = modules_[module.baseAddress];
     state.module = module;
@@ -194,6 +203,9 @@ uint64_t AnalysisDatabase::MergeModuleAnalysis(const ModuleInfo& module, bool is
         if (existing == state.signatures.end()) state.signatures.push_back(signature); else *existing = signature;
     }
     if (!identity.sha256.empty()) state.identity = identity;
+    if (!symbols.empty()) state.symbols = symbols;
+    if (!symbolTypes.empty()) state.symbolTypes = symbolTypes;
+    if (!symbolIdentity.guid.empty()) state.symbolIdentity = symbolIdentity;
     state.revision = nextRevision_++;
     RebuildIndexes(state);
     return state.revision;

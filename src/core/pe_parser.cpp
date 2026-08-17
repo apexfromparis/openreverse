@@ -3,6 +3,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <cstdio>
 
 namespace openreverse {
 
@@ -15,6 +16,24 @@ constexpr uint32_t kMaxImports = 4096;
 constexpr uint32_t kMaxExports = 10000;
 constexpr uint32_t kMaxRuntimeFunctions = 100000;
 constexpr size_t kMaxNameLength = 4096;
+constexpr size_t kMaxDebugDirectories = 256;
+
+struct CodeViewRsdsHeader {
+    uint32_t signature = 0;
+    GUID guid{};
+    uint32_t age = 0;
+};
+
+std::string FormatGuid(const GUID& guid)
+{
+    char buffer[37]{};
+    std::snprintf(buffer, sizeof(buffer),
+        "%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+        static_cast<unsigned long>(guid.Data1), guid.Data2, guid.Data3,
+        guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+        guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+    return buffer;
+}
 
 bool CheckedRange(size_t offset, size_t size, size_t total)
 {
@@ -47,6 +66,25 @@ bool ReadBoundedString(const uint8_t* data, size_t dataSize, size_t offset, std:
         return false;
     const auto* end = static_cast<const uint8_t*>(terminator);
     value.assign(reinterpret_cast<const char*>(data + offset), static_cast<size_t>(end - (data + offset)));
+    return true;
+}
+
+bool ReadCodeViewRecord(const uint8_t* data, size_t dataSize, size_t offset,
+                        size_t recordSize, PEInfo& info)
+{
+    if (recordSize < sizeof(CodeViewRsdsHeader) + 1 ||
+        !CheckedRange(offset, recordSize, dataSize))
+        return false;
+    CodeViewRsdsHeader header{};
+    if (!ReadObject(data, dataSize, offset, header) || header.signature != 0x53445352)
+        return false;
+    std::string path;
+    if (!ReadBoundedString(data, std::min(dataSize, offset + recordSize),
+                           offset + sizeof(header), path))
+        return false;
+    info.pdbGuid = FormatGuid(header.guid);
+    info.pdbAge = header.age;
+    info.pdbPath = std::move(path);
     return true;
 }
 
@@ -166,6 +204,8 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
     uint32_t exportDirSize = 0;
     uint32_t exceptionDirRVA = 0;
     uint32_t exceptionDirSize = 0;
+    uint32_t debugDirRVA = 0;
+    uint32_t debugDirSize = 0;
 
     if (info.is64bit)
     {
@@ -193,6 +233,11 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
             exceptionDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress;
             exceptionDirSize = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
         }
+        if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_DEBUG)
+        {
+            debugDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+            debugDirSize = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+        }
     }
     else
     {
@@ -215,6 +260,11 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
             exportDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
             exportDirSize = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
         }
+        if (optHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_DEBUG)
+        {
+            debugDirRVA = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+            debugDirSize = optHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+        }
     }
 
     if (info.sizeOfImage == 0 || info.sizeOfImage > mappedImageSize ||
@@ -233,6 +283,8 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
     info.importDirectoryRva = importDirRVA;
     info.exportDirectoryRva = exportDirRVA;
     info.exportDirectorySize = exportDirSize;
+    info.debugDirectoryRva = debugDirRVA;
+    info.debugDirectorySize = debugDirSize;
     if (info.is64bit && exceptionDirRVA != 0 && exceptionDirSize != 0)
     {
         const size_t entrySize = sizeof(RUNTIME_FUNCTION);
@@ -263,6 +315,8 @@ PEInfo PEParser::Parse(HANDLE processHandle, uint64_t baseAddress, uint64_t mapp
     if (exportDirRVA != 0)
         ParseExports(processHandle, baseAddress, mappedImageSize, exportDirRVA,
                      exportDirSize, info.is64bit, info);
+
+    ParseCodeViewLive(processHandle, baseAddress, mappedImageSize, info);
 
     info.valid = true;
     return info;
@@ -500,6 +554,8 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
     uint32_t exportDirSize = 0;
     uint32_t exceptionDirRVA = 0;
     uint32_t exceptionDirSize = 0;
+    uint32_t debugDirRVA = 0;
+    uint32_t debugDirSize = 0;
     if (info.is64bit)
     {
         if (fileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
@@ -523,6 +579,11 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
             exceptionDirRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress;
             exceptionDirSize = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
         }
+        if (optionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_DEBUG)
+        {
+            debugDirRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+            debugDirSize = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+        }
     }
     else
     {
@@ -541,6 +602,11 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
         {
             exportDirRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
             exportDirSize = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+        }
+        if (optionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_DEBUG)
+        {
+            debugDirRVA = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+            debugDirSize = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
         }
     }
 
@@ -590,11 +656,14 @@ PEInfo PEParser::ParseBuffer(const uint8_t* data, size_t fileSize)
     info.importDirectoryRva = importDirRVA;
     info.exportDirectoryRva = exportDirRVA;
     info.exportDirectorySize = exportDirSize;
+    info.debugDirectoryRva = debugDirRVA;
+    info.debugDirectorySize = debugDirSize;
     ParseRuntimeFunctionsRaw(data, fileSize, info);
     if (importDirRVA != 0)
         ParseImportsOffline(data, fileSize, importDirRVA, info.is64bit, info);
     if (exportDirRVA != 0)
         ParseExportsOffline(data, fileSize, exportDirRVA, exportDirSize, info.is64bit, info);
+    ParseCodeViewRaw(data, fileSize, info);
 
     return info;
 }
@@ -674,6 +743,9 @@ PEInfo PEParser::ParseMappedImage(const uint8_t* data, size_t mappedImageSize,
     info.exports.clear();
     info.runtimeFunctions.clear();
     info.rejectedRuntimeFunctionCount = 0;
+    info.pdbGuid.clear();
+    info.pdbAge = 0;
+    info.pdbPath.clear();
     if (imageBaseOverride != 0)
     {
         if (imageBaseOverride > (std::numeric_limits<uint64_t>::max)() - info.sizeOfImage)
@@ -683,6 +755,7 @@ PEInfo PEParser::ParseMappedImage(const uint8_t* data, size_t mappedImageSize,
     ParseRuntimeFunctionsMapped(data, mappedImageSize, info);
     ParseImportsMapped(data, mappedImageSize, info);
     ParseExportsMapped(data, mappedImageSize, info);
+    ParseCodeViewMapped(data, mappedImageSize, info);
     return info;
 }
 
@@ -1014,6 +1087,92 @@ void PEParser::ParseExportsOffline(const uint8_t* data, size_t fileSize,
                 continue;
         }
         info.exports.push_back(ee);
+    }
+}
+
+void PEParser::ParseCodeViewRaw(const uint8_t* data, size_t fileSize, PEInfo& info)
+{
+    if (!info.valid || info.debugDirectoryRva == 0 ||
+        info.debugDirectorySize < sizeof(IMAGE_DEBUG_DIRECTORY))
+        return;
+    const size_t declaredCount = info.debugDirectorySize / sizeof(IMAGE_DEBUG_DIRECTORY);
+    const size_t count = std::min(declaredCount, kMaxDebugDirectories);
+    for (size_t index = 0; index < count; ++index)
+    {
+        const uint64_t entryRva = static_cast<uint64_t>(info.debugDirectoryRva) +
+            index * sizeof(IMAGE_DEBUG_DIRECTORY);
+        if (entryRva > (std::numeric_limits<uint32_t>::max)()) break;
+        size_t entryOffset = 0;
+        IMAGE_DEBUG_DIRECTORY entry{};
+        if (!RvaToFileOffset(static_cast<uint32_t>(entryRva), sizeof(entry), info,
+                             fileSize, entryOffset) ||
+            !ReadObject(data, fileSize, entryOffset, entry))
+            break;
+        if (entry.Type != IMAGE_DEBUG_TYPE_CODEVIEW || entry.SizeOfData == 0 ||
+            entry.SizeOfData > sizeof(CodeViewRsdsHeader) + kMaxNameLength)
+            continue;
+        size_t recordOffset = entry.PointerToRawData;
+        if (!CheckedRange(recordOffset, entry.SizeOfData, fileSize))
+        {
+            if (!RvaToFileOffset(entry.AddressOfRawData, entry.SizeOfData, info,
+                                 fileSize, recordOffset))
+                continue;
+        }
+        if (ReadCodeViewRecord(data, fileSize, recordOffset, entry.SizeOfData, info))
+            return;
+    }
+}
+
+void PEParser::ParseCodeViewMapped(const uint8_t* data, size_t mappedImageSize, PEInfo& info)
+{
+    if (!info.valid || info.debugDirectoryRva == 0 ||
+        info.debugDirectorySize < sizeof(IMAGE_DEBUG_DIRECTORY) ||
+        info.debugDirectoryRva >= mappedImageSize)
+        return;
+    const size_t declaredCount = info.debugDirectorySize / sizeof(IMAGE_DEBUG_DIRECTORY);
+    const size_t count = std::min(declaredCount, kMaxDebugDirectories);
+    for (size_t index = 0; index < count; ++index)
+    {
+        const uint64_t entryOffset = static_cast<uint64_t>(info.debugDirectoryRva) +
+            index * sizeof(IMAGE_DEBUG_DIRECTORY);
+        if (entryOffset > (std::numeric_limits<size_t>::max)()) break;
+        IMAGE_DEBUG_DIRECTORY entry{};
+        if (!ReadObject(data, mappedImageSize, static_cast<size_t>(entryOffset), entry))
+            break;
+        if (entry.Type != IMAGE_DEBUG_TYPE_CODEVIEW || entry.SizeOfData == 0 ||
+            entry.SizeOfData > sizeof(CodeViewRsdsHeader) + kMaxNameLength)
+            continue;
+        if (ReadCodeViewRecord(data, mappedImageSize, entry.AddressOfRawData,
+                               entry.SizeOfData, info))
+            return;
+    }
+}
+
+void PEParser::ParseCodeViewLive(HANDLE processHandle, uint64_t baseAddress,
+                                 uint64_t mappedImageSize, PEInfo& info)
+{
+    if (info.debugDirectoryRva == 0 ||
+        info.debugDirectorySize < sizeof(IMAGE_DEBUG_DIRECTORY))
+        return;
+    const size_t declaredCount = info.debugDirectorySize / sizeof(IMAGE_DEBUG_DIRECTORY);
+    const size_t count = std::min(declaredCount, kMaxDebugDirectories);
+    for (size_t index = 0; index < count; ++index)
+    {
+        const uint64_t entryRva = static_cast<uint64_t>(info.debugDirectoryRva) +
+            index * sizeof(IMAGE_DEBUG_DIRECTORY);
+        IMAGE_DEBUG_DIRECTORY entry{};
+        if (!ReadImageExact(processHandle, baseAddress, mappedImageSize, entryRva,
+                            &entry, sizeof(entry)))
+            break;
+        if (entry.Type != IMAGE_DEBUG_TYPE_CODEVIEW || entry.SizeOfData == 0 ||
+            entry.SizeOfData > sizeof(CodeViewRsdsHeader) + kMaxNameLength)
+            continue;
+        std::vector<uint8_t> record(entry.SizeOfData);
+        if (!ReadImageExact(processHandle, baseAddress, mappedImageSize,
+                            entry.AddressOfRawData, record.data(), record.size()))
+            continue;
+        if (ReadCodeViewRecord(record.data(), record.size(), 0, record.size(), info))
+            return;
     }
 }
 

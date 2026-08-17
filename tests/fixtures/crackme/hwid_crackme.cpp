@@ -10,6 +10,25 @@ const char* g_c2Url = "http://c2.openreverse-security.local/verify_hwid_license"
 const char* g_regPath = "Software\\OpenReverse\\License\\ActivationKey";
 const char* g_xorSecret = "OpenReverse_SECRET_XOR_KEY_2026";
 
+enum class FixtureMode : uint32_t
+{
+    Alpha = 1,
+    Omega = 7
+};
+
+struct FixturePacket
+{
+    uint32_t flags;
+    FixtureMode mode;
+    uint64_t payload;
+};
+
+uint64_t __declspec(noinline) ReadFixturePacket(const FixturePacket& packet)
+{
+    return packet.flags == 0x4F524556 && packet.mode == FixtureMode::Omega
+        ? packet.payload : 0;
+}
+
 std::string GetMachineHWID()
 {
     char computerName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
@@ -74,6 +93,9 @@ bool __declspec(noinline) VerifyLicenseKey(const std::string& userKey, const std
 
 int main(int argc, char** argv)
 {
+    const FixturePacket packet{0x4F524556, FixtureMode::Omega, 0x1020304050607080ULL};
+    volatile uint64_t fixtureTypeAnchor = ReadFixturePacket(packet);
+    (void)fixtureTypeAnchor;
     wchar_t sentinelPath[32768]{};
     const DWORD sentinelLength = GetEnvironmentVariableW(
         L"OPENREVERSE_EXECUTION_SENTINEL", sentinelPath,

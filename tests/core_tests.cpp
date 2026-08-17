@@ -8,6 +8,7 @@
 #include "core/analysis_database.h"
 #include "core/analysis_session.h"
 #include "core/data_analyzer.h"
+#include "core/dia_symbol_provider.h"
 #include "core/function_analyzer.h"
 #include "core/instruction_semantics.h"
 #include "core/memory_reader.h"
@@ -200,6 +201,105 @@ void TestInstructionSemantics()
     Expect(!decoded[5].isCall && !decoded[5].isJump && !decoded[5].isRet &&
            !decoded[5].isInterrupt,
            "linear instructions remain outside control-flow classes");
+}
+
+void TestDiaSymbols()
+{
+#if OPENREVERSE_HAS_DIA
+    const std::filesystem::path executable = OPENREVERSE_TEST_FIXTURE_EXE;
+    const std::filesystem::path pdb = OPENREVERSE_TEST_FIXTURE_PDB;
+    Expect(openreverse::DiaSymbolProvider::IsAvailable(),
+           "DIA provider reports availability when the SDK is configured");
+    Expect(std::filesystem::exists(executable) && std::filesystem::exists(pdb),
+           "controlled symbol fixture emits an executable and PDB");
+
+    std::vector<uint8_t> raw;
+    openreverse::PEParser parser;
+    const auto pe = parser.ParseFile(executable.u8string(), raw);
+    Expect(pe.valid && !pe.pdbGuid.empty() && pe.pdbAge != 0,
+           "PE parser extracts bounded RSDS GUID and age provenance");
+    openreverse::ModuleIdentity identity;
+    std::string identityError;
+    Expect(openreverse::ComputeModuleIdentity(raw, pe, executable.filename().u8string(),
+                                              identity, identityError),
+           "controlled symbol fixture computes module identity");
+
+    openreverse::DiaSymbolProvider provider;
+    const bool loaded = provider.Load(executable.u8string(), identity);
+    if (!loaded)
+        std::cerr << "DIA fixture error: " << provider.LastError() << '\n';
+    Expect(loaded, "DIA validates and loads the executable-associated PDB");
+    if (!loaded) return;
+    const auto hasNamedFunction = [&](const char* fragment) {
+        return std::any_of(provider.Symbols().begin(), provider.Symbols().end(),
+            [&](const openreverse::SymbolRecord& symbol) {
+                return symbol.kind == openreverse::SymbolKind::Function &&
+                       symbol.name.find(fragment) != std::string::npos &&
+                       symbol.rva != 0 && symbol.size != 0;
+            });
+    };
+    Expect(hasNamedFunction("VerifyLicenseKey") && hasNamedFunction("SecretPayload"),
+           "DIA returns named function RVAs and boundaries from the controlled fixture");
+    const auto fixtureType = std::find_if(provider.Types().begin(), provider.Types().end(),
+        [](const openreverse::SymbolTypeRecord& type) {
+            return type.name.find("FixturePacket") != std::string::npos;
+        });
+    const auto payloadField = fixtureType == provider.Types().end()
+        ? std::vector<openreverse::SymbolFieldRecord>::const_iterator{}
+        : std::find_if(fixtureType->fields.begin(), fixtureType->fields.end(),
+            [](const openreverse::SymbolFieldRecord& field) {
+                return field.name == "payload" && field.offset == 8 && field.size == 8;
+            });
+    Expect(fixtureType != provider.Types().end() && payloadField != fixtureType->fields.end(),
+           "DIA returns structure names, field offsets, and field widths");
+    const auto fixtureEnum = std::find_if(provider.Types().begin(), provider.Types().end(),
+        [](const openreverse::SymbolTypeRecord& type) {
+            return type.kind == openreverse::SymbolTypeKind::Enum &&
+                   type.name.find("FixtureMode") != std::string::npos;
+        });
+    Expect(fixtureEnum != provider.Types().end() &&
+           std::find(fixtureEnum->enumValues.begin(), fixtureEnum->enumValues.end(),
+                     std::make_pair(std::string("Omega"), int64_t{7})) !=
+               fixtureEnum->enumValues.end(),
+           "DIA returns bounded enum names and values");
+    Expect(provider.Identity().executableAssociationValidated &&
+           openreverse::helpers::ToLower(provider.Identity().guid) ==
+               openreverse::helpers::ToLower(identity.pdbGuid) &&
+           provider.Identity().age == identity.pdbAge,
+           "DIA identity matches the PE CodeView GUID and age");
+
+    auto mismatchedIdentity = identity;
+    ++mismatchedIdentity.pdbAge;
+    openreverse::DiaSymbolProvider mismatchedProvider;
+    Expect(!mismatchedProvider.Load(executable.u8string(), mismatchedIdentity) &&
+           mismatchedProvider.LastError().find("age") != std::string::npos,
+           "DIA rejects a PDB whose age does not match the PE identity");
+
+    std::vector<uint8_t> mapped;
+    Expect(openreverse::PEParser::BuildMappedImage(raw, pe, mapped),
+           "controlled symbol fixture builds a mapped image");
+    openreverse::ModuleInfo module{
+        executable.filename().u8string(), executable.u8string(), pe.imageBase, pe.sizeOfImage};
+    openreverse::ModuleAnalysisOptions options;
+    options.maxInstructions = 200000;
+    options.maxCfgInstructions = 100000;
+    options.maxFunctions = 20000;
+    const auto analysis = openreverse::ModuleAnalyzer{}.AnalyzeMappedImage(
+        mapped, raw.size(), module, pe, options);
+    const auto symbolFunction = std::find_if(analysis.functions.begin(), analysis.functions.end(),
+        [](const openreverse::FunctionInfo& function) {
+            return function.name.find("VerifyLicenseKey") != std::string::npos;
+        });
+    Expect(analysis.success && analysis.symbolsLoaded && symbolFunction != analysis.functions.end(),
+           "mapped analysis publishes DIA symbols through its canonical result");
+    Expect(symbolFunction != analysis.functions.end() && symbolFunction->boundaryKnown &&
+           std::find(symbolFunction->provenance.begin(), symbolFunction->provenance.end(),
+                     openreverse::FunctionSource::Symbol) != symbolFunction->provenance.end(),
+           "symbol-derived function boundaries retain explicit provenance after CFG analysis");
+#else
+    Expect(!openreverse::DiaSymbolProvider::IsAvailable(),
+           "DIA provider remains explicitly optional without the SDK");
+#endif
 }
 
 class TemporaryDirectory {
@@ -2094,6 +2194,7 @@ int main()
 {
     TestSharedUtilities();
     TestInstructionSemantics();
+    TestDiaSymbols();
     TestPEMapping();
     TestAddressSpacesAndRuntimeFunctions();
     TestMappedAnalysisPipeline();

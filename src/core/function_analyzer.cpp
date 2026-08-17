@@ -8,6 +8,17 @@
 
 namespace openreverse {
 
+namespace {
+
+void AddFunctionProvenance(FunctionInfo& function, FunctionSource source)
+{
+    if (std::find(function.provenance.begin(), function.provenance.end(), source) ==
+        function.provenance.end())
+        function.provenance.push_back(source);
+}
+
+} // namespace
+
 const BasicBlock* ControlFlowGraph::FindBlock(uint64_t startAddress) const
 {
     auto it = std::lower_bound(basicBlocks.begin(), basicBlocks.end(), startAddress,
@@ -148,6 +159,7 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* dat
         fi.analysisLimit = std::min<uint64_t>(nextAddr, addr + std::min<uint64_t>(4096, bufferEnd - addr));
         fi.name = "sub_" + helpers::FormatAddress(addr, false);
         fi.source = FunctionSource::Heuristic;
+        AddFunctionProvenance(fi, FunctionSource::Heuristic);
         functions.push_back(fi);
     }
 
@@ -176,6 +188,7 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromXRefs(const std
         fi.analysisLimit = codeEnd - target > 4096 ? target + 4096 : codeEnd;
         fi.name = "sub_" + helpers::FormatAddress(target, is64Bit).substr(2);
         fi.source = FunctionSource::DirectCall;
+        AddFunctionProvenance(fi, FunctionSource::DirectCall);
         out.push_back(fi);
     }
 
@@ -201,6 +214,7 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::v
         fi.name = "entry_point";
         if (fi.source != FunctionSource::RuntimeFunction && fi.source != FunctionSource::Symbol)
             fi.source = FunctionSource::EntryPoint;
+        AddFunctionProvenance(fi, FunctionSource::EntryPoint);
     }
 
     for (size_t i = 0; i < exportAddresses.size(); ++i)
@@ -212,6 +226,7 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromPE(const std::v
         fi.isExported = true;
         if (fi.source != FunctionSource::RuntimeFunction && fi.source != FunctionSource::Symbol)
             fi.source = FunctionSource::Export;
+        AddFunctionProvenance(fi, FunctionSource::Export);
         if (fi.name.empty() || fi.name.rfind("sub_", 0) == 0)
             fi.name = "Export_" + helpers::FormatAddress(addr, is64Bit).substr(2);
     }
@@ -247,6 +262,7 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromRuntimeFunction
         function.size = static_cast<size_t>(runtime.endRva - runtime.beginRva);
         function.boundaryKnown = true;
         function.source = FunctionSource::RuntimeFunction;
+        AddFunctionProvenance(function, FunctionSource::RuntimeFunction);
         if (function.name.empty())
             function.name = "sub_" + helpers::FormatAddress(start, is64Bit).substr(2);
     }
@@ -255,6 +271,54 @@ std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromRuntimeFunction
     result.reserve(functions.size());
     for (auto& pair : functions)
         result.push_back(std::move(pair.second));
+    return result;
+}
+
+std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctionsFromSymbols(
+    const std::vector<FunctionInfo>& existing, uint64_t imageBase, uint64_t imageSize,
+    const std::vector<SymbolRecord>& symbols, bool is64Bit, size_t maxFunctions)
+{
+    std::map<uint64_t, FunctionInfo> functions;
+    for (const auto& function : existing)
+        functions[function.startAddress] = function;
+
+    for (const auto& symbol : symbols)
+    {
+        if (symbol.kind != SymbolKind::Function || symbol.rva >= imageSize ||
+            symbol.rva > (std::numeric_limits<uint64_t>::max)() - imageBase)
+            continue;
+        const uint64_t start = imageBase + symbol.rva;
+        auto& function = functions[start];
+        function.startAddress = start;
+        if (!symbol.name.empty()) function.name = symbol.name;
+        if (function.source != FunctionSource::RuntimeFunction)
+            function.source = FunctionSource::Symbol;
+        AddFunctionProvenance(function, FunctionSource::Symbol);
+        if (!function.boundaryKnown && symbol.size != 0 && symbol.size <= imageSize - symbol.rva &&
+            symbol.size <= (std::numeric_limits<size_t>::max)())
+        {
+            function.endAddress = start + symbol.size;
+            function.analysisLimit = function.endAddress;
+            function.size = static_cast<size_t>(symbol.size);
+            function.boundaryKnown = true;
+        }
+        else if (function.analysisLimit <= function.startAddress)
+        {
+            function.analysisLimit = function.startAddress +
+                std::min<uint64_t>(4096, imageSize - symbol.rva);
+        }
+        if (functions.size() >= maxFunctions) break;
+    }
+
+    std::vector<FunctionInfo> result;
+    result.reserve(std::min(functions.size(), maxFunctions));
+    for (auto& [address, function] : functions)
+    {
+        if (result.size() >= maxFunctions) break;
+        if (function.name.empty())
+            function.name = "sub_" + helpers::FormatAddress(address, is64Bit).substr(2);
+        result.push_back(std::move(function));
+    }
     return result;
 }
 
@@ -267,6 +331,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
     fi.startAddress = funcAddress;
     fi.name = "sub_" + helpers::FormatAddress(funcAddress, is64Bit).substr(2);
     fi.source = FunctionSource::RecursiveTraversal;
+    AddFunctionProvenance(fi, FunctionSource::RecursiveTraversal);
     fi.cfg.entryAddress = funcAddress;
 
     if (!data || maxBytes == 0 || maxInstructions == 0 || funcAddress < bufferBase ||

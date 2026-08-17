@@ -8,6 +8,7 @@
 #include <windows.h>
 #include "core/disassembler.h"
 #include "core/pe_parser.h"
+#include "core/symbol_provider.h"
 
 namespace openreverse {
 
@@ -71,6 +72,7 @@ struct FunctionInfo {
     size_t                   analyzedSize = 0;
     int                      cyclomaticComplexity = 0;
     FunctionSource           source = FunctionSource::Unknown;
+    std::vector<FunctionSource> provenance;
     bool                     boundaryKnown = false;
     ControlFlowGraph         cfg;
     std::vector<uint64_t>    callTargets;
@@ -101,6 +103,11 @@ public:
     std::vector<FunctionInfo> DiscoverFunctionsFromRuntimeFunctions(
         const std::vector<FunctionInfo>& existing, uint64_t imageBase,
         const std::vector<PERuntimeFunction>& runtimeFunctions, bool is64Bit);
+
+    std::vector<FunctionInfo> DiscoverFunctionsFromSymbols(
+        const std::vector<FunctionInfo>& existing, uint64_t imageBase, uint64_t imageSize,
+        const std::vector<SymbolRecord>& symbols, bool is64Bit,
+        size_t maxFunctions = 200000);
 
     FunctionInfo AnalyzeFunction(const uint8_t* data, size_t dataSize,
                                  uint64_t funcAddress, uint64_t bufferBase,
