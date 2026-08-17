@@ -98,6 +98,7 @@ DumpLoadResult LoadMinidump(const std::string& path, const std::vector<uint8_t>&
 
     if (MiniDumpReadDumpStream(const_cast<uint8_t*>(bytes.data()), SystemInfoStream,
                                &directory, &stream, &streamSize) &&
+        stream != nullptr &&
         streamSize >= sizeof(MINIDUMP_SYSTEM_INFO))
     {
         const auto* system = static_cast<const MINIDUMP_SYSTEM_INFO*>(stream);
@@ -108,6 +109,7 @@ DumpLoadResult LoadMinidump(const std::string& path, const std::vector<uint8_t>&
 
     if (!MiniDumpReadDumpStream(const_cast<uint8_t*>(bytes.data()), ModuleListStream,
                                 &directory, &stream, &streamSize) ||
+        stream == nullptr ||
         streamSize < sizeof(ULONG32))
     {
         result.error = "Minidump does not contain a module list";
@@ -152,6 +154,7 @@ DumpLoadResult LoadMinidump(const std::string& path, const std::vector<uint8_t>&
     size_t copied = 0;
     if (MiniDumpReadDumpStream(const_cast<uint8_t*>(bytes.data()), Memory64ListStream,
                                &directory, &stream, &streamSize) &&
+        stream != nullptr &&
         streamSize >= sizeof(MINIDUMP_MEMORY64_LIST))
     {
         const auto* list = static_cast<const MINIDUMP_MEMORY64_LIST*>(stream);
@@ -174,6 +177,7 @@ DumpLoadResult LoadMinidump(const std::string& path, const std::vector<uint8_t>&
     }
     if (MiniDumpReadDumpStream(const_cast<uint8_t*>(bytes.data()), MemoryListStream,
                                &directory, &stream, &streamSize) &&
+        stream != nullptr &&
         streamSize >= sizeof(MINIDUMP_MEMORY_LIST))
     {
         const auto* list = static_cast<const MINIDUMP_MEMORY_LIST*>(stream);

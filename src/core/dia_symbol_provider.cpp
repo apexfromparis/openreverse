@@ -154,7 +154,11 @@ DiaSymbolProvider::~DiaSymbolProvider() = default;
 
 bool DiaSymbolProvider::IsAvailable()
 {
-    return OPENREVERSE_HAS_DIA != 0;
+#if OPENREVERSE_HAS_DIA
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool DiaSymbolProvider::Load(const std::string& modulePath, const ModuleIdentity& expectedIdentity)
