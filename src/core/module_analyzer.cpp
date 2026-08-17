@@ -99,10 +99,20 @@ void BuildTypedOffsets(ModuleAnalysisResult& result)
         offset.sourceInstruction = field.instructionAddress;
         offset.accessType = field.access;
         offset.operandWidth = field.operandSize;
-        offset.evidence = field.argumentIndex != 0 ? EvidenceLevel::Inferred : EvidenceLevel::Heuristic;
-        offset.evidenceScore = field.argumentIndex != 0 ? 5U : 1U;
-        offset.provenance.push_back(field.argumentIndex != 0
-            ? "Windows x64 argument-origin propagation" : "decoded memory operand");
+        offset.evidence = field.mergeAmbiguous ? EvidenceLevel::Partial :
+            field.argumentIndex != 0 ? EvidenceLevel::Inferred : EvidenceLevel::Heuristic;
+        offset.evidenceScore = field.mergeAmbiguous ? 1U :
+            field.argumentIndex != 0 ? (field.interBlock ? 8U : 5U) : 1U;
+        if (field.mergeAmbiguous)
+            offset.provenance.push_back("conflicting CFG predecessor origins");
+        else if (field.originKind == RegisterOriginKind::CallReturn)
+            offset.provenance.push_back("direct-call return-value origin");
+        else if (field.argumentIndex != 0)
+            offset.provenance.push_back(field.interBlock
+                ? "Windows x64 argument origin across CFG predecessors"
+                : "Windows x64 argument-origin propagation");
+        else
+            offset.provenance.push_back("decoded memory operand");
         result.offsets.push_back(std::move(offset));
     }
 
@@ -111,6 +121,29 @@ void BuildTypedOffsets(ModuleAnalysisResult& result)
         [](const OffsetRecord& left, const OffsetRecord& right) {
             return left.evidenceScore > right.evidenceScore;
         });
+}
+
+void PreserveDiscoveryMetadata(const FunctionInfo& discovered, FunctionInfo& analyzed)
+{
+    analyzed.name = discovered.name;
+    analyzed.source = discovered.source;
+    analyzed.endAddress = discovered.endAddress;
+    analyzed.size = discovered.size;
+    analyzed.boundaryKnown = discovered.boundaryKnown;
+    analyzed.isExported = discovered.isExported;
+    if (discovered.analysisLimit > analyzed.startAddress)
+        analyzed.analysisLimit = discovered.analysisLimit;
+}
+
+size_t FunctionAnalysisBytes(const FunctionInfo& function, size_t maximum)
+{
+    if (function.boundaryKnown && function.endAddress > function.startAddress)
+        return static_cast<size_t>(std::min<uint64_t>(
+            function.endAddress - function.startAddress, maximum));
+    if (function.analysisLimit > function.startAddress)
+        return static_cast<size_t>(std::min<uint64_t>(
+            function.analysisLimit - function.startAddress, maximum));
+    return maximum;
 }
 
 } // namespace
@@ -123,7 +156,9 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
     ModuleAnalysisResult result;
     result.module = module;
     if (!processHandle || module.baseAddress == 0 || module.size == 0 ||
-        options.maxCodeBytes == 0 || options.maxInstructions == 0 || options.maxFunctions == 0)
+        options.maxCodeBytes == 0 || options.maxInstructions == 0 || options.maxFunctions == 0 ||
+        options.maxCfgInstructions == 0 || options.maxInstructionsPerFunction == 0 ||
+        options.maxFunctionBytes == 0)
     {
         result.error = "Invalid live module analysis input";
         return result;
@@ -211,9 +246,6 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
                 block.baseAddress, std::min(remainingInstructions, block.bytes.size()));
             remainingInstructions -= std::min(remainingInstructions, instructions.size());
             xrefScanner.ScanInstructions(instructions, module.name);
-            auto fields = FindFieldAccesses(
-                instructions, 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000));
-            result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
         }
         if (progress && executableSections != 0)
             progress(0.6f * static_cast<float>(executableIndex) / executableSections);
@@ -283,6 +315,45 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
         }
     }
 
+    const auto cfgStarted = std::chrono::steady_clock::now();
+    size_t remainingCfgInstructions = options.maxCfgInstructions;
+    for (auto& function : result.functions)
+    {
+        if (shouldStop() || remainingCfgInstructions == 0)
+            break;
+        const size_t readSize = FunctionAnalysisBytes(function, options.maxFunctionBytes);
+        if (readSize == 0)
+            continue;
+        auto read = memoryReader.ReadReadableBlocks(processHandle, function.startAddress,
+                                                     readSize, readSize);
+        if (read.blocks.empty() || read.blocks.front().baseAddress != function.startAddress ||
+            read.blocks.front().bytes.empty())
+            continue;
+        const size_t instructionLimit = std::min(
+            remainingCfgInstructions, options.maxInstructionsPerFunction);
+        FunctionInfo analyzed = functionAnalyzer.AnalyzeFunction(
+            read.blocks.front().bytes.data(), read.blocks.front().bytes.size(),
+            function.startAddress, function.startAddress, disassembler, is64Bit,
+            readSize, instructionLimit);
+        PreserveDiscoveryMetadata(function, analyzed);
+        const size_t consumed = analyzed.cfg.decodedInstructionCount;
+        remainingCfgInstructions -= std::min(remainingCfgInstructions, consumed);
+        result.cfgInstructionsAnalyzed += consumed;
+        ++result.cfgFunctionsAnalyzed;
+        function = std::move(analyzed);
+    }
+    result.cfgInstructionBudgetReached = remainingCfgInstructions == 0;
+    const auto cfgFinished = std::chrono::steady_clock::now();
+    result.cfgDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        cfgFinished - cfgStarted);
+    for (const auto& function : result.functions)
+    {
+        const size_t remainingFields = 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000);
+        if (remainingFields == 0) break;
+        auto fields = FindFieldAccesses(function, remainingFields);
+        result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
+    }
+
     size_t remainingStrings = options.maxStringBytes;
     size_t readableSectionCount = 0;
     for (const auto& section : result.pe.sections)
@@ -312,7 +383,7 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeLive(HANDLE processHandle, const Mod
     }
     result.stringBudgetReached = remainingStrings == 0;
     const auto stringsFinished = std::chrono::steady_clock::now();
-    result.stringDuration = std::chrono::duration_cast<std::chrono::milliseconds>(stringsFinished - codeFinished);
+    result.stringDuration = std::chrono::duration_cast<std::chrono::milliseconds>(stringsFinished - cfgFinished);
 
     result.xrefs = xrefScanner.GetAllEntries();
     AssignXRefFunctions(result.xrefs, result.functions);
@@ -340,7 +411,9 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
     result.pe = pe;
     if (!pe.valid || mappedImage.empty() || module.baseAddress == 0 || module.size == 0 ||
         mappedImage.size() < pe.sizeOfImage || module.baseAddress != pe.imageBase ||
-        options.maxCodeBytes == 0 || options.maxInstructions == 0 || options.maxFunctions == 0)
+        options.maxCodeBytes == 0 || options.maxInstructions == 0 || options.maxFunctions == 0 ||
+        options.maxCfgInstructions == 0 || options.maxInstructionsPerFunction == 0 ||
+        options.maxFunctionBytes == 0)
     {
         result.error = "Invalid mapped-image analysis input";
         return result;
@@ -401,9 +474,6 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
         remainingInstructions -= std::min(remainingInstructions, instructions.size());
         result.codeBytesAnalyzed += sectionSize;
         xrefScanner.ScanInstructions(instructions, module.name);
-        auto fields = FindFieldAccesses(
-            instructions, 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000));
-        result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
         allInstructions.insert(allInstructions.end(), instructions.begin(), instructions.end());
 
         if (result.functions.size() < options.maxFunctions)
@@ -472,6 +542,47 @@ ModuleAnalysisResult ModuleAnalyzer::AnalyzeMappedImage(
             [](const FunctionInfo& value, uint64_t target) { return value.startAddress < target; });
         if (function != result.functions.end() && function->startAddress == address && !entry.name.empty())
             function->name = entry.name;
+    }
+
+    const auto cfgStarted = std::chrono::steady_clock::now();
+    size_t remainingCfgInstructions = options.maxCfgInstructions;
+    for (auto& function : result.functions)
+    {
+        if (shouldStop() || remainingCfgInstructions == 0)
+            break;
+        if (function.startAddress < module.baseAddress)
+            continue;
+        const uint64_t rva = function.startAddress - module.baseAddress;
+        if (rva >= mappedImage.size())
+            continue;
+        const size_t requestedBytes = FunctionAnalysisBytes(function, options.maxFunctionBytes);
+        const size_t availableBytes = std::min<size_t>(
+            requestedBytes, mappedImage.size() - static_cast<size_t>(rva));
+        if (availableBytes == 0)
+            continue;
+        const size_t instructionLimit = std::min(
+            remainingCfgInstructions, options.maxInstructionsPerFunction);
+        FunctionInfo analyzed = functionAnalyzer.AnalyzeFunction(
+            mappedImage.data() + static_cast<size_t>(rva), availableBytes,
+            function.startAddress, function.startAddress, disassembler, pe.is64bit,
+            availableBytes, instructionLimit);
+        PreserveDiscoveryMetadata(function, analyzed);
+        const size_t consumed = analyzed.cfg.decodedInstructionCount;
+        remainingCfgInstructions -= std::min(remainingCfgInstructions, consumed);
+        result.cfgInstructionsAnalyzed += consumed;
+        ++result.cfgFunctionsAnalyzed;
+        function = std::move(analyzed);
+    }
+    result.cfgInstructionBudgetReached = remainingCfgInstructions == 0;
+    const auto cfgFinished = std::chrono::steady_clock::now();
+    result.cfgDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        cfgFinished - cfgStarted);
+    for (const auto& function : result.functions)
+    {
+        const size_t remainingFields = 500000 - std::min<size_t>(result.fieldAccesses.size(), 500000);
+        if (remainingFields == 0) break;
+        auto fields = FindFieldAccesses(function, remainingFields);
+        result.fieldAccesses.insert(result.fieldAccesses.end(), fields.begin(), fields.end());
     }
 
     result.xrefs = xrefScanner.GetAllEntries();

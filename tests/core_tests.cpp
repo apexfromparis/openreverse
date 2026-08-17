@@ -9,6 +9,7 @@
 #include "core/analysis_session.h"
 #include "core/data_analyzer.h"
 #include "core/function_analyzer.h"
+#include "core/instruction_semantics.h"
 #include "core/memory_reader.h"
 #include "core/module_analyzer.h"
 #include "core/pattern_scanner.h"
@@ -167,6 +168,38 @@ std::vector<uint8_t> BuildMinimalPE64()
     std::memcpy(bytes.data() + 0x410, entryCode, sizeof(entryCode));
     bytes[0x750] = 0xA5;
     return bytes;
+}
+
+void TestInstructionSemantics()
+{
+    const uint8_t code[] = {
+        0xE8, 0x00, 0x00, 0x00, 0x00, // call next
+        0x75, 0x00,                   // jne next
+        0xEB, 0x00,                   // jmp next
+        0xC3,                         // ret
+        0xCC,                         // int3
+        0x90                          // nop
+    };
+    openreverse::Disassembler disassembler;
+    Expect(disassembler.Init(true), "semantic test initializes Capstone");
+    const auto decoded = disassembler.Disassemble(code, sizeof(code), 0x140001000ULL, 16);
+    Expect(decoded.size() == 6, "semantic fixture decodes every instruction");
+    if (decoded.size() != 6) return;
+
+    Expect(decoded[0].isCall && !decoded[0].isJump,
+           "Capstone call group classifies a call");
+    Expect(decoded[1].isConditionalBranch && decoded[1].isJump &&
+           !decoded[1].isUnconditionalBranch,
+           "Capstone jump group and ID classify a conditional branch");
+    Expect(decoded[2].isUnconditionalBranch && decoded[2].isJump &&
+           !decoded[2].isConditionalBranch,
+           "Capstone jump group and ID classify an unconditional branch");
+    Expect(decoded[3].isRet && !decoded[3].isJump,
+           "Capstone return group classifies a return");
+    Expect(decoded[4].isInterrupt, "Capstone interrupt group classifies a trap");
+    Expect(!decoded[5].isCall && !decoded[5].isJump && !decoded[5].isRet &&
+           !decoded[5].isInterrupt,
+           "linear instructions remain outside control-flow classes");
 }
 
 class TemporaryDirectory {
@@ -369,6 +402,11 @@ void TestMappedAnalysisPipeline()
            runtimeFunction->source == openreverse::FunctionSource::RuntimeFunction &&
            runtimeFunction->boundaryKnown && runtimeFunction->size == 0x10,
            "mapped analysis prioritizes .pdata and retains exact function boundaries");
+    Expect(runtimeFunction != analysis.functions.end() &&
+           !runtimeFunction->cfg.basicBlocks.empty() &&
+           runtimeFunction->cfg.decodedInstructionCount != 0 &&
+           analysis.cfgFunctionsAnalyzed != 0,
+           "mapped analysis publishes canonical per-function CFG evidence");
     Expect(!analysis.xrefs.empty() && analysis.xrefs.front().toAddress == pe.imageBase + 0x2000 &&
            analysis.xrefs.front().functionAddress == pe.imageBase + 0x1010,
            "mapped analysis indexes operand Xrefs with containing-function provenance");
@@ -1089,6 +1127,53 @@ void TestDataCandidates()
         Expect(propagatedFields[1].access == openreverse::DataAccessType::Write,
                "propagated field retains WRITE access");
     }
+
+    const uint64_t flowBase = pe.imageBase + 0x1200;
+    auto interBlockFunction = AnalyzeCFG({
+        0x48, 0x8B, 0xD9,             // mov rbx, rcx
+        0xEB, 0x00,                   // jmp next block
+        0x8B, 0x43, 0x18,             // mov eax, [rbx+0x18]
+        0xC3
+    }, flowBase);
+    const auto interBlockFields = openreverse::FindFieldAccesses(interBlockFunction);
+    const auto interBlockField = std::find_if(interBlockFields.begin(), interBlockFields.end(),
+        [](const openreverse::FieldAccessCandidate& field) { return field.offset == 0x18; });
+    Expect(interBlockField != interBlockFields.end() && interBlockField->argumentIndex == 1 &&
+           interBlockField->originRegister == "rcx" && interBlockField->interBlock &&
+           !interBlockField->mergeAmbiguous,
+           "argument origin propagates across a simple CFG predecessor");
+
+    auto conflictingFunction = AnalyzeCFG({
+        0x85, 0xC0,                   // test eax, eax
+        0x74, 0x05,                   // je alternate
+        0x48, 0x8B, 0xD9,             // mov rbx, rcx
+        0xEB, 0x03,                   // jmp join
+        0x48, 0x8B, 0xDA,             // mov rbx, rdx
+        0x8B, 0x43, 0x18,             // join: mov eax, [rbx+0x18]
+        0xC3
+    }, flowBase + 0x100);
+    const auto conflictingFields = openreverse::FindFieldAccesses(conflictingFunction);
+    const auto conflictingField = std::find_if(conflictingFields.begin(), conflictingFields.end(),
+        [](const openreverse::FieldAccessCandidate& field) { return field.offset == 0x18; });
+    Expect(conflictingField != conflictingFields.end() && conflictingField->mergeAmbiguous &&
+           conflictingField->originKind == openreverse::RegisterOriginKind::Ambiguous &&
+           conflictingField->argumentIndex == 0 && conflictingField->predecessorCount == 2,
+           "conflicting predecessor origins remain explicit and do not select an argument");
+
+    auto callReturnFunction = AnalyzeCFG({
+        0xE8, 0x00, 0x00, 0x00, 0x00, // direct call
+        0x48, 0x8B, 0xD8,             // mov rbx, rax
+        0x8B, 0x43, 0x10,             // mov eax, [rbx+0x10]
+        0xC3
+    }, flowBase + 0x200);
+    const auto callReturnFields = openreverse::FindFieldAccesses(callReturnFunction);
+    const auto callReturnField = std::find_if(callReturnFields.begin(), callReturnFields.end(),
+        [](const openreverse::FieldAccessCandidate& field) { return field.offset == 0x10; });
+    Expect(callReturnField != callReturnFields.end() &&
+           callReturnField->originKind == openreverse::RegisterOriginKind::CallReturn &&
+           callReturnField->callInstructionAddress == flowBase + 0x200 &&
+           callReturnField->callTargetAddress == flowBase + 0x205,
+           "direct-call return provenance survives a straightforward register copy");
 }
 
 void TestSignatures()
@@ -2008,6 +2093,7 @@ void TestExtensionBoundary()
 int main()
 {
     TestSharedUtilities();
+    TestInstructionSemantics();
     TestPEMapping();
     TestAddressSpacesAndRuntimeFunctions();
     TestMappedAnalysisPipeline();

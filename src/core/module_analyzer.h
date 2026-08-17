@@ -20,6 +20,9 @@ struct ModuleAnalysisOptions {
     size_t maxCodeBytes = 128ULL * 1024ULL * 1024ULL;
     size_t maxStringBytes = 32ULL * 1024ULL * 1024ULL;
     size_t maxInstructions = 4000000;
+    size_t maxCfgInstructions = 2000000;
+    size_t maxInstructionsPerFunction = 4096;
+    size_t maxFunctionBytes = 65536;
     size_t maxFunctions = 200000;
     size_t maxStrings = 100000;
     std::chrono::milliseconds maxDuration{120000};
@@ -31,6 +34,7 @@ struct ModuleAnalysisResult {
     bool codeBudgetReached = false;
     bool stringBudgetReached = false;
     bool instructionBudgetReached = false;
+    bool cfgInstructionBudgetReached = false;
     bool functionLimitReached = false;
     bool timeBudgetReached = false;
     std::string error;
@@ -47,8 +51,11 @@ struct ModuleAnalysisResult {
     ModuleIdentity identity;
     size_t codeBytesAnalyzed = 0;
     size_t stringBytesAnalyzed = 0;
+    size_t cfgFunctionsAnalyzed = 0;
+    size_t cfgInstructionsAnalyzed = 0;
     std::chrono::milliseconds peDuration{0};
     std::chrono::milliseconds codeDuration{0};
+    std::chrono::milliseconds cfgDuration{0};
     std::chrono::milliseconds stringDuration{0};
     std::chrono::milliseconds totalDuration{0};
 };

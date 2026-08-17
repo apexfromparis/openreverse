@@ -165,6 +165,7 @@ if(BUILD_TESTING)
         src/core/disassembler.cpp
         src/core/dump_loader.cpp
         src/core/function_analyzer.cpp
+        src/core/instruction_semantics.cpp
         src/core/memory_reader.cpp
         src/core/module_analyzer.cpp
         src/core/pattern_scanner.cpp

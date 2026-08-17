@@ -111,10 +111,6 @@ public:
     // Render only decoded instructions and CFG facts; it does not infer source semantics.
     std::string GenerateAssemblySummary(const FunctionInfo& func, bool is64Bit) const;
 
-    static bool IsConditionalJump(const std::string& mnemonic);
-    static bool IsUnconditionalJump(const std::string& mnemonic);
-    static bool IsReturn(const std::string& mnemonic);
-    static bool IsCall(const std::string& mnemonic);
 };
 
 } // namespace openreverse
