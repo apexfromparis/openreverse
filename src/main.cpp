@@ -1,11 +1,13 @@
 #include "app/application.h"
 #include "openreverse_version.h"
 #include "ui/ui_manager.h"
-#include "app/automator.h"
 #include "cli/cli_repl.h"
 #include <algorithm>
-#include <fstream>
+#include <cctype>
+#include <filesystem>
 #include <iostream>
+#include <string>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -29,105 +31,66 @@ static UINT                     g_ResizeWidth           = 0;
 static UINT                     g_ResizeHeight          = 0;
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
-void CreateRenderTarget();
+bool CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+namespace {
+
+bool WideToUtf8(const wchar_t* value, std::string& result)
+{
+    result.clear();
+    if (!value)
+        return false;
+    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1,
+                                           nullptr, 0, nullptr, nullptr);
+    if (length <= 0)
+        return false;
+    std::vector<char> buffer(static_cast<size_t>(length));
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, buffer.data(), length,
+                            nullptr, nullptr) != length)
+        return false;
+    result.assign(buffer.data());
+    return true;
+}
+
+} // namespace
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     (void)hPrevInstance;
+    (void)lpCmdLine;
 
     int cmdArgc = 0;
     LPWSTR* cmdArgvW = CommandLineToArgvW(GetCommandLineW(), &cmdArgc);
-    std::vector<std::string> cmdArgs;
-    if (cmdArgvW)
+    if (!cmdArgvW || cmdArgc <= 0)
     {
-        for (int i = 0; i < cmdArgc; ++i)
-        {
-            char buf[2048] = {};
-            WideCharToMultiByte(CP_UTF8, 0, cmdArgvW[i], -1, buf, sizeof(buf), nullptr, nullptr);
-            cmdArgs.push_back(buf);
-        }
-        LocalFree(cmdArgvW);
+        MessageBoxW(nullptr, L"Windows could not parse the OpenReverse command line.",
+                    L"OpenReverse", MB_OK | MB_ICONERROR);
+        if (cmdArgvW) LocalFree(cmdArgvW);
+        return 1;
     }
+    std::vector<std::string> cmdArgs;
+    cmdArgs.reserve(static_cast<size_t>(cmdArgc));
+    for (int i = 0; i < cmdArgc; ++i)
+    {
+        std::string argument;
+        if (!WideToUtf8(cmdArgvW[i], argument))
+        {
+            LocalFree(cmdArgvW);
+            MessageBoxW(nullptr, L"A command-line argument is not valid Unicode.",
+                        L"OpenReverse", MB_OK | MB_ICONERROR);
+            return 1;
+        }
+        cmdArgs.push_back(std::move(argument));
+    }
+    LocalFree(cmdArgvW);
 
     openreverse::Application app;
 
-    for (size_t i = 1; i < cmdArgs.size(); ++i)
-    {
-        std::string arg = cmdArgs[i];
-        if (arg == "--decompile-exe" && i + 1 < cmdArgs.size())
-        {
-            std::string exePath = cmdArgs[i + 1];
-            std::string outFile = (i + 2 < cmdArgs.size()) ? cmdArgs[i + 2] : "openreverse_decompile_report.md";
-
-            AttachConsole(ATTACH_PARENT_PROCESS);
-            freopen("CONOUT$", "w", stdout);
-            printf("[+] OpenReverse: launching and analyzing '%s'...\n", exePath.c_str());
-
-            STARTUPINFOA si = { sizeof(si) };
-            PROCESS_INFORMATION pi = {};
-            std::string cmd = "\"" + exePath + "\" --daemon";
-            if (CreateProcessA(nullptr, (LPSTR)cmd.c_str(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            {
-                Sleep(1200);
-                openreverse::Automator automator;
-                auto res = automator.AnalyzeProcess(app, pi.dwProcessId, exePath);
-                if (res.success)
-                {
-                    std::string report = openreverse::Automator::FormatReport(res);
-                    std::ofstream ofs(outFile);
-                    ofs << report;
-                    ofs.close();
-                    printf("[+] Report saved to: %s (%zu functions, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
-                }
-                else
-                {
-                    printf("[-] FAILED to analyze target process PID %lu\n", pi.dwProcessId);
-                }
-                TerminateProcess(pi.hProcess, 0);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                return res.success ? 0 : 1;
-            }
-            else
-            {
-                printf("[-] FAILED to launch executable: %s\n", exePath.c_str());
-                return 1;
-            }
-        }
-        else if (arg == "--decompile-pid" && i + 1 < cmdArgs.size())
-        {
-            DWORD targetPid = (DWORD)atoi(cmdArgs[i + 1].c_str());
-            std::string outFile = (i + 2 < cmdArgs.size()) ? cmdArgs[i + 2] : "openreverse_decompile_report.md";
-
-            AttachConsole(ATTACH_PARENT_PROCESS);
-            freopen("CONOUT$", "w", stdout);
-            printf("[+] OpenReverse Headless Engine: Starting automated analysis on PID %lu...\n", targetPid);
-
-            openreverse::Automator automator;
-            auto res = automator.AnalyzeProcess(app, targetPid);
-            if (res.success)
-            {
-                std::string report = openreverse::Automator::FormatReport(res);
-                std::ofstream ofs(outFile);
-                ofs << report;
-                ofs.close();
-                printf("[+] Report saved to: %s (%zu functions, %zu XREFs)\n", outFile.c_str(), res.functionsDiscovered, res.totalXrefs);
-                return 0;
-            }
-            else
-            {
-                printf("[-] FAILED to attach or read process PID %lu\n", targetPid);
-                return 1;
-            }
-        }
-    }
-
-    char exePathBuf[MAX_PATH] = { 0 };
-    GetModuleFileNameA(NULL, exePathBuf, MAX_PATH);
-    std::string fullExePath = exePathBuf;
+    const std::string& fullExePath = cmdArgs.front();
     std::string exeName = fullExePath.substr(fullExePath.find_last_of("/\\") + 1);
-    for (auto& c : exeName) c = tolower(c);
+    for (auto& c : exeName) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const bool guiRequested = std::find(cmdArgs.begin() + 1, cmdArgs.end(), "--gui") != cmdArgs.end() ||
                               std::find(cmdArgs.begin() + 1, cmdArgs.end(), "-g") != cmdArgs.end();
     bool cliRequested = exeName.find("cli") != std::string::npos;
@@ -139,7 +102,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             firstArg == "models" || firstArg == "model" || firstArg == "providers" || firstArg == "auth" ||
             firstArg == "setup" || firstArg == "init" || firstArg == "install-ai" || firstArg == "session" ||
             firstArg == "sessions" || firstArg == "stats" || firstArg == "run" || firstArg == "open" ||
-            firstArg == "attach" || firstArg == "dump";
+            firstArg == "attach" || firstArg == "dump" || firstArg == "--decompile-exe" ||
+            firstArg == "--decompile-pid";
     }
     const bool isCliExe = !guiRequested && exeName.find("setup") == std::string::npos && cliRequested;
 
@@ -163,7 +127,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         for (size_t i = 1; i < cmdArgs.size(); ++i)
         {
             std::string arg = cmdArgs[i];
-            if (arg == "-h" || arg == "--help" || arg == "help")
+            if (arg == "--decompile-exe" || arg == "--decompile-pid")
+            {
+                std::cerr << "This legacy command was removed because 'decompile' must not launch or "
+                             "attach to a target. Use 'open <path>' for static analysis or "
+                             "'attach <pid>' for an explicitly authorized live process.\n";
+                return 2;
+            }
+            else if (arg == "-h" || arg == "--help" || arg == "help")
             {
                 openreverse::CLIRepl::PrintCLIHelp();
                 return 0;
@@ -277,7 +248,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     for (size_t i = 1; i < cmdArgs.size(); ++i)
     {
         std::string arg = cmdArgs[i];
-        if (arg != "--gui" && arg != "-g" && arg.find("-") != 0 && GetFileAttributesA(arg.c_str()) != INVALID_FILE_ATTRIBUTES)
+        std::error_code pathError;
+        const bool pathExists = std::filesystem::exists(std::filesystem::u8path(arg), pathError);
+        if (arg != "--gui" && arg != "-g" && arg.find("-") != 0 && !pathError && pathExists)
         {
             openreverse::CLIRepl repl;
             std::vector<std::string> openArgs = { "open", arg };
@@ -295,13 +268,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hIcon         = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     wc.hIconSm       = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"OpenReverse_WindowClass";
-    RegisterClassExW(&wc);
+    if (!RegisterClassExW(&wc))
+    {
+        MessageBoxW(nullptr, L"OpenReverse could not register its window class.",
+                    L"OpenReverse", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 
     // Create a compact borderless workstation window. The native resize frame is
     // retained so snapping/resizing keeps behaving like a normal Windows app,
     // while the non-client chrome is rendered by the application itself.
     RECT workArea = {};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0))
+    {
+        workArea.right = GetSystemMetrics(SM_CXSCREEN);
+        workArea.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
     const int workWidth = workArea.right - workArea.left;
     const int workHeight = workArea.bottom - workArea.top;
     const int initialWidth = (std::min)(1480, (std::max)(1040, workWidth - 80));
@@ -317,6 +299,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         initialX, initialY, initialWidth, initialHeight,
         nullptr, nullptr, hInstance, nullptr
     );
+    if (!hwnd)
+    {
+        MessageBoxW(nullptr, L"OpenReverse could not create its main window.",
+                    L"OpenReverse", MB_OK | MB_ICONERROR);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        return 1;
+    }
 
     HICON hAppIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     if (hAppIcon)
@@ -337,10 +326,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Keep the DWM shadow/rounded corners while the application draws its chrome.
     BOOL darkMode = TRUE;
-    DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
+    (void)DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */,
+                                &darkMode, sizeof(darkMode));
     DWORD cornerPreference = 2; // DWMWCP_ROUND on Windows 11; ignored on older builds.
-    DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */,
-        &cornerPreference, sizeof(cornerPreference));
+    (void)DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */,
+                                &cornerPreference, sizeof(cornerPreference));
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -348,8 +338,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-    ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+    if (!ImGui_ImplWin32_Init(hwnd) ||
+        !ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext))
+    {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        CleanupDeviceD3D();
+        DestroyWindow(hwnd);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        MessageBoxW(nullptr, L"OpenReverse could not initialize its rendering backend.",
+                    L"OpenReverse", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 
     openreverse::UIManager::ApplyTheme();
 
@@ -370,9 +371,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
         {
             CleanupRenderTarget();
-            g_pSwapChain->ResizeBuffers(0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
+            const HRESULT resizeResult = g_pSwapChain->ResizeBuffers(
+                0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
             g_ResizeWidth = g_ResizeHeight = 0;
-            CreateRenderTarget();
+            if (FAILED(resizeResult) || !CreateRenderTarget())
+            {
+                running = false;
+                continue;
+            }
         }
 
         ImGui_ImplDX11_NewFrame();
@@ -387,7 +393,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-        g_pSwapChain->Present(1, 0); // VSync
+        const HRESULT presentResult = g_pSwapChain->Present(1, 0); // VSync
+        if (presentResult == DXGI_ERROR_DEVICE_REMOVED ||
+            presentResult == DXGI_ERROR_DEVICE_RESET || FAILED(presentResult))
+            running = false;
     }
 
     app.Shutdown();
@@ -440,7 +449,11 @@ bool CreateDeviceD3D(HWND hWnd)
     if (FAILED(hr))
         return false;
 
-    CreateRenderTarget();
+    if (!CreateRenderTarget())
+    {
+        CleanupDeviceD3D();
+        return false;
+    }
     return true;
 }
 
@@ -452,12 +465,23 @@ void CleanupDeviceD3D()
     if (g_pd3dDevice)       { g_pd3dDevice->Release();         g_pd3dDevice = nullptr; }
 }
 
-void CreateRenderTarget()
+bool CreateRenderTarget()
 {
+    if (!g_pSwapChain || !g_pd3dDevice)
+        return false;
     ID3D11Texture2D* pBackBuffer = nullptr;
-    g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-    g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
+    const HRESULT bufferResult = g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
+    if (FAILED(bufferResult) || !pBackBuffer)
+        return false;
+    const HRESULT viewResult = g_pd3dDevice->CreateRenderTargetView(
+        pBackBuffer, nullptr, &g_mainRenderTargetView);
     pBackBuffer->Release();
+    if (FAILED(viewResult))
+    {
+        g_mainRenderTargetView = nullptr;
+        return false;
+    }
+    return true;
 }
 
 void CleanupRenderTarget()

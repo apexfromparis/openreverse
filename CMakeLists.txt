@@ -231,6 +231,12 @@ if(BUILD_TESTING)
     set_target_properties(OpenReverseTestFixture PROPERTIES
         OUTPUT_NAME "OpenReverseTestFixture"
     )
+    add_test(NAME OpenReverse.StaticOpen
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/static_open_test.ps1
+            -Application $<TARGET_FILE:OpenReverse>
+            -Fixture $<TARGET_FILE:OpenReverseTestFixture>
+    )
 
     add_library(OpenReverseHelloExtension MODULE
         examples/hello_extension/hello_extension.cpp

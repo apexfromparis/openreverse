@@ -4,6 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <iterator>
 
 const char* g_c2Url = "http://c2.openreverse-security.local/verify_hwid_license";
 const char* g_regPath = "Software\\OpenReverse\\License\\ActivationKey";
@@ -73,6 +74,24 @@ bool __declspec(noinline) VerifyLicenseKey(const std::string& userKey, const std
 
 int main(int argc, char** argv)
 {
+    wchar_t sentinelPath[32768]{};
+    const DWORD sentinelLength = GetEnvironmentVariableW(
+        L"OPENREVERSE_EXECUTION_SENTINEL", sentinelPath,
+        static_cast<DWORD>(std::size(sentinelPath)));
+    if (sentinelLength > 0 && sentinelLength < std::size(sentinelPath))
+    {
+        HANDLE sentinel = CreateFileW(sentinelPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (sentinel != INVALID_HANDLE_VALUE)
+        {
+            constexpr char marker[] = "fixture executed";
+            DWORD written = 0;
+            (void)WriteFile(sentinel, marker, static_cast<DWORD>(sizeof(marker) - 1),
+                            &written, nullptr);
+            CloseHandle(sentinel);
+        }
+    }
+
     SetConsoleTitleA("OpenReverse Target: HWID & License Key CrackMe (x64)");
 
     std::cout << "==========================================================\n";
