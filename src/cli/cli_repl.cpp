@@ -1,4 +1,5 @@
 #include "cli_repl.h"
+#include "app/application.h"
 #include "openreverse_version.h"
 #include "app/automator.h"
 #include "utils/helpers.h"
@@ -11,6 +12,7 @@
 #include <conio.h>
 #include <limits>
 #include <utility>
+#include <filesystem>
 
 namespace openreverse {
 
@@ -41,6 +43,20 @@ std::vector<std::string> TokenizeCommand(const std::string& line)
     }
     if (!token.empty()) tokens.push_back(std::move(token));
     return tokens;
+}
+
+const std::vector<FunctionInfo>& CurrentFunctions(const Application& app)
+{
+    static const std::vector<FunctionInfo> empty;
+    const ModuleAnalysisState* analysis = app.CurrentAnalysis();
+    return analysis ? analysis->functions : empty;
+}
+
+const std::vector<StringResult>& CurrentStrings(const Application& app)
+{
+    static const std::vector<StringResult> empty;
+    const ModuleAnalysisState* analysis = app.CurrentAnalysis();
+    return analysis ? analysis->strings : empty;
 }
 
 } // namespace
@@ -138,7 +154,7 @@ uint64_t CLIRepl::ParseAddressOrName(Application& app, const std::string& token)
 {
     if (token.empty()) return 0;
     if (token.front() == '-' || token.front() == '+') return 0;
-    for (const auto& fn : app.analysisPanel.GetFunctions())
+    for (const auto& fn : CurrentFunctions(app))
     {
         if (helpers::ToLower(fn.name) == helpers::ToLower(token) ||
             fn.name.find(token) != std::string::npos)
@@ -187,8 +203,7 @@ void CLIRepl::HandleAttach(Application& app, const std::vector<std::string>& arg
         std::cout << "\033[1;31m[-] Failed to attach to PID " << pid << "\033[0m\n";
         return;
     }
-    app.analysisPanel.AnalyzeCurrentModule(app);
-    if (app.analysisDatabase.GetModules().empty())
+    if (!app.AnalyzeCurrentModuleSynchronously())
     {
         std::cout << "\033[1;31m[-] Failed to analyze PID " << pid << "\033[0m\n";
         app.DetachFromProcess();
@@ -211,7 +226,8 @@ bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
     }
     std::string exePath = args[1];
 
-    if (GetFileAttributesA(exePath.c_str()) == INVALID_FILE_ATTRIBUTES)
+    std::error_code pathError;
+    if (!std::filesystem::is_regular_file(std::filesystem::u8path(exePath), pathError))
     {
         std::cout << "\033[1;31m[-] File does not exist: '" << exePath << "'\033[0m\n";
         return false;
@@ -223,7 +239,9 @@ bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
         uint64_t baseAddr = app.moduleManager.GetModules().empty() ? 0 : app.moduleManager.GetModules()[0].baseAddress;
         std::cout << "\033[1;32m[+] Successfully parsed offline target: " << app.attachedProcessName << " (" << (app.is64Bit ? "x64" : "x86") << ")\033[0m\n";
         std::cout << "[+] Base Address: \033[1;36m0x" << std::hex << baseAddr << "\033[0m\n";
-        std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec << app.analysisPanel.GetFunctions().size() << "\033[0m | Strings: \033[1;36m" << app.stringResults.size() << "\033[0m\n\n";
+        std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec
+                  << CurrentFunctions(app).size() << "\033[0m | Strings: \033[1;36m"
+                  << CurrentStrings(app).size() << "\033[0m\n\n";
         return true;
     }
 
@@ -233,7 +251,7 @@ bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
 
 void CLIRepl::HandleFunctions(Application& app, const std::vector<std::string>& args)
 {
-    auto functions = app.analysisPanel.GetFunctions();
+    const auto& functions = CurrentFunctions(app);
     if (functions.empty())
     {
         std::cout << "No functions discovered. Run 'open <exe>' or 'attach <pid>' first.\n";
@@ -337,12 +355,16 @@ void CLIRepl::HandleXRefs(Application& app, const std::vector<std::string>& args
     uint64_t addr = ParseAddressOrName(app, args[1]);
     if (addr == 0) return;
 
-    auto xrefsTo = app.xrefScanner.FindXRefsTo(addr);
+    const ModuleAnalysisState* analysis = app.CurrentAnalysis();
+    const auto xrefsTo = analysis
+        ? app.analysisDatabase.FindXRefsTo(analysis->module.baseAddress, addr)
+        : std::vector<const XRefEntry*>{};
     std::cout << "\n\033[1;32m[XREFs UP (To)] References calling/targeting " << helpers::FormatAddress(addr, app.is64Bit) << ": (" << xrefsTo.size() << ")\033[0m\n";
-    for (const auto& xr : xrefsTo)
+    for (const auto* xr : xrefsTo)
     {
+        if (!xr) continue;
         const char* typeStr = "READ";
-        switch (xr.type)
+        switch (xr->type)
         {
         case XRefType::Call: typeStr = "CALL"; break;
         case XRefType::Jump: typeStr = "JUMP"; break;
@@ -355,7 +377,9 @@ void CLIRepl::HandleXRefs(Application& app, const std::vector<std::string>& args
         case XRefType::Data: typeStr = "DATA"; break;
         default: break;
         }
-        std::cout << "  [" << typeStr << "] From: \033[1;36m" << helpers::FormatAddress(xr.fromAddress, app.is64Bit) << "\033[0m -> " << xr.instructionText << "\n";
+        std::cout << "  [" << typeStr << "] From: \033[1;36m"
+                  << helpers::FormatAddress(xr->fromAddress, app.is64Bit)
+                  << "\033[0m -> " << xr->instructionText << "\n";
     }
     std::cout << "\n";
 }
@@ -363,17 +387,7 @@ void CLIRepl::HandleXRefs(Application& app, const std::vector<std::string>& args
 void CLIRepl::HandleStrings(Application& app, const std::vector<std::string>& args)
 {
     std::string filter = (args.size() > 1) ? helpers::ToLower(args[1]) : "";
-    auto* mod = app.moduleManager.FindModuleByAddress(app.currentAddress);
-    if (!mod && !app.moduleManager.GetModules().empty())
-        mod = const_cast<ModuleInfo*>(&app.moduleManager.GetModules()[0]);
-    if (!mod) return;
-
-    std::vector<StringResult> res;
-    if (app.attachedPID == 0)
-        res = app.stringResults;
-    else
-        res = app.stringScanner.Scan(app.processHandle, mod->baseAddress,
-            mod->baseAddress + std::min((size_t)mod->size, (size_t)8192000), 4, true, true, 2000);
+    const auto& res = CurrentStrings(app);
     std::cout << "\n\033[1;37mAddress            Category       Value\033[0m\n";
     std::cout << "----------------------------------------------------------------------------\n";
     int count = 0;
@@ -464,15 +478,17 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
         res.targetPid = 0;
         if (!app.moduleManager.GetModules().empty())
             res.baseAddress = app.moduleManager.GetModules()[0].baseAddress;
-        res.functionsDiscovered = app.analysisPanel.GetFunctions().size();
-        res.totalXrefs = app.xrefScanner.GetTotalXRefsCount();
-        res.stringsFound = app.stringResults.size();
-        for (const auto& string : app.stringResults)
+        const ModuleAnalysisState* analysis = app.CurrentAnalysis();
+        if (!analysis) return;
+        res.functionsDiscovered = analysis->functions.size();
+        res.totalXrefs = analysis->xrefs.size();
+        res.stringsFound = analysis->strings.size();
+        for (const auto& string : analysis->strings)
         {
             if (string.category == "URL") res.urls.push_back(string.value);
             if (string.category == "Registry Path") res.registryPaths.push_back(string.value);
         }
-        for (const auto& function : app.analysisPanel.GetFunctions())
+        for (const auto& function : analysis->functions)
         {
             if (res.keyFunctions.size() >= 15) break;
             auto bytes = app.memoryReader.ReadBytes(nullptr, function.startAddress, 4096);
@@ -484,7 +500,8 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
             summary.name = analyzed.name;
             summary.analyzedSize = analyzed.analyzedSize;
             summary.complexity = analyzed.cyclomaticComplexity;
-            summary.xrefCount = static_cast<int>(app.xrefScanner.FindXRefsTo(analyzed.startAddress).size());
+            summary.xrefCount = static_cast<int>(app.analysisDatabase.FindXRefsTo(
+                analysis->module.baseAddress, analyzed.startAddress).size());
             summary.assemblySummary = app.functionAnalyzer.GenerateAssemblySummary(analyzed, app.is64Bit);
             res.keyFunctions.push_back(std::move(summary));
         }
@@ -861,7 +878,7 @@ void CLIRepl::HandleAITriage(Application& app, const std::vector<std::string>& a
     (void)args;
     std::cout << "\033[1;36m[*] Generating threat report and MITRE ATT&CK mapping...\033[0m\n";
     std::string exeName = app.attachedProcessName.empty() ? "Target Binary" : app.attachedProcessName;
-    size_t fnCount = app.analysisPanel.GetFunctions().size();
+    size_t fnCount = CurrentFunctions(app).size();
     
     std::string prompt = "Review the deterministic analysis context for target: `" + exeName + "` (" + std::to_string(fnCount) + " functions discovered).\n"
                          "Include:\n"
@@ -896,7 +913,7 @@ void CLIRepl::HandleAIAutoRename(Application& app, const std::vector<std::string
 {
     (void)args;
     std::cout << "\033[1;36m[*] Launching Global AI Name & Type Inference across all discovered functions...\033[0m\n";
-    auto funcs = app.analysisPanel.GetFunctions();
+    const auto& funcs = CurrentFunctions(app);
     if (funcs.empty()) {
         std::cout << "[-] No functions discovered in current target. Open a binary (/open) or attach (/attach) first.\n";
         return;
@@ -1440,7 +1457,7 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
                 if (s.id == currentSessionId_) {
                     s.targetExe = args[1];
                     s.pid = app.attachedPID;
-                    s.functionsCount = app.analysisPanel.GetFunctions().size();
+                    s.functionsCount = CurrentFunctions(app).size();
                     break;
                 }
             }
@@ -1453,7 +1470,7 @@ void CLIRepl::HandleSlashCommand(Application& app, const std::string& cmd, const
             if (s.id == currentSessionId_) {
                 s.targetExe = app.attachedProcessName;
                 s.pid = app.attachedPID;
-                s.functionsCount = app.analysisPanel.GetFunctions().size();
+                s.functionsCount = CurrentFunctions(app).size();
                 break;
             }
         }

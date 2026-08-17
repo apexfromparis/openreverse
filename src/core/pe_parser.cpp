@@ -4,6 +4,7 @@
 #include <limits>
 #include <map>
 #include <cstdio>
+#include <filesystem>
 
 namespace openreverse {
 
@@ -480,7 +481,9 @@ PEInfo PEParser::ParseFile(const std::string& filePath, std::vector<uint8_t>& ra
 {
     rawBufferOut.clear();
 
-    HANDLE hFile = CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const std::filesystem::path nativePath = std::filesystem::u8path(filePath);
+    HANDLE hFile = CreateFileW(nativePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE)
         return {};
 

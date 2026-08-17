@@ -24,16 +24,13 @@ public:
     void AnalyzeCurrentModule(Application& app);
     void StartAnalyzeCurrentModule(Application& app);
     void ResetAnalysis();
-    void SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs = {});
     void SelectFunction(Application& app, uint64_t funcAddress);
     void OpenXrefsForAddress(uint64_t address) { xrefTargetAddress_ = address; }
     void ApplyModuleAnalysis(Application& app, ModuleAnalysisResult result);
-    const std::vector<FunctionInfo>& GetFunctions() const { return functions_; }
     const FunctionInfo& GetActiveFunction() const { return activeFunction_; }
     const std::string& GetActiveAssemblySummary() const { return activeAssemblySummary_; }
 
 private:
-    std::vector<FunctionInfo> functions_;
     FunctionInfo              activeFunction_;
     std::string               activeAssemblySummary_;
     bool                      hasAnalyzed_ = false;
@@ -42,6 +39,20 @@ private:
 
     uint64_t                  xrefTargetAddress_ = 0;
     uint64_t                  lastXrefSelection_ = 0;
+    struct CFGGraphNode {
+        uint64_t address = 0;
+        size_t blockIndex = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+    };
+    std::vector<CFGGraphNode> cfgGraphNodes_;
+    uint64_t                  cfgGraphFunction_ = 0;
+    size_t                    cfgGraphBlockCount_ = 0;
+    float                     cfgGraphWidth_ = 0.0f;
+    float                     cfgGraphHeight_ = 0.0f;
+    float                     cfgGraphZoom_ = 1.0f;
     bool                      requestAnnotationPopup_ = false;
     uint64_t                  annotationRva_ = 0;
     char                      annotationName_[128] = {};
@@ -52,6 +63,7 @@ private:
     void RenderCFGTab(Application& app);
     void RenderAssemblySummaryTab(Application& app);
     void RenderXRefsTab(Application& app);
+    void RebuildCFGGraphLayout();
 };
 
 }} // namespace openreverse::panels

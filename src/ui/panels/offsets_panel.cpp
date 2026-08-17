@@ -12,8 +12,10 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace openreverse { namespace panels {
 
@@ -121,44 +123,46 @@ void OffsetsPanel::CopyHeader(const ModuleAnalysisState& analysis) const
 
 void OffsetsPanel::SaveJson(const ModuleAnalysisState& analysis)
 {
-    char fileName[MAX_PATH] = "openreverse-offsets.json";
-    OPENFILENAMEA dialog{};
+    std::vector<wchar_t> fileName(32768, L'\0');
+    wcscpy_s(fileName.data(), fileName.size(), L"openreverse-offsets.json");
+    OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
-    dialog.lpstrFilter = "OpenReverse offset JSON (*.json)\0*.json\0All Files (*.*)\0*.*\0";
-    dialog.lpstrFile = fileName;
-    dialog.nMaxFile = MAX_PATH;
-    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    dialog.lpstrDefExt = "json";
-    dialog.lpstrTitle = "Export canonical offsets and signatures";
-    if (!GetSaveFileNameA(&dialog)) return;
+    dialog.lpstrFilter = L"OpenReverse offset JSON (*.json)\0*.json\0All Files (*.*)\0*.*\0";
+    dialog.lpstrFile = fileName.data();
+    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
+    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    dialog.lpstrDefExt = L"json";
+    dialog.lpstrTitle = L"Export canonical offsets and signatures";
+    if (!GetSaveFileNameW(&dialog)) return;
 
     OffsetProject project;
     project.module = analysis.identity;
     project.offsets = analysis.offsets;
     project.signatures = analysis.signatures;
-    std::ofstream stream(fileName, std::ios::binary | std::ios::trunc);
+    const std::filesystem::path outputPath(fileName.data());
+    std::ofstream stream(outputPath, std::ios::binary | std::ios::trunc);
     const std::string json = SerializeOffsetProject(project);
     if (!stream || !stream.write(json.data(), static_cast<std::streamsize>(json.size())))
     {
         importStatus_ = "Export failed: the selected file could not be written.";
         return;
     }
-    importStatus_ = std::string("Exported offset project to ") + fileName;
+    importStatus_ = "Exported offset project to " + helpers::WideToUtf8(fileName.data());
 }
 
 void OffsetsPanel::ImportJson()
 {
-    OPENFILENAMEA dialog{};
-    char fileName[MAX_PATH] = "";
+    OPENFILENAMEW dialog{};
+    std::vector<wchar_t> fileName(32768, L'\0');
     dialog.lStructSize = sizeof(dialog);
-    dialog.lpstrFilter = "OpenReverse offset JSON (*.json)\0*.json\0All Files (*.*)\0*.*\0";
-    dialog.lpstrFile = fileName;
-    dialog.nMaxFile = MAX_PATH;
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    dialog.lpstrTitle = "Import known offsets and signatures";
-    if (!GetOpenFileNameA(&dialog)) return;
+    dialog.lpstrFilter = L"OpenReverse offset JSON (*.json)\0*.json\0All Files (*.*)\0*.*\0";
+    dialog.lpstrFile = fileName.data();
+    dialog.nMaxFile = static_cast<DWORD>(fileName.size());
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    dialog.lpstrTitle = L"Import known offsets and signatures";
+    if (!GetOpenFileNameW(&dialog)) return;
 
-    std::ifstream stream(fileName, std::ios::binary | std::ios::ate);
+    std::ifstream stream(std::filesystem::path(fileName.data()), std::ios::binary | std::ios::ate);
     if (!stream || stream.tellg() <= 0 || stream.tellg() > 16 * 1024 * 1024)
     {
         importStatus_ = "Import failed: file is empty, unreadable, or exceeds 16 MB.";

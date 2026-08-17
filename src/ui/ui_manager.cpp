@@ -3,7 +3,9 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <windows.h>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 namespace openreverse {
 
@@ -25,14 +27,16 @@ static void LoadFonts()
         io.FontDefault = robotoFont;
     }
 
-    char winDir[MAX_PATH];
-    const bool hasWinDir = (GetWindowsDirectoryA(winDir, MAX_PATH) != 0);
-    std::string fontsPath = hasWinDir ? (std::string(winDir) + "\\Fonts\\") : "";
-
-    if (!fontsPath.empty())
+    const UINT windowsLength = GetWindowsDirectoryW(nullptr, 0);
+    std::vector<wchar_t> windowsDirectory(static_cast<size_t>(windowsLength) + 1, L'\0');
+    if (windowsLength != 0 &&
+        GetWindowsDirectoryW(windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size())) != 0)
     {
+        const std::filesystem::path monoPath = std::filesystem::path(windowsDirectory.data()) /
+            L"Fonts" / L"consola.ttf";
+        const std::string monoPathUtf8 = monoPath.u8string();
         config.FontDataOwnedByAtlas = true;
-        ImFont* mono = io.Fonts->AddFontFromFileTTF((fontsPath + "consola.ttf").c_str(), 12.0f, &config);
+        ImFont* mono = io.Fonts->AddFontFromFileTTF(monoPathUtf8.c_str(), 12.0f, &config);
         if (mono)
             s_monoFont = mono;
     }

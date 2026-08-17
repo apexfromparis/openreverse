@@ -1,10 +1,15 @@
 #pragma once
 
-#include "app/application.h"
+#include "ai/ai_service.h"
+
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace openreverse {
+
+class Application;
 
 class CLIRepl {
 public:
@@ -51,7 +56,7 @@ private:
         int id = 1;
         std::string name;
         std::string targetExe;
-        DWORD pid = 0;
+        uint32_t pid = 0;
         uint64_t baseAddress = 0;
         size_t functionsCount = 0;
         std::vector<ai::ChatMessage> aiHistory;

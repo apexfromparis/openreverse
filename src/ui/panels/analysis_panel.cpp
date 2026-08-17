@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
+#include <deque>
 #include <map>
 
 namespace openreverse { namespace panels {
@@ -36,42 +38,28 @@ const char* FunctionSourceName(FunctionSource source)
 
 void AnalysisPanel::ResetAnalysis()
 {
-    functions_.clear();
     activeFunction_ = FunctionInfo{};
     activeAssemblySummary_.clear();
     hasAnalyzed_ = false;
     analysisJobId_ = 0;
     xrefTargetAddress_ = 0;
     lastXrefSelection_ = 0;
+    cfgGraphNodes_.clear();
+    cfgGraphFunction_ = 0;
+    cfgGraphBlockCount_ = 0;
+    cfgGraphZoom_ = 1.0f;
 }
 
 void AnalysisPanel::AnalyzeCurrentModule(Application& app)
 {
-    if (!app.isAttached)
-        return;
-    if (!app.processHandle)
-    {
-        Logger::Get().Log(LogLevel::Info, "Offline PE analysis is already available from the loaded image.");
-        return;
-    }
-
-    functions_.clear();
     activeFunction_ = FunctionInfo();
     activeAssemblySummary_.clear();
-    app.xrefScanner.Clear();
     hasAnalyzed_ = false;
-
-    auto* mod = app.moduleManager.FindModuleByAddress(app.currentAddress);
-    if (!mod && !app.moduleManager.GetModules().empty())
-        mod = const_cast<ModuleInfo*>(&app.moduleManager.GetModules()[0]);
-
-    if (!mod)
-    {
-        Logger::Get().Log(LogLevel::Warning, "No module found to analyze.");
-        return;
-    }
-    ModuleAnalyzer analyzer;
-    ApplyModuleAnalysis(app, analyzer.AnalyzeLive(app.processHandle, *mod, app.is64Bit));
+    if (!app.AnalyzeCurrentModuleSynchronously()) return;
+    hasAnalyzed_ = true;
+    const auto* analysis = app.CurrentAnalysis();
+    if (analysis && !analysis->functions.empty())
+        SelectFunction(app, analysis->functions.front().startAddress);
 }
 
 void AnalysisPanel::StartAnalyzeCurrentModule(Application& app)
@@ -124,85 +112,30 @@ void AnalysisPanel::ApplyModuleAnalysis(Application& app, ModuleAnalysisResult r
             Logger::Get().Log(LogLevel::Error, "Module analysis failed: %s", result.error.c_str());
         return;
     }
-    app.analysisSession.ApplyPersistedAnalysis(result);
-    app.analysisDatabase.ReplaceModuleAnalysis(result.module, app.is64Bit, result.pe,
-                                               result.functions, result.xrefs, result.strings,
-                                               result.globals, result.fieldAccesses, result.structures,
-                                               result.offsets, result.signatures, result.identity,
-                                               result.symbols, result.symbolTypes, result.symbolIdentity);
-    functions_ = std::move(result.functions);
-    app.xrefScanner.ReplaceEntries(std::move(result.xrefs));
-    app.stringResults = std::move(result.strings);
+    app.PublishModuleAnalysis(std::move(result));
     activeFunction_ = FunctionInfo{};
     activeAssemblySummary_.clear();
     hasAnalyzed_ = true;
-    Logger::Get().Log(LogLevel::Info,
-        "Module analysis: %zu functions, %zu Xrefs, %zu strings, %zu globals, %zu structures, "
-        "%lld ms (PE %lld, code %lld, strings %lld)",
-        functions_.size(), app.xrefScanner.GetTotalXRefsCount(), app.stringResults.size(),
-        result.globals.size(), result.structures.size(),
-        static_cast<long long>(result.totalDuration.count()),
-        static_cast<long long>(result.peDuration.count()),
-        static_cast<long long>(result.codeDuration.count()),
-        static_cast<long long>(result.stringDuration.count()));
-    if (result.codeBudgetReached || result.instructionBudgetReached || result.functionLimitReached ||
-        result.stringBudgetReached || result.timeBudgetReached)
-        Logger::Get().Log(LogLevel::Warning, "Module analysis stopped at a configured limit");
-    if (!functions_.empty())
-        SelectFunction(app, functions_[0].startAddress);
-    app.RestoreProjectUiAfterAnalysis();
-    app.NotifyExtensionsSessionChanged();
-}
-
-void AnalysisPanel::SetPEAnalysisResult(const std::vector<Instruction>& insns, const std::vector<PESectionInfo>& sections, const std::vector<PEImportEntry>& imports, const std::vector<PEInfo::PEExportEntry>& exports, bool is64Bit, const std::vector<FunctionInfo>& discoveredFuncs)
-{
-    functions_.clear();
-    activeFunction_ = FunctionInfo();
-    activeAssemblySummary_.clear();
-    hasAnalyzed_ = true;
-
-    if (!discoveredFuncs.empty())
-    {
-        functions_ = discoveredFuncs;
-    }
-    else if (!insns.empty())
-    {
-        FunctionInfo fn;
-        fn.name = "entry_point";
-        fn.startAddress = insns[0].address;
-        fn.source = FunctionSource::EntryPoint;
-        fn.analyzedEndAddress = insns.back().address + insns.back().size;
-        fn.analyzedSize = static_cast<size_t>(fn.analyzedEndAddress - fn.startAddress);
-        functions_.push_back(fn);
-    }
-    if (!functions_.empty())
-        activeFunction_ = functions_[0];
+    const auto* analysis = app.CurrentAnalysis();
+    if (analysis && !analysis->functions.empty())
+        SelectFunction(app, analysis->functions.front().startAddress);
 }
 
 void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
 {
     if (!app.isAttached) return;
-
-    size_t readSize = 65536; // 64 KB function scan window
-    auto bytes = app.memoryReader.ReadBytes(app.processHandle, funcAddress, readSize);
-    if (bytes.empty())
+    const ModuleAnalysisState* analysis = app.CurrentAnalysis();
+    const FunctionInfo* canonical = analysis
+        ? app.analysisDatabase.FindFunction(analysis->module.baseAddress, funcAddress) : nullptr;
+    if (canonical)
+        activeFunction_ = *canonical;
+    else
     {
-        bytes = app.memoryReader.ReadBytes(app.processHandle, funcAddress, 8192);
+        auto bytes = app.memoryReader.ReadBytes(app.processHandle, funcAddress, 65536);
+        if (bytes.empty()) bytes = app.memoryReader.ReadBytes(app.processHandle, funcAddress, 8192);
         if (bytes.empty()) return;
-    }
-
-    activeFunction_ = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), funcAddress, funcAddress, app.disassembler, app.is64Bit, 65536);
-    for (const auto& f : functions_)
-    {
-        if (f.startAddress == funcAddress && !f.name.empty())
-        {
-            activeFunction_.name = f.name;
-            activeFunction_.source = f.source;
-            activeFunction_.boundaryKnown = f.boundaryKnown;
-            activeFunction_.endAddress = f.endAddress;
-            activeFunction_.size = f.size;
-            break;
-        }
+        activeFunction_ = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(),
+            funcAddress, funcAddress, app.disassembler, app.is64Bit, bytes.size());
     }
     if (const ModuleInfo* module = app.moduleManager.FindModuleByAddress(funcAddress))
     {
@@ -216,8 +149,9 @@ void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
     activeAssemblySummary_ = app.functionAnalyzer.GenerateAssemblySummary(activeFunction_, app.is64Bit);
     app.NavigateToAddress(funcAddress);
 
-    auto xrefs = app.xrefScanner.FindXRefsTo(funcAddress);
-    activeFunction_.xrefCount = (int)xrefs.size();
+    activeFunction_.xrefCount = analysis
+        ? static_cast<int>(app.analysisDatabase.FindXRefsTo(
+            analysis->module.baseAddress, funcAddress).size()) : 0;
 }
 
 void AnalysisPanel::Render(Application& app)
@@ -246,9 +180,12 @@ void AnalysisPanel::Render(Application& app)
         if (ImGui::SmallButton("Cancel##moduleanalysis")) app.analysisScheduler.Cancel(analysisJobId_);
     }
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.00f, 1.0f), "Functions: %zu", functions_.size());
+    const ModuleAnalysisState* analysis = app.CurrentAnalysis();
+    const size_t functionCount = analysis ? analysis->functions.size() : 0;
+    const size_t xrefCount = analysis ? analysis->xrefs.size() : 0;
+    ImGui::TextColored(ImVec4(0.00f, 0.90f, 1.00f, 1.0f), "Functions: %zu", functionCount);
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "XREFs: %zu", app.xrefScanner.GetTotalXRefsCount());
+    ImGui::TextColored(ImVec4(0.00f, 0.90f, 0.46f, 1.0f), "XREFs: %zu", xrefCount);
     ImGui::SameLine();
     if (activeFunction_.startAddress != 0)
     {
@@ -312,13 +249,14 @@ void AnalysisPanel::RenderXRefsPanel(Application& app)
 
 void AnalysisPanel::RenderFunctionsTab(Application& app)
 {
+    const ModuleAnalysisState* analysis = app.CurrentAnalysis();
     ImGui::SetNextItemWidth(250.0f);
     ImGui::InputTextWithHint("##fnfilter", "Filter functions by name/addr...", filterText_, sizeof(filterText_));
     ImGui::SameLine();
     if (ImGui::Button("Refresh Analysis") && app.processHandle)
         StartAnalyzeCurrentModule(app);
 
-    if (functions_.empty())
+    if (!analysis || analysis->functions.empty())
     {
         ImGui::Spacing();
         ImGui::TextDisabled("No functions discovered yet. Click 'Analyze Active Module' above.");
@@ -327,7 +265,7 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
 
     if (ImGui::BeginTable("FunctionsTable", 7,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable))
+        ImGuiTableFlags_Resizable))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 140.0f);
@@ -341,7 +279,7 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
 
         std::string filterLower = helpers::ToLower(filterText_);
 
-        for (const auto& fn : functions_)
+        for (const auto& fn : analysis->functions)
         {
             std::string addrStr = helpers::FormatAddress(fn.startAddress, app.is64Bit);
             const ModuleInfo* module = app.moduleManager.FindModuleByAddress(fn.startAddress);
@@ -456,6 +394,88 @@ void AnalysisPanel::RenderAnnotationPopup(Application& app)
     ImGui::EndPopup();
 }
 
+void AnalysisPanel::RebuildCFGGraphLayout()
+{
+    constexpr size_t kMaximumVisibleNodes = 512;
+    const auto& blocks = activeFunction_.cfg.basicBlocks;
+    const size_t count = std::min(blocks.size(), kMaximumVisibleNodes);
+    cfgGraphNodes_.clear();
+    cfgGraphFunction_ = activeFunction_.startAddress;
+    cfgGraphBlockCount_ = blocks.size();
+    cfgGraphWidth_ = 0.0f;
+    cfgGraphHeight_ = 0.0f;
+    if (count == 0) return;
+
+    std::map<uint64_t, size_t> indexByAddress;
+    for (size_t index = 0; index < count; ++index)
+        indexByAddress[blocks[index].startAddress] = index;
+    std::vector<int> layers(count, -1);
+    std::deque<size_t> pending;
+    const auto entry = indexByAddress.find(activeFunction_.cfg.entryAddress);
+    if (entry != indexByAddress.end())
+    {
+        layers[entry->second] = 0;
+        pending.push_back(entry->second);
+    }
+    else
+    {
+        layers[0] = 0;
+        pending.push_back(0);
+    }
+    while (!pending.empty())
+    {
+        const size_t index = pending.front();
+        pending.pop_front();
+        for (uint64_t successor : blocks[index].successors)
+        {
+            const auto found = indexByAddress.find(successor);
+            if (found == indexByAddress.end() || layers[found->second] >= 0) continue;
+            layers[found->second] = layers[index] + 1;
+            pending.push_back(found->second);
+        }
+    }
+    int maximumLayer = 0;
+    for (size_t index = 0; index < count; ++index)
+    {
+        if (layers[index] < 0) layers[index] = ++maximumLayer;
+        maximumLayer = std::max(maximumLayer, layers[index]);
+    }
+    std::vector<std::vector<size_t>> byLayer(static_cast<size_t>(maximumLayer) + 1);
+    for (size_t index = 0; index < count; ++index)
+        byLayer[static_cast<size_t>(layers[index])].push_back(index);
+
+    constexpr float nodeWidth = 310.0f;
+    constexpr float horizontalGap = 70.0f;
+    constexpr float verticalGap = 90.0f;
+    float y = 30.0f;
+    for (const auto& layer : byLayer)
+    {
+        float maximumHeight = 0.0f;
+        for (size_t blockIndex : layer)
+        {
+            const size_t shownInstructions = std::min<size_t>(blocks[blockIndex].instructions.size(), 10);
+            maximumHeight = std::max(maximumHeight,
+                58.0f + static_cast<float>(shownInstructions) * 17.0f +
+                (blocks[blockIndex].instructions.size() > shownInstructions ? 17.0f : 0.0f));
+        }
+        const float layerWidth = layer.empty() ? 0.0f :
+            layer.size() * nodeWidth + (layer.size() - 1) * horizontalGap;
+        float x = 30.0f;
+        for (size_t blockIndex : layer)
+        {
+            const size_t shownInstructions = std::min<size_t>(blocks[blockIndex].instructions.size(), 10);
+            const float height = 58.0f + static_cast<float>(shownInstructions) * 17.0f +
+                (blocks[blockIndex].instructions.size() > shownInstructions ? 17.0f : 0.0f);
+            cfgGraphNodes_.push_back({blocks[blockIndex].startAddress, blockIndex,
+                x, y, nodeWidth, height});
+            x += nodeWidth + horizontalGap;
+        }
+        cfgGraphWidth_ = std::max(cfgGraphWidth_, layerWidth + 60.0f);
+        y += maximumHeight + verticalGap;
+    }
+    cfgGraphHeight_ = y + 30.0f;
+}
+
 void AnalysisPanel::RenderCFGTab(Application& app)
 {
     if (activeFunction_.startAddress == 0)
@@ -535,83 +555,137 @@ void AnalysisPanel::RenderCFGTab(Application& app)
         ImGui::Separator();
     }
 
-    ImGui::BeginChild("CFGBlocksScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    if (cfgGraphFunction_ != activeFunction_.startAddress ||
+        cfgGraphBlockCount_ != activeFunction_.cfg.basicBlocks.size())
+        RebuildCFGGraphLayout();
 
-    for (size_t i = 0; i < activeFunction_.cfg.basicBlocks.size(); ++i)
+    ImGui::TextDisabled("Ctrl + wheel: zoom  |  Middle drag: pan  |  Click a block: navigate");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fit") && cfgGraphWidth_ > 0.0f && cfgGraphHeight_ > 0.0f)
     {
-        const auto& bb = activeFunction_.cfg.basicBlocks[i];
-        ImGui::PushID((int)i);
-
-        ImGui::BeginGroup();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.14f, 0.18f, 0.95f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.00f, 0.55f, 0.65f, 0.80f));
-
-        char header[128];
-        snprintf(header, sizeof(header), "Basic Block %zu [0x%llX -> 0x%llX] (%zu insns)",
-                 i, (unsigned long long)bb.startAddress, (unsigned long long)bb.endAddress, bb.instructions.size());
-
-        if (ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            bool showedBlockBadge = false;
-            if (bb.startAddress == activeFunction_.cfg.entryAddress)
-            {
-                ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.50f, 1.0f), "ENTRY");
-                showedBlockBadge = true;
-            }
-            if (bb.isTerminal)
-            {
-                if (showedBlockBadge) ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.95f, 0.42f, 0.42f, 1.0f), "TERMINAL");
-                showedBlockBadge = true;
-            }
-            if (showedBlockBadge) ImGui::SameLine();
-            ImGui::TextDisabled("Predecessors: %zu | Successors: %zu",
-                                bb.predecessors.size(), bb.successors.size());
-            if (UIManager::GetMonoFont()) ImGui::PushFont(UIManager::GetMonoFont());
-
-            for (const auto& ins : bb.instructions)
-            {
-                std::string addrStr = helpers::FormatAddress(ins.address, app.is64Bit);
-                ImGui::TextColored(ImVec4(0.45f, 0.50f, 0.55f, 1.0f), "%s", addrStr.c_str());
-                ImGui::SameLine(130.0f);
-
-                ImVec4 mnemonicColor = ins.isCall ? ImVec4(0.00f, 0.90f, 1.0f, 1.0f) :
-                                       ins.isJump ? ImVec4(1.0f, 0.67f, 0.25f, 1.0f) :
-                                       ins.isRet  ? ImVec4(1.0f, 0.32f, 0.32f, 1.0f) :
-                                                    ImVec4(0.85f, 0.87f, 0.90f, 1.0f);
-
-                ImGui::TextColored(mnemonicColor, "%-8s", ins.mnemonic.c_str());
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.70f, 0.75f, 0.80f, 1.0f), "%s", ins.operands.c_str());
-            }
-
-            if (UIManager::GetMonoFont()) ImGui::PopFont();
-
-            ImGui::Spacing();
-            bool hasOutgoingEdge = false;
-            for (const auto& edge : activeFunction_.cfg.edges)
-            {
-                if (edge.source != bb.startAddress) continue;
-                if (hasOutgoingEdge) ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Button, edgeColor(edge.type));
-                char edgeButton[96];
-                if (edge.target == 0)
-                    snprintf(edgeButton, sizeof(edgeButton), "%s -> exit", edgeName(edge.type));
-                else
-                    snprintf(edgeButton, sizeof(edgeButton), "%s -> 0x%llX", edgeName(edge.type),
-                             static_cast<unsigned long long>(edge.target));
-                if (ImGui::Button(edgeButton) && edge.target != 0) app.NavigateToAddress(edge.target);
-                ImGui::PopStyleColor();
-                hasOutgoingEdge = true;
-            }
-        }
-
-        ImGui::PopStyleColor(2);
-        ImGui::EndGroup();
-        ImGui::PopID();
-        ImGui::Spacing();
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        cfgGraphZoom_ = std::clamp(std::min(available.x / cfgGraphWidth_,
+            std::max(1.0f, available.y - 32.0f) / cfgGraphHeight_), 0.45f, 1.0f);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%.0f%%", cfgGraphZoom_ * 100.0f);
+    if (activeFunction_.cfg.basicBlocks.size() > cfgGraphNodes_.size())
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
+                           "Showing first %zu of %zu blocks (rendering limit)",
+                           cfgGraphNodes_.size(), activeFunction_.cfg.basicBlocks.size());
     }
 
+    ImGui::BeginChild("CFGGraphCanvas", ImVec2(0, 0), true,
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove);
+    if (ImGui::IsWindowHovered() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().MouseWheel != 0.0f)
+        cfgGraphZoom_ = std::clamp(cfgGraphZoom_ + ImGui::GetIO().MouseWheel * 0.10f, 0.45f, 1.75f);
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))
+    {
+        const ImVec2 delta = ImGui::GetIO().MouseDelta;
+        ImGui::SetScrollX(std::max(0.0f, ImGui::GetScrollX() - delta.x));
+        ImGui::SetScrollY(std::max(0.0f, ImGui::GetScrollY() - delta.y));
+    }
+
+    const ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
+    const ImVec2 canvasSize(std::max(ImGui::GetContentRegionAvail().x, cfgGraphWidth_ * cfgGraphZoom_),
+                            std::max(ImGui::GetContentRegionAvail().y, cfgGraphHeight_ * cfgGraphZoom_));
+    ImGui::Dummy(canvasSize);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    std::map<uint64_t, const CFGGraphNode*> nodeByAddress;
+    for (const auto& node : cfgGraphNodes_) nodeByAddress[node.address] = &node;
+    const auto graphPoint = [&](float x, float y) {
+        return ImVec2(canvasOrigin.x + x * cfgGraphZoom_, canvasOrigin.y + y * cfgGraphZoom_);
+    };
+
+    // Draw connections first so block cards stay legible above the graph.
+    for (const auto& edge : activeFunction_.cfg.edges)
+    {
+        const auto sourceIt = nodeByAddress.find(edge.source);
+        const auto targetIt = nodeByAddress.find(edge.target);
+        if (sourceIt == nodeByAddress.end() || targetIt == nodeByAddress.end()) continue;
+        const CFGGraphNode& source = *sourceIt->second;
+        const CFGGraphNode& target = *targetIt->second;
+        const ImVec2 start = graphPoint(source.x + source.width * 0.5f, source.y + source.height);
+        const ImVec2 finish = graphPoint(target.x + target.width * 0.5f, target.y);
+        const float bend = std::max(35.0f, std::abs(finish.y - start.y) * 0.45f);
+        const float direction = finish.y >= start.y ? 1.0f : -1.0f;
+        const ImVec2 control1(start.x, start.y + bend * direction);
+        const ImVec2 control2(finish.x, finish.y - bend * direction);
+        const ImU32 color = ImGui::ColorConvertFloat4ToU32(edgeColor(edge.type));
+        draw->AddBezierCubic(start, control1, control2, finish, color,
+                             std::max(1.25f, 2.0f * cfgGraphZoom_));
+        const ImVec2 tangent(finish.x - control2.x, finish.y - control2.y);
+        const float length = std::sqrt(tangent.x * tangent.x + tangent.y * tangent.y);
+        if (length > 0.01f)
+        {
+            const ImVec2 unit(tangent.x / length, tangent.y / length);
+            const ImVec2 normal(-unit.y, unit.x);
+            const float arrow = 8.0f * cfgGraphZoom_;
+            draw->AddTriangleFilled(finish,
+                ImVec2(finish.x - unit.x * arrow + normal.x * arrow * 0.55f,
+                       finish.y - unit.y * arrow + normal.y * arrow * 0.55f),
+                ImVec2(finish.x - unit.x * arrow - normal.x * arrow * 0.55f,
+                       finish.y - unit.y * arrow - normal.y * arrow * 0.55f), color);
+        }
+    }
+
+    const auto textColor = IM_COL32(220, 226, 234, 255);
+    const auto mutedColor = IM_COL32(125, 137, 151, 255);
+    for (const auto& node : cfgGraphNodes_)
+    {
+        const auto& block = activeFunction_.cfg.basicBlocks[node.blockIndex];
+        const ImVec2 topLeft = graphPoint(node.x, node.y);
+        const ImVec2 bottomRight = graphPoint(node.x + node.width, node.y + node.height);
+        const bool entryBlock = block.startAddress == activeFunction_.cfg.entryAddress;
+        const ImU32 border = entryBlock ? IM_COL32(35, 213, 140, 255) :
+                             block.isTerminal ? IM_COL32(225, 85, 92, 255) : IM_COL32(22, 159, 205, 255);
+        draw->AddRectFilled(topLeft, bottomRight, IM_COL32(15, 20, 27, 250), 5.0f);
+        draw->AddRect(topLeft, bottomRight, border, 5.0f, 0, std::max(1.0f, 1.5f * cfgGraphZoom_));
+        const float headerHeight = 32.0f * cfgGraphZoom_;
+        draw->AddRectFilled(topLeft, ImVec2(bottomRight.x, topLeft.y + headerHeight),
+                            IM_COL32(23, 32, 43, 255), 5.0f, ImDrawFlags_RoundCornersTop);
+        char title[96];
+        snprintf(title, sizeof(title), "Block %zu  %s", node.blockIndex,
+                 helpers::FormatAddress(block.startAddress, app.is64Bit).c_str());
+        draw->AddText(ImVec2(topLeft.x + 10.0f * cfgGraphZoom_, topLeft.y + 8.0f * cfgGraphZoom_),
+                      textColor, title);
+        char badge[96];
+        snprintf(badge, sizeof(badge), "%s%s%zu pred / %zu succ",
+                 entryBlock ? "ENTRY  " : "", block.isTerminal ? "EXIT  " : "",
+                 block.predecessors.size(), block.successors.size());
+        draw->AddText(ImVec2(topLeft.x + 10.0f * cfgGraphZoom_, topLeft.y + 37.0f * cfgGraphZoom_),
+                      mutedColor, badge);
+
+        const size_t shown = std::min<size_t>(block.instructions.size(), 10);
+        for (size_t index = 0; index < shown; ++index)
+        {
+            const auto& instruction = block.instructions[index];
+            std::string line = helpers::FormatAddress(instruction.address, app.is64Bit) + "  " +
+                               instruction.mnemonic;
+            if (!instruction.operands.empty()) line += "  " + instruction.operands;
+            const ImU32 instructionColor = instruction.isCall ? IM_COL32(40, 218, 255, 255) :
+                instruction.isJump ? IM_COL32(255, 178, 68, 255) :
+                instruction.isRet ? IM_COL32(255, 91, 91, 255) : textColor;
+            draw->AddText(ImVec2(topLeft.x + 10.0f * cfgGraphZoom_,
+                                 topLeft.y + (56.0f + static_cast<float>(index) * 17.0f) * cfgGraphZoom_),
+                          instructionColor, line.c_str());
+        }
+        if (block.instructions.size() > shown)
+            draw->AddText(ImVec2(topLeft.x + 10.0f * cfgGraphZoom_,
+                                 topLeft.y + (56.0f + static_cast<float>(shown) * 17.0f) * cfgGraphZoom_),
+                          mutedColor, "...");
+
+        ImGui::SetCursorScreenPos(topLeft);
+        ImGui::PushID(static_cast<int>(node.blockIndex));
+        if (ImGui::InvisibleButton("##CFGBlock", ImVec2(node.width * cfgGraphZoom_, node.height * cfgGraphZoom_)))
+            app.NavigateToAddress(block.startAddress);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Navigate to %s", helpers::FormatAddress(block.startAddress, app.is64Bit).c_str());
+        ImGui::PopID();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(canvasOrigin.x, canvasOrigin.y + canvasSize.y));
     ImGui::EndChild();
 }
 

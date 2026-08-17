@@ -44,7 +44,7 @@ void MemoryMapPanel::Render(Application& app)
 
     if (ImGui::BeginTable("MemMapTable", 5,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
-        ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable))
+        ImGuiTableFlags_Resizable))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Base Address", ImGuiTableColumnFlags_WidthFixed, 150.0f);
@@ -107,17 +107,17 @@ void MemoryMapPanel::Render(Application& app)
                     app.AddOffsetFromAddress(region.baseAddress);
                 if (ImGui::MenuItem("Dump region to file..."))
                 {
-                    char path[1024] = {};
+                    std::string path;
                     char defaultName[64];
                     snprintf(defaultName, sizeof(defaultName), "region_%llX_%llu.bin",
                         (unsigned long long)region.baseAddress, (unsigned long long)region.size);
-                    if (helpers::OpenSaveFileDialog(path, sizeof(path), defaultName))
+                    if (helpers::OpenSaveFileDialog(path, defaultName))
                     {
                         size_t toDump = (region.size > 64ULL * 1024 * 1024) ? (64ULL * 1024 * 1024) : (size_t)region.size;
                         size_t written = app.memoryReader.DumpToFile(app.processHandle,
                             region.baseAddress, toDump, path);
                         if (written > 0)
-                            Logger::Get().Log(LogLevel::Info, "Dumped region %zu bytes to %s", written, path);
+                            Logger::Get().Log(LogLevel::Info, "Dumped region %zu bytes to %s", written, path.c_str());
                         else
                             Logger::Get().Log(LogLevel::Error, "Dump failed");
                     }
