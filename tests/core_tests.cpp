@@ -1418,6 +1418,20 @@ void TestBinaryDiffAndMigration()
         {newFingerprint, duplicate});
     Expect(ambiguous.size() == 1 && ambiguous[0].status == openreverse::MigrationStatus::Ambiguous,
            "equally strong migration matches remain explicitly ambiguous");
+
+    const auto ordered = AnalyzeCFG({
+        0x48, 0x89, 0xC8, 0x48, 0x01, 0xD0, 0x4C, 0x31, 0xC0, 0xC3},
+        oldBase + 0x400);
+    const auto reordered = AnalyzeCFG({
+        0x48, 0x89, 0xC8, 0x4C, 0x31, 0xC0, 0x48, 0x01, 0xD0, 0xC3},
+        newBase + 0x400);
+    const auto orderSimilarity = openreverse::EvaluateFunctionFingerprints(
+        openreverse::BuildFunctionFingerprint(ordered),
+        openreverse::BuildFunctionFingerprint(reordered));
+    Expect(orderSimilarity.normalizedInstructions == 1.0 &&
+           orderSimilarity.orderedInstructions < orderSimilarity.normalizedInstructions &&
+           !orderSimilarity.exactNormalized && orderSimilarity.total < 0.90,
+           "the same instruction multiset in a different order cannot claim an exact match");
 }
 
 openreverse::FunctionInfo NamedFunction(std::initializer_list<uint8_t> code, uint64_t address,
@@ -1577,6 +1591,8 @@ void TestVersionIntelligence()
     duplicateSignature.stableId = "duplicate";
     duplicateSignature.pattern.clear();
     for (uint8_t byte : duplicatePattern) duplicateSignature.pattern.push_back({byte, false});
+    openreverse::SignatureRecord sharedScanSignature = uniqueSignature;
+    sharedScanSignature.stableId = "stable-shared-scan";
 
     openreverse::Disassembler signatureDisassembler;
     Expect(signatureDisassembler.Init(true), "version signature fixture initializes x64 decoder");
@@ -1602,7 +1618,7 @@ void TestVersionIntelligence()
     auto ripSignature = signatureEngine.Generate(ripInstructions, 0, ripRelationship, signatureOptions);
     ripSignature.stableId = "rip-relation";
 
-    oldTarget.analysis.signatures = {uniqueSignature, brokenSignature, duplicateSignature,
+    oldTarget.analysis.signatures = {uniqueSignature, sharedScanSignature, brokenSignature, duplicateSignature,
                                      fieldSignature, ripSignature};
     auto newSignature = uniqueSignature;
     newSignature.targetFunction = movedNew.startAddress;
@@ -1614,6 +1630,8 @@ void TestVersionIntelligence()
     Expect(comparison.error.empty() && !comparison.cancelled &&
            comparison.scoredCandidatePairs < oldTarget.analysis.functions.size() * newTarget.analysis.functions.size(),
            "version comparison uses indexed candidates instead of an all-pairs scan");
+    Expect(comparison.signatureScansPerformed == 7,
+           "identical signature patterns reuse one bounded scan per target");
     const auto findFunction = [&](uint64_t oldRva) -> const openreverse::VersionFunctionMatch* {
         const auto found = std::find_if(comparison.functions.begin(), comparison.functions.end(),
             [&](const openreverse::VersionFunctionMatch& match) { return match.oldRva == oldRva; });
@@ -1710,6 +1728,77 @@ void TestVersionIntelligence()
     const auto token = cancellation.Token();
     const auto cancelled = engine.Compare(oldTarget, newTarget, &token);
     Expect(cancelled.cancelled, "version comparison honors cancellation");
+}
+
+void TestVersionIntelligenceScaling()
+{
+    constexpr size_t functionCount = 1500;
+    const uint64_t oldBase = 0x140000000ULL;
+    const uint64_t newBase = 0x180000000ULL;
+    openreverse::VersionAnalysisTarget oldTarget;
+    openreverse::VersionAnalysisTarget newTarget;
+    oldTarget.identity = {"scale-old.exe", "", std::string(64, '3'), "x64", 1,
+                          0x800000, oldBase};
+    newTarget.identity = {"scale-new.exe", "", std::string(64, '4'), "x64", 2,
+                          0x800000, newBase};
+    oldTarget.analysis.module = {"scale-old.exe", "", oldBase, 0x800000};
+    newTarget.analysis.module = {"scale-new.exe", "", newBase, 0x800000};
+    oldTarget.analysis.is64Bit = true;
+    newTarget.analysis.is64Bit = true;
+
+    const auto appendFunction = [](openreverse::VersionAnalysisTarget& target,
+                                   uint64_t address, uint64_t stringAddress,
+                                   uint32_t instructionId, size_t index) {
+        openreverse::Instruction instruction;
+        instruction.address = address;
+        instruction.size = 1;
+        instruction.instructionId = instructionId;
+        instruction.mnemonic = "fixture";
+        openreverse::BasicBlock block;
+        block.startAddress = address;
+        block.endAddress = address + 1;
+        block.instructions.push_back(instruction);
+        block.isTerminal = true;
+        openreverse::FunctionInfo function;
+        function.startAddress = address;
+        function.endAddress = address + 1;
+        function.name = "scale_" + std::to_string(index);
+        function.size = 1;
+        function.analyzedSize = 1;
+        function.boundaryKnown = true;
+        function.cfg.entryAddress = address;
+        function.cfg.basicBlocks.push_back(std::move(block));
+        function.cfg.decodedInstructionCount = 1;
+        target.analysis.functions.push_back(std::move(function));
+        target.analysis.strings.push_back({stringAddress, "unique-" + std::to_string(index),
+            openreverse::StringEncoding::ASCII, 8});
+        openreverse::XRefEntry xref;
+        xref.fromAddress = address;
+        xref.toAddress = stringAddress;
+        xref.type = openreverse::XRefType::String;
+        xref.functionAddress = address;
+        target.analysis.xrefs.push_back(std::move(xref));
+    };
+    for (size_t index = 0; index < functionCount; ++index)
+    {
+        appendFunction(oldTarget, oldBase + 0x1000 + index * 4,
+                       oldBase + 0x400000 + index * 16,
+                       static_cast<uint32_t>(0x10000 + index), index);
+        appendFunction(newTarget, newBase + 0x2000 + index * 4,
+                       newBase + 0x500000 + index * 16,
+                       static_cast<uint32_t>(0x10000 + index), index);
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto comparison = openreverse::VersionIntelligenceEngine{}.Compare(oldTarget, newTarget);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    Expect(comparison.error.empty() && !comparison.candidateBudgetReached &&
+           comparison.scoredCandidatePairs == functionCount &&
+           comparison.indexedCandidatePairs == functionCount,
+           "indexed Version Intelligence scales linearly for unique synthetic functions");
+    Expect(elapsed < std::chrono::seconds(5),
+           "synthetic Version Intelligence indexing remains within its regression budget");
 }
 
 void TestProjectPersistence()
@@ -1853,6 +1942,15 @@ void TestProjectPersistence()
            parsed.versionComparison.functions[0].decisionNewRva == 0x240 &&
            parsed.versionComparison.migrations[0].decision == openreverse::VersionDecision::Rejected,
            "project round-trip preserves annotations, analysis evidence, decisions, settings, and UI");
+
+    auto previousComparisonProject = project;
+    previousComparisonProject.versionComparison.algorithmVersion = 1;
+    std::string previousComparisonJson;
+    Expect(openreverse::ProjectStore::Serialize(previousComparisonProject,
+               previousComparisonJson, error) &&
+           openreverse::ProjectStore::Parse(previousComparisonJson, parsed, error) &&
+           parsed.versionComparison.algorithmVersion == 1,
+           "projects retain readable Version Intelligence v1 review decisions after the v2 upgrade");
 
     std::string canonicalState;
     Expect(openreverse::ProjectStore::ValidateExtensionState(
@@ -2213,6 +2311,7 @@ int main()
     TestOffsetProjectsAndIdentity();
     TestBinaryDiffAndMigration();
     TestVersionIntelligence();
+    TestVersionIntelligenceScaling();
     TestProjectPersistence();
     TestDumpImportAndDeniedAccess();
     TestExtensionBoundary();

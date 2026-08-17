@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -40,27 +41,27 @@ std::vector<T> AddedValues(const std::vector<T>& oldValues, const std::vector<T>
     return result;
 }
 
+uint64_t InstructionRole(const Instruction& instruction)
+{
+    uint64_t role = instruction.instructionId;
+    for (const auto& operand : instruction.decodedOperands)
+    {
+        role = role * 1315423911ULL + static_cast<uint64_t>(operand.type) * 17ULL + operand.size;
+        role = role * 33ULL + (operand.read ? 1ULL : 0ULL) + (operand.write ? 2ULL : 0ULL);
+        if (operand.type == OperandType::Memory)
+        {
+            role = role * 33ULL + (operand.memory.ripRelative ? 1ULL : 0ULL);
+            role = role * 33ULL + operand.memory.scale;
+        }
+    }
+    return role;
+}
+
 uint64_t InstructionRole(const FunctionInfo& function, uint64_t address)
 {
     for (const auto& block : function.cfg.basicBlocks)
-    {
         for (const auto& instruction : block.instructions)
-        {
-            if (instruction.address != address) continue;
-            uint64_t role = instruction.instructionId;
-            for (const auto& operand : instruction.decodedOperands)
-            {
-                role = role * 1315423911ULL + static_cast<uint64_t>(operand.type) * 17ULL + operand.size;
-                role = role * 33ULL + (operand.read ? 1ULL : 0ULL) + (operand.write ? 2ULL : 0ULL);
-                if (operand.type == OperandType::Memory)
-                {
-                    role = role * 33ULL + (operand.memory.ripRelative ? 1ULL : 0ULL);
-                    role = role * 33ULL + operand.memory.scale;
-                }
-            }
-            return role;
-        }
-    }
+            if (instruction.address == address) return InstructionRole(instruction);
     return 0;
 }
 
@@ -85,55 +86,88 @@ std::string GlobalRole(const GlobalCandidate& global)
     return stream.str();
 }
 
-FunctionFingerprintContext BuildContext(const ModuleAnalysisState& analysis,
-                                        const FunctionInfo& function)
+std::vector<FunctionFingerprintContext> BuildContexts(const ModuleAnalysisState& analysis)
 {
-    FunctionFingerprintContext context;
-    context.imageBase = analysis.module.baseAddress;
-    context.imageSize = analysis.module.size;
+    std::vector<FunctionFingerprintContext> contexts(analysis.functions.size());
+    std::unordered_map<uint64_t, size_t> functionIndexes;
+    std::unordered_map<uint64_t, const StringResult*> stringsByAddress;
+    std::unordered_map<uint64_t, const GlobalCandidate*> globalsByAddress;
+    std::vector<std::unordered_map<uint64_t, uint64_t>> instructionRoles(analysis.functions.size());
+    for (size_t index = 0; index < analysis.functions.size(); ++index)
+    {
+        const auto& function = analysis.functions[index];
+        functionIndexes[function.startAddress] = index;
+        contexts[index].imageBase = analysis.module.baseAddress;
+        contexts[index].imageSize = analysis.module.size;
+        for (const auto& block : function.cfg.basicBlocks)
+            for (const auto& instruction : block.instructions)
+                instructionRoles[index][instruction.address] = InstructionRole(instruction);
+    }
+    for (const auto& value : analysis.strings) stringsByAddress[value.address] = &value;
+    for (const auto& value : analysis.globals) globalsByAddress[value.address] = &value;
+
     for (const auto& xref : analysis.xrefs)
     {
-        if (xref.functionAddress != function.startAddress) continue;
+        const auto function = functionIndexes.find(xref.functionAddress);
+        if (function == functionIndexes.end()) continue;
+        auto& context = contexts[function->second];
         if (xref.type == XRefType::String)
         {
-            const auto value = std::find_if(analysis.strings.begin(), analysis.strings.end(),
-                [&](const StringResult& string) { return string.address == xref.toAddress; });
-            if (value != analysis.strings.end()) context.referencedStrings.push_back(value->value);
+            const auto value = stringsByAddress.find(xref.toAddress);
+            if (value != stringsByAddress.end())
+                context.referencedStrings.push_back(value->second->value);
         }
         else if (xref.type == XRefType::Import)
             context.referencedImports.push_back(xref.instructionText);
         else if (xref.type == XRefType::Global || xref.type == XRefType::Read ||
                  xref.type == XRefType::Write || xref.type == XRefType::ReadWrite)
         {
-            const auto global = std::find_if(analysis.globals.begin(), analysis.globals.end(),
-                [&](const GlobalCandidate& value) { return value.address == xref.toAddress; });
-            if (global != analysis.globals.end()) context.referencedGlobals.push_back(GlobalRole(*global));
+            const auto global = globalsByAddress.find(xref.toAddress);
+            if (global != globalsByAddress.end())
+                context.referencedGlobals.push_back(GlobalRole(*global->second));
         }
     }
     for (const auto& signature : analysis.signatures)
     {
-        if (signature.targetFunction == function.startAddress)
-            context.signatureFragments.push_back(SignatureEngine::FormatPattern(signature.pattern));
+        const auto function = functionIndexes.find(signature.targetFunction);
+        if (function != functionIndexes.end())
+            contexts[function->second].signatureFragments.push_back(
+                SignatureEngine::FormatPattern(signature.pattern));
+    }
+    for (const auto& symbol : analysis.symbols)
+    {
+        if (symbol.kind != SymbolKind::Function || symbol.name.empty()) continue;
+        const auto function = functionIndexes.find(analysis.module.baseAddress + symbol.rva);
+        if (function != functionIndexes.end())
+            contexts[function->second].symbolNames.push_back(symbol.name);
     }
     for (const auto& field : analysis.fieldAccesses)
     {
-        if (field.functionAddress != function.startAddress) continue;
-        context.fields.push_back({field.argumentIndex, field.displacement, field.operandSize,
-            static_cast<uint8_t>(field.access), InstructionRole(function, field.instructionAddress)});
+        const auto function = functionIndexes.find(field.functionAddress);
+        if (function == functionIndexes.end()) continue;
+        const auto role = instructionRoles[function->second].find(field.instructionAddress);
+        contexts[function->second].fields.push_back({field.argumentIndex, field.displacement,
+            field.operandSize, static_cast<uint8_t>(field.access),
+            role == instructionRoles[function->second].end() ? 0 : role->second});
     }
-    std::sort(context.referencedStrings.begin(), context.referencedStrings.end());
-    std::sort(context.referencedImports.begin(), context.referencedImports.end());
-    std::sort(context.referencedGlobals.begin(), context.referencedGlobals.end());
-    std::sort(context.signatureFragments.begin(), context.signatureFragments.end());
-    return context;
+    for (auto& context : contexts)
+    {
+        std::sort(context.referencedStrings.begin(), context.referencedStrings.end());
+        std::sort(context.referencedImports.begin(), context.referencedImports.end());
+        std::sort(context.referencedGlobals.begin(), context.referencedGlobals.end());
+        std::sort(context.signatureFragments.begin(), context.signatureFragments.end());
+        std::sort(context.symbolNames.begin(), context.symbolNames.end());
+    }
+    return contexts;
 }
 
 std::vector<FunctionFingerprint> BuildFingerprints(const ModuleAnalysisState& analysis)
 {
+    const auto contexts = BuildContexts(analysis);
     std::vector<FunctionFingerprint> fingerprints;
     fingerprints.reserve(analysis.functions.size());
-    for (const auto& function : analysis.functions)
-        fingerprints.push_back(BuildFunctionFingerprint(function, BuildContext(analysis, function)));
+    for (size_t index = 0; index < analysis.functions.size(); ++index)
+        fingerprints.push_back(BuildFunctionFingerprint(analysis.functions[index], contexts[index]));
     return fingerprints;
 }
 
@@ -153,9 +187,15 @@ std::vector<VersionEvidence> BuildEvidence(const FunctionFingerprint& oldFingerp
         newFingerprint.instructionCount, similarity.exactNormalized
             ? "normalized instruction sequence is identical"
             : "normalized instruction multiset comparison"));
+    evidence.push_back(SimilarityEvidence(VersionEvidenceKind::OrderedCode,
+        similarity.orderedInstructions, oldFingerprint.orderedInstructionNgrams.size(),
+        newFingerprint.orderedInstructionNgrams.size(),
+        "ordered normalized instruction windows"));
     evidence.push_back(SimilarityEvidence(VersionEvidenceKind::Cfg, similarity.cfg,
         oldFingerprint.basicBlockCount, newFingerprint.basicBlockCount,
-        oldFingerprint.cfgHash == newFingerprint.cfgHash ? "CFG topology hash matches" : "CFG topology differs"));
+        oldFingerprint.cfgHash == newFingerprint.cfgHash
+            ? "block-content CFG neighborhoods match"
+            : "block-content CFG neighborhoods differ"));
     evidence.push_back(SimilarityEvidence(VersionEvidenceKind::Calls, similarity.calls,
         oldFingerprint.callCount, newFingerprint.callCount, "decoded direct-call count"));
     if (!oldFingerprint.referencedStrings.empty() || !newFingerprint.referencedStrings.empty())
@@ -174,6 +214,10 @@ std::vector<VersionEvidence> BuildEvidence(const FunctionFingerprint& oldFingerp
         evidence.push_back(SimilarityEvidence(VersionEvidenceKind::Signature, similarity.signatures,
             oldFingerprint.signatureFragments.size(), newFingerprint.signatureFragments.size(),
             "stable signature fragments"));
+    if (!oldFingerprint.symbolNames.empty() || !newFingerprint.symbolNames.empty())
+        evidence.push_back(SimilarityEvidence(VersionEvidenceKind::Symbol, similarity.symbols,
+            oldFingerprint.symbolNames.size(), newFingerprint.symbolNames.size(),
+            "validated PDB function names"));
     if (oldFingerprint.boundaryKnown && newFingerprint.boundaryKnown)
         evidence.push_back(SimilarityEvidence(VersionEvidenceKind::RuntimeBoundary,
             oldFingerprint.authoritativeSize == newFingerprint.authoritativeSize ? 1.0 : similarity.size,
@@ -224,17 +268,29 @@ FunctionChangeSummary BuildChanges(const FunctionFingerprint& oldFingerprint,
 void AddIndexValues(std::unordered_map<std::string, std::vector<size_t>>& index,
                     const std::vector<std::string>& values, size_t functionIndex)
 {
-    for (const auto& value : values)
+    std::set<std::string> unique(values.begin(), values.end());
+    for (const auto& value : unique)
         if (!value.empty()) index[value].push_back(functionIndex);
+}
+
+void AddIndexValues(std::unordered_map<uint64_t, std::vector<size_t>>& index,
+                    const std::vector<uint64_t>& values, size_t functionIndex)
+{
+    std::set<uint64_t> unique(values.begin(), values.end());
+    for (uint64_t value : unique) index[value].push_back(functionIndex);
 }
 
 struct FingerprintIndexes {
     std::unordered_map<uint64_t, std::vector<size_t>> normalized;
     std::unordered_map<uint64_t, std::vector<size_t>> cfg;
+    std::unordered_map<uint64_t, std::vector<size_t>> orderedInstructions;
+    std::unordered_map<uint64_t, std::vector<size_t>> cfgNeighborhoods;
     std::unordered_map<size_t, std::vector<size_t>> instructionBuckets;
     std::unordered_map<std::string, std::vector<size_t>> strings;
     std::unordered_map<std::string, std::vector<size_t>> imports;
+    std::unordered_map<std::string, std::vector<size_t>> globals;
     std::unordered_map<std::string, std::vector<size_t>> signatures;
+    std::unordered_map<std::string, std::vector<size_t>> symbols;
 };
 
 FingerprintIndexes BuildIndexes(const std::vector<FunctionFingerprint>& fingerprints)
@@ -245,35 +301,52 @@ FingerprintIndexes BuildIndexes(const std::vector<FunctionFingerprint>& fingerpr
         const auto& fingerprint = fingerprints[index];
         indexes.normalized[fingerprint.normalizedHash].push_back(index);
         indexes.cfg[fingerprint.cfgHash].push_back(index);
+        AddIndexValues(indexes.orderedInstructions,
+                       fingerprint.orderedInstructionNgrams, index);
+        AddIndexValues(indexes.cfgNeighborhoods,
+                       fingerprint.cfgNeighborhoodTokens, index);
         indexes.instructionBuckets[fingerprint.instructionCount / 4].push_back(index);
         AddIndexValues(indexes.strings, fingerprint.referencedStrings, index);
         AddIndexValues(indexes.imports, fingerprint.referencedImports, index);
+        AddIndexValues(indexes.globals, fingerprint.referencedGlobals, index);
         AddIndexValues(indexes.signatures, fingerprint.signatureFragments, index);
+        AddIndexValues(indexes.symbols, fingerprint.symbolNames, index);
     }
     return indexes;
 }
 
 template<typename K>
 void IncludeIndexed(const std::unordered_map<K, std::vector<size_t>>& index, const K& key,
-                    std::unordered_set<size_t>& candidates)
+                    std::unordered_set<size_t>& candidates, size_t maximumBucket = 0)
 {
     const auto found = index.find(key);
     if (found == index.end()) return;
+    if (maximumBucket != 0 && found->second.size() > maximumBucket) return;
     candidates.insert(found->second.begin(), found->second.end());
 }
 
-std::unordered_set<size_t> CandidateIndexes(const FunctionFingerprint& oldFingerprint,
-                                            const FingerprintIndexes& newIndexes)
+std::vector<size_t> CandidateIndexes(const FunctionFingerprint& oldFingerprint,
+                                     const FingerprintIndexes& newIndexes,
+                                     bool& budgetReached)
 {
+    constexpr size_t kMaximumIndexedCandidatesPerFunction = 4096;
     std::unordered_set<size_t> candidates;
     IncludeIndexed(newIndexes.normalized, oldFingerprint.normalizedHash, candidates);
     IncludeIndexed(newIndexes.cfg, oldFingerprint.cfgHash, candidates);
+    for (uint64_t value : oldFingerprint.orderedInstructionNgrams)
+        IncludeIndexed(newIndexes.orderedInstructions, value, candidates, 256);
+    for (uint64_t value : oldFingerprint.cfgNeighborhoodTokens)
+        IncludeIndexed(newIndexes.cfgNeighborhoods, value, candidates, 256);
     for (const auto& value : oldFingerprint.referencedStrings)
-        IncludeIndexed(newIndexes.strings, value, candidates);
+        IncludeIndexed(newIndexes.strings, value, candidates, 1024);
     for (const auto& value : oldFingerprint.referencedImports)
-        IncludeIndexed(newIndexes.imports, value, candidates);
+        IncludeIndexed(newIndexes.imports, value, candidates, 1024);
+    for (const auto& value : oldFingerprint.referencedGlobals)
+        IncludeIndexed(newIndexes.globals, value, candidates, 1024);
     for (const auto& value : oldFingerprint.signatureFragments)
-        IncludeIndexed(newIndexes.signatures, value, candidates);
+        IncludeIndexed(newIndexes.signatures, value, candidates, 1024);
+    for (const auto& value : oldFingerprint.symbolNames)
+        IncludeIndexed(newIndexes.symbols, value, candidates, 1024);
     if (candidates.empty())
     {
         const size_t bucket = oldFingerprint.instructionCount / 4;
@@ -281,14 +354,21 @@ std::unordered_set<size_t> CandidateIndexes(const FunctionFingerprint& oldFinger
         if (bucket != 0) IncludeIndexed(newIndexes.instructionBuckets, bucket - 1, candidates);
         IncludeIndexed(newIndexes.instructionBuckets, bucket + 1, candidates);
     }
-    return candidates;
+    std::vector<size_t> result(candidates.begin(), candidates.end());
+    std::sort(result.begin(), result.end());
+    if (result.size() > kMaximumIndexedCandidatesPerFunction)
+    {
+        result.resize(kMaximumIndexedCandidatesPerFunction);
+        budgetReached = true;
+    }
+    return result;
 }
 
 bool HasStrongAnchor(const FunctionFingerprint& fingerprint)
 {
     return fingerprint.instructionCount >= 4 || !fingerprint.referencedStrings.empty() ||
         !fingerprint.referencedImports.empty() || !fingerprint.referencedGlobals.empty() ||
-        !fingerprint.signatureFragments.empty();
+        !fingerprint.signatureFragments.empty() || !fingerprint.symbolNames.empty();
 }
 
 VersionMatchState CandidateState(const FunctionFingerprint& oldFingerprint,
@@ -434,6 +514,22 @@ void MigrateSignatures(VersionComparison& comparison, const VersionAnalysisTarge
     SignatureEngine engine;
     Disassembler disassembler;
     disassembler.Init(newTarget.analysis.is64Bit);
+    std::unordered_map<std::string, PatternScanReport> oldScans;
+    std::unordered_map<std::string, PatternScanReport> newScans;
+    const auto cachedScan = [&](const SignatureRecord& signature,
+                                const VersionAnalysisTarget& target,
+                                std::unordered_map<std::string, PatternScanReport>& cache)
+        -> const PatternScanReport& {
+        const std::string key = SignatureEngine::FormatPattern(signature.pattern);
+        const auto existing = cache.find(key);
+        if (existing != cache.end()) return existing->second;
+        ++comparison.signatureScansPerformed;
+        OfflinePatternScanOptions options;
+        options.maxResults = 3;
+        auto report = scanner.ScanOffline(signature.pattern, target.mappedImage,
+            target.analysis.pe, target.rawFileSize, options, cancellation);
+        return cache.emplace(key, std::move(report)).first->second;
+    };
     for (const auto& signature : oldTarget.analysis.signatures)
     {
         if (cancellation && cancellation->IsCancellationRequested()) return;
@@ -445,11 +541,7 @@ void MigrateSignatures(VersionComparison& comparison, const VersionAnalysisTarge
         if (signature.relationship.kind == SignatureTargetKind::RipRelativeOperand ||
             signature.relationship.kind == SignatureTargetKind::FieldDisplacement)
         {
-            OfflinePatternScanOptions oldOptions;
-            oldOptions.patternIdentifier = signature.stableId;
-            oldOptions.maxResults = 2;
-            const auto oldScan = scanner.ScanOffline(signature.pattern, oldTarget.mappedImage,
-                oldTarget.analysis.pe, oldTarget.rawFileSize, oldOptions, cancellation);
+            const auto& oldScan = cachedScan(signature, oldTarget, oldScans);
             if (oldScan.results.size() == 1)
             {
                 const uint64_t oldMatch = oldScan.results.front().address;
@@ -471,11 +563,7 @@ void MigrateSignatures(VersionComparison& comparison, const VersionAnalysisTarge
                 }
             }
         }
-        OfflinePatternScanOptions options;
-        options.patternIdentifier = signature.stableId;
-        options.maxResults = 3;
-        const auto scan = scanner.ScanOffline(signature.pattern, newTarget.mappedImage,
-            newTarget.analysis.pe, newTarget.rawFileSize, options, cancellation);
+        const auto& scan = cachedScan(signature, newTarget, newScans);
         migration.evidence.push_back(SimilarityEvidence(VersionEvidenceKind::Signature,
             scan.results.size() == 1 ? 1.0 : 0.0, 1, scan.results.size(),
             scan.error.empty() ? "bounded executable-section scan" : scan.error));
@@ -533,6 +621,26 @@ void MigrateFields(VersionComparison& comparison, const VersionAnalysisTarget& o
                    const VersionAnalysisTarget& newTarget,
                    const std::map<uint64_t, uint64_t>& functionMap)
 {
+    using FieldKey = std::tuple<uint64_t, uint8_t, uint8_t, uint8_t, uint8_t>;
+    std::map<FieldKey, std::vector<const FieldAccessCandidate*>> newFieldsByRole;
+    std::unordered_map<uint64_t, uint64_t> instructionRoles;
+    for (const auto& function : oldTarget.analysis.functions)
+    {
+        for (const auto& block : function.cfg.basicBlocks)
+            for (const auto& instruction : block.instructions)
+                instructionRoles[instruction.address] = InstructionRole(instruction);
+    }
+    for (const auto& function : newTarget.analysis.functions)
+    {
+        for (const auto& block : function.cfg.basicBlocks)
+            for (const auto& instruction : block.instructions)
+                instructionRoles[instruction.address] = InstructionRole(instruction);
+    }
+    for (const auto& field : newTarget.analysis.fieldAccesses)
+        newFieldsByRole[{field.functionAddress, field.argumentIndex, field.operandSize,
+                         static_cast<uint8_t>(field.access),
+                         static_cast<uint8_t>(field.originKind)}].push_back(&field);
+
     std::set<std::string> processed;
     for (const auto& oldField : oldTarget.analysis.fieldAccesses)
     {
@@ -545,24 +653,25 @@ void MigrateFields(VersionComparison& comparison, const VersionAnalysisTarget& o
                << static_cast<unsigned>(oldField.argumentIndex) << ':' << oldField.displacement << ':'
                << static_cast<unsigned>(oldField.operandSize) << ':' << static_cast<unsigned>(oldField.access);
         if (!processed.insert(stable.str()).second) continue;
-        const FunctionInfo* oldFunction = FindFunctionByAddress(oldTarget.analysis, oldField.functionAddress);
-        const uint64_t oldRole = oldFunction ? InstructionRole(*oldFunction, oldField.instructionAddress) : 0;
+        const auto oldRoleFound = instructionRoles.find(oldField.instructionAddress);
+        const uint64_t oldRole = oldRoleFound == instructionRoles.end() ? 0 : oldRoleFound->second;
         const uint64_t newFunctionAddress = newTarget.analysis.module.baseAddress + mappedFunction->second;
         struct Candidate { const FieldAccessCandidate* field = nullptr; uint64_t role = 0; double score = 0.0; };
         std::vector<Candidate> candidates;
-        const FunctionInfo* newFunction = FindFunctionByAddress(newTarget.analysis, newFunctionAddress);
-        for (const auto& newField : newTarget.analysis.fieldAccesses)
+        const auto newFields = newFieldsByRole.find({newFunctionAddress, oldField.argumentIndex,
+            oldField.operandSize, static_cast<uint8_t>(oldField.access),
+            static_cast<uint8_t>(oldField.originKind)});
+        if (newFields != newFieldsByRole.end())
         {
-            if (newField.functionAddress != newFunctionAddress ||
-                newField.argumentIndex != oldField.argumentIndex ||
-                newField.operandSize != oldField.operandSize || newField.access != oldField.access ||
-                newField.originKind != oldField.originKind)
-                continue;
-            const uint64_t newRole = newFunction ? InstructionRole(*newFunction, newField.instructionAddress) : 0;
-            double score = 0.72;
-            if (oldRole != 0 && oldRole == newRole) score += 0.20;
-            if (oldField.originRegister == newField.originRegister) score += 0.04;
-            candidates.push_back({&newField, newRole, std::min(1.0, score)});
+            for (const auto* newField : newFields->second)
+            {
+                const auto newRoleFound = instructionRoles.find(newField->instructionAddress);
+                const uint64_t newRole = newRoleFound == instructionRoles.end() ? 0 : newRoleFound->second;
+                double score = 0.72;
+                if (oldRole != 0 && oldRole == newRole) score += 0.20;
+                if (oldField.originRegister == newField->originRegister) score += 0.04;
+                candidates.push_back({newField, newRole, std::min(1.0, score)});
+            }
         }
         std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
             if (left.score != right.score) return left.score > right.score;
@@ -719,6 +828,7 @@ VersionComparison VersionIntelligenceEngine::Compare(const VersionAnalysisTarget
                                                       const CancellationToken* cancellation,
                                                       const ProgressCallback& progress) const
 {
+    constexpr size_t kMaximumScoredCandidatePairs = 2000000;
     VersionComparison comparison;
     comparison.oldTarget = oldTarget.identity;
     comparison.newTarget = newTarget.identity;
@@ -759,15 +869,26 @@ VersionComparison VersionIntelligenceEngine::Compare(const VersionAnalysisTarget
         match.oldRva = oldFingerprint.functionRva;
         match.oldName = oldTarget.analysis.functions[oldIndex].name;
         match.stableId = "function:" + Hex(match.oldRva);
-        const auto candidates = CandidateIndexes(oldFingerprint, newIndexes);
+        bool candidateBudgetReached = false;
+        const auto candidates = CandidateIndexes(oldFingerprint, newIndexes,
+                                                  candidateBudgetReached);
+        comparison.candidateBudgetReached = comparison.candidateBudgetReached ||
+                                            candidateBudgetReached;
         comparison.indexedCandidatePairs += candidates.size();
+        bool functionBudgetReached = candidateBudgetReached;
         for (size_t newIndex : candidates)
         {
+            if (comparison.scoredCandidatePairs >= kMaximumScoredCandidatePairs)
+            {
+                comparison.candidateBudgetReached = true;
+                functionBudgetReached = true;
+                break;
+            }
             if (newIndex >= newFingerprints.size()) continue;
             const auto& newFingerprint = newFingerprints[newIndex];
             const auto similarity = EvaluateFunctionFingerprints(oldFingerprint, newFingerprint);
             ++comparison.scoredCandidatePairs;
-            if (similarity.total < 0.55 && !similarity.exactNormalized) continue;
+            if (similarity.total < 0.40 && !similarity.exactNormalized) continue;
             VersionFunctionCandidate candidate;
             candidate.newRva = newFingerprint.functionRva;
             candidate.newName = newTarget.analysis.functions[newIndex].name;
@@ -781,7 +902,10 @@ VersionComparison VersionIntelligenceEngine::Compare(const VersionAnalysisTarget
             if (left.similarityScore != right.similarityScore) return left.similarityScore > right.similarityScore;
             return left.newRva < right.newRva;
         });
-        if (match.candidates.empty())
+        if (functionBudgetReached)
+            match.suggestedState = match.candidates.empty()
+                ? VersionMatchState::Unmatched : VersionMatchState::Ambiguous;
+        else if (match.candidates.empty())
             match.suggestedState = VersionMatchState::Removed;
         else
         {
@@ -877,6 +1001,7 @@ const char* VersionEvidenceKindName(VersionEvidenceKind kind)
     case VersionEvidenceKind::FieldProvenance: return "FieldProvenance";
     case VersionEvidenceKind::ExportIdentity: return "ExportIdentity";
     case VersionEvidenceKind::AccessRole: return "AccessRole";
+    case VersionEvidenceKind::OrderedCode: return "OrderedCode";
     default: return "NormalizedCode";
     }
 }
@@ -921,7 +1046,7 @@ bool ParseVersionEvidenceKind(const std::string& value, VersionEvidenceKind& kin
         VersionEvidenceKind::Calls, VersionEvidenceKind::MatchedCallees, VersionEvidenceKind::Signature,
         VersionEvidenceKind::RuntimeBoundary, VersionEvidenceKind::Symbol,
         VersionEvidenceKind::FieldProvenance, VersionEvidenceKind::ExportIdentity,
-        VersionEvidenceKind::AccessRole})
+        VersionEvidenceKind::AccessRole, VersionEvidenceKind::OrderedCode})
     {
         if (value == VersionEvidenceKindName(candidate)) { kind = candidate; return true; }
     }

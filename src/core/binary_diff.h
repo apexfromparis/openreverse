@@ -24,6 +24,7 @@ struct FunctionFingerprintContext {
     std::vector<std::string> referencedImports;
     std::vector<std::string> referencedGlobals;
     std::vector<std::string> signatureFragments;
+    std::vector<std::string> symbolNames;
     std::vector<FunctionFieldFingerprint> fields;
 };
 
@@ -31,10 +32,15 @@ struct FunctionFingerprint {
     uint64_t functionAddress = 0;
     uint64_t functionRva = 0;
     std::vector<uint64_t> instructionTokens;
+    std::vector<uint64_t> orderedInstructionNgrams;
+    std::vector<uint64_t> basicBlockTokens;
+    std::vector<uint64_t> orderedBlockNgrams;
+    std::vector<uint64_t> cfgNeighborhoodTokens;
     std::vector<std::string> referencedStrings;
     std::vector<std::string> referencedImports;
     std::vector<std::string> referencedGlobals;
     std::vector<std::string> signatureFragments;
+    std::vector<std::string> symbolNames;
     std::vector<FunctionFieldFingerprint> fields;
     std::vector<uint64_t> callTargets;
     std::array<size_t, 5> edgeTypeCounts{};
@@ -51,10 +57,15 @@ struct FunctionFingerprint {
 
 struct FunctionSimilarityBreakdown {
     double normalizedInstructions = 0.0;
+    double orderedInstructions = 0.0;
+    double basicBlocks = 0.0;
+    double orderedBlocks = 0.0;
+    double cfgNeighborhood = 0.0;
     double strings = 0.0;
     double imports = 0.0;
     double globals = 0.0;
     double signatures = 0.0;
+    double symbols = 0.0;
     double cfg = 0.0;
     double calls = 0.0;
     double size = 0.0;

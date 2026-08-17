@@ -486,7 +486,9 @@ json VersionComparisonJson(const VersionComparison& comparison)
         {"functions", std::move(functions)}, {"new_functions", std::move(newFunctions)},
         {"migrations", std::move(migrations)},
         {"indexed_candidate_pairs", comparison.indexedCandidatePairs},
-        {"scored_candidate_pairs", comparison.scoredCandidatePairs}};
+        {"scored_candidate_pairs", comparison.scoredCandidatePairs},
+        {"signature_scans_performed", comparison.signatureScansPerformed},
+        {"candidate_budget_reached", comparison.candidateBudgetReached}};
 }
 
 json BuildProjectRoot(const OpenReverseProject& project)
@@ -654,7 +656,8 @@ bool ParseVersionComparison(const json& value, VersionComparison& comparison)
         value["migrations"].size() > kMaximumComparisonMigrations)
         return false;
     comparison.algorithmVersion = value.value("algorithm_version", 0U);
-    if (comparison.algorithmVersion != kVersionIntelligenceAlgorithmVersion ||
+    if ((comparison.algorithmVersion == 0 ||
+         comparison.algorithmVersion > kVersionIntelligenceAlgorithmVersion) ||
         !ParseVersionTarget(value["old_target"], comparison.oldTarget) ||
         !ParseVersionTarget(value["new_target"], comparison.newTarget))
         return false;
@@ -760,6 +763,8 @@ bool ParseVersionComparison(const json& value, VersionComparison& comparison)
     }
     comparison.indexedCandidatePairs = value.value("indexed_candidate_pairs", size_t{0});
     comparison.scoredCandidatePairs = value.value("scored_candidate_pairs", size_t{0});
+    comparison.signatureScansPerformed = value.value("signature_scans_performed", size_t{0});
+    comparison.candidateBudgetReached = value.value("candidate_budget_reached", false);
     return true;
 }
 

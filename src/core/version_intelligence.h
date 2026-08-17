@@ -11,7 +11,7 @@
 
 namespace openreverse {
 
-constexpr uint32_t kVersionIntelligenceAlgorithmVersion = 1;
+constexpr uint32_t kVersionIntelligenceAlgorithmVersion = 2;
 
 enum class VersionMatchState {
     Exact,
@@ -44,7 +44,8 @@ enum class VersionEvidenceKind {
     Symbol,
     FieldProvenance,
     ExportIdentity,
-    AccessRole
+    AccessRole,
+    OrderedCode
 };
 
 enum class VersionMigrationKind {
@@ -130,6 +131,8 @@ struct VersionComparison {
     std::vector<VersionMigrationCandidate> migrations;
     size_t indexedCandidatePairs = 0;
     size_t scoredCandidatePairs = 0;
+    size_t signatureScansPerformed = 0;
+    bool candidateBudgetReached = false;
     bool cancelled = false;
     std::string error;
 };
