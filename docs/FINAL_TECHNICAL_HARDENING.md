@@ -63,6 +63,9 @@ screenshot remained untracked and were not modified or staged.
 - First-party targets compile at `/W4`; vendored ImGui/editor code is excluded
   from that policy. An opt-in `OPENREVERSE_ENABLE_MSVC_ANALYZE` switch enables
   MSVC code analysis without making normal CI dependent on tool-version noise.
+- A targeted MSVC `/analyze` run on `OpenReverseCore` completed clean after its
+  findings added explicit null-stream guards around DbgHelp minidump lists and
+  removed a constant DIA-availability comparison.
 - CI and local presets build and test Release and Debug.
 - Touched file dialogs, PE loading, process/module discovery, dump export, and
   comparison/offset paths use wide Win32 APIs, UTF-8 conversion, dynamic
@@ -113,8 +116,8 @@ screenshot remained untracked and were not modified or staged.
 - Automated tests do not drive native dialogs, inspect ImGui pixels, or perform
   a complete installer install/uninstall cycle.
 - MSVC AddressSanitizer was not made a default CI job; the Debug build,
-  deterministic mutation corpus, parser budgets, and optional `/analyze` path
-  are the stable Windows checks in this pass.
+  deterministic mutation corpus, parser budgets, and clean targeted `/analyze`
+  run are the stable Windows checks in this pass.
 - Authenticode signing and signed update/rollback infrastructure remain pending
   legitimate release credentials and are not simulated.
 
