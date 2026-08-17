@@ -1,4 +1,5 @@
 #include "disassembler.h"
+#include "core/instruction_semantics.h"
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -115,9 +116,6 @@ void Disassembler::PopulateInstruction(cs_insn* source, Instruction& instruction
     memcpy(instruction.bytes, source->bytes, source->size);
     instruction.mnemonic = source->mnemonic;
     instruction.operands = source->op_str;
-    instruction.isJump = IsJumpMnemonic(source->mnemonic);
-    instruction.isCall = IsCallMnemonic(source->mnemonic);
-    instruction.isRet = IsRetMnemonic(source->mnemonic);
     if (source->detail)
     {
         instruction.displacementOffset = source->detail->x86.encoding.disp_offset;
@@ -140,29 +138,14 @@ void Disassembler::PopulateInstruction(cs_insn* source, Instruction& instruction
                 instruction.registersWritten.emplace_back(cs_reg_name(handle_, writtenRegisters[index]));
         }
     }
+    const ControlFlowSemantic semantic = ClassifyControlFlow(instruction);
+    instruction.isCall = semantic == ControlFlowSemantic::Call;
+    instruction.isConditionalBranch = semantic == ControlFlowSemantic::ConditionalBranch;
+    instruction.isUnconditionalBranch = semantic == ControlFlowSemantic::UnconditionalBranch;
+    instruction.isJump = instruction.isConditionalBranch || instruction.isUnconditionalBranch;
+    instruction.isRet = semantic == ControlFlowSemantic::Return;
+    instruction.isInterrupt = semantic == ControlFlowSemantic::Interrupt;
     ExtractTarget(source, instruction);
-}
-
-bool Disassembler::IsJumpMnemonic(const char* mnemonic)
-{
-    if (!mnemonic) return false;
-    return mnemonic[0] == 'j' || strcmp(mnemonic, "loop") == 0 ||
-        strcmp(mnemonic, "loope") == 0 || strcmp(mnemonic, "loopne") == 0;
-}
-
-bool Disassembler::IsCallMnemonic(const char* mnemonic)
-{
-    if (!mnemonic) return false;
-    return strcmp(mnemonic, "call") == 0 || strcmp(mnemonic, "lcall") == 0;
-}
-
-bool Disassembler::IsRetMnemonic(const char* mnemonic)
-{
-    if (!mnemonic) return false;
-    return strcmp(mnemonic, "ret") == 0 || strcmp(mnemonic, "retn") == 0 ||
-        strcmp(mnemonic, "retf") == 0 || strcmp(mnemonic, "retfq") == 0 ||
-        strcmp(mnemonic, "iret") == 0 || strcmp(mnemonic, "iretd") == 0 ||
-        strcmp(mnemonic, "iretq") == 0;
 }
 
 void Disassembler::ExtractTarget(cs_insn* insn, Instruction& instruction)

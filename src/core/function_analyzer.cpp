@@ -25,32 +25,6 @@ const BasicBlock* ControlFlowGraph::FindContainingBlock(uint64_t address) const
     return address >= it->startAddress && address < it->endAddress ? &*it : nullptr;
 }
 
-bool FunctionAnalyzer::IsConditionalJump(const std::string& m)
-{
-    if (m == "loop" || m == "loope" || m == "loopne") return true;
-    if (m.empty() || m[0] != 'j') return false;
-    return m == "je" || m == "jne" || m == "jz" || m == "jnz" ||
-           m == "jg" || m == "jge" || m == "jl" || m == "jle" ||
-           m == "ja" || m == "jae" || m == "jb" || m == "jbe" ||
-           m == "js" || m == "jns" || m == "jo" || m == "jno" ||
-           m == "jp" || m == "jnp" || m == "jcxz" || m == "jecxz" || m == "jrcxz";
-}
-
-bool FunctionAnalyzer::IsUnconditionalJump(const std::string& m)
-{
-    return m == "jmp" || m == "ljmp";
-}
-
-bool FunctionAnalyzer::IsReturn(const std::string& m)
-{
-    return m == "ret" || m == "retn" || m == "retf" || m == "iret" || m == "iretd" || m == "iretq";
-}
-
-bool FunctionAnalyzer::IsCall(const std::string& m)
-{
-    return m == "call" || m == "lcall";
-}
-
 std::vector<FunctionInfo> FunctionAnalyzer::DiscoverFunctions(const uint8_t* data, size_t dataSize,
                                                              uint64_t baseAddress, bool is64Bit,
                                                              size_t maxFunctions,
@@ -367,9 +341,9 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
             }
 
             decoded.emplace(address, instruction);
-            const bool isConditional = IsConditionalJump(instruction.mnemonic);
-            const bool isUnconditional = IsUnconditionalJump(instruction.mnemonic);
-            const bool isReturn = IsReturn(instruction.mnemonic);
+            const bool isConditional = instruction.isConditionalBranch;
+            const bool isUnconditional = instruction.isUnconditionalBranch;
+            const bool isReturn = instruction.isRet;
 
             uint64_t nextAddress = 0;
             const bool hasNext = instruction.size <= (std::numeric_limits<uint64_t>::max)() - address;
@@ -439,7 +413,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
             block.instructions.push_back(instruction);
             block.endAddress = instruction.address + instruction.size;
 
-            if (IsReturn(instruction.mnemonic) || instruction.isJump)
+            if (instruction.isRet || instruction.isJump || instruction.isInterrupt)
                 break;
             const uint64_t nextAddress = instruction.address + instruction.size;
             if (leaders.count(nextAddress) != 0 || decoded.find(nextAddress) == decoded.end())
@@ -459,11 +433,11 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
     {
         const Instruction& terminator = block.instructions.back();
         const uint64_t nextAddress = terminator.address + terminator.size;
-        if (IsReturn(terminator.mnemonic))
+        if (terminator.isRet || terminator.isInterrupt)
         {
             addEdge(block.startAddress, 0, CFGEdgeType::Return);
         }
-        else if (IsConditionalJump(terminator.mnemonic))
+        else if (terminator.isConditionalBranch)
         {
             if (terminator.targetKind == InstructionTargetKind::Immediate)
             {
@@ -476,7 +450,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
                 addEdge(block.startAddress, nextAddress, CFGEdgeType::ConditionalFalse);
             }
         }
-        else if (IsUnconditionalJump(terminator.mnemonic) || terminator.isJump)
+        else if (terminator.isUnconditionalBranch)
         {
             if (terminator.targetKind == InstructionTargetKind::Immediate)
             {
@@ -519,7 +493,7 @@ FunctionInfo FunctionAnalyzer::AnalyzeFunction(const uint8_t* data, size_t dataS
         block.isTerminal = !hasInternalSuccessor;
 
         const Instruction& last = block.instructions.back();
-        if (IsConditionalJump(last.mnemonic))
+        if (last.isConditionalBranch)
             ++conditionalCount;
         fi.analyzedEndAddress = std::max(fi.analyzedEndAddress, block.endAddress);
     }

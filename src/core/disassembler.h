@@ -27,6 +27,8 @@ struct MemoryOperand {
     uint64_t resolvedAddress = 0;
 };
 
+enum class ControlFlowSemantic;
+
 enum class OperandType {
     Register,
     Immediate,
@@ -54,6 +56,9 @@ struct Instruction {
     bool        isJump = false;
     bool        isCall = false;
     bool        isRet = false;
+    bool        isConditionalBranch = false;
+    bool        isUnconditionalBranch = false;
+    bool        isInterrupt = false;
     uint64_t    targetAddress = 0;
     InstructionTargetKind targetKind = InstructionTargetKind::None;
     bool        memoryRead = false;
@@ -91,9 +96,6 @@ private:
     csh         handle_ = 0;
     bool        initialized_ = false;
 
-    bool IsJumpMnemonic(const char* mnemonic);
-    bool IsCallMnemonic(const char* mnemonic);
-    bool IsRetMnemonic(const char* mnemonic);
     void PopulateInstruction(cs_insn* source, Instruction& instruction);
     void ExtractTarget(cs_insn* insn, Instruction& instruction);
 };

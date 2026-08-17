@@ -40,7 +40,9 @@ enum class RegisterOriginKind {
     Unknown,
     Argument,
     RegisterCopy,
-    StackLocal
+    StackLocal,
+    CallReturn,
+    Ambiguous
 };
 
 struct GlobalCandidate {
@@ -76,6 +78,14 @@ struct FieldAccessCandidate {
     std::string originRegister;
     uint8_t argumentIndex = 0;
     int64_t originAdjustment = 0;
+    uint64_t originBlockAddress = 0;
+    uint64_t callInstructionAddress = 0;
+    uint64_t callTargetAddress = 0;
+    uint64_t sourceBlockAddress = 0;
+    uint16_t propagationDepth = 0;
+    uint16_t predecessorCount = 0;
+    bool interBlock = false;
+    bool mergeAmbiguous = false;
     std::string instructionText;
 };
 
@@ -85,6 +95,9 @@ struct StructureFieldCandidate {
     size_t readCount = 0;
     size_t writeCount = 0;
     size_t addressCount = 0;
+    size_t interBlockCount = 0;
+    size_t ambiguousOriginCount = 0;
+    uint16_t maxPropagationDepth = 0;
     std::vector<uint64_t> accessSites;
     std::vector<std::string> baseRegisters;
     std::vector<uint64_t> observingFunctions;
@@ -99,6 +112,9 @@ struct StructureCandidate {
     EvidenceLevel evidence = EvidenceLevel::Heuristic;
     RegisterOriginKind originKind = RegisterOriginKind::Unknown;
     uint8_t argumentIndex = 0;
+    size_t interBlockObservationCount = 0;
+    size_t ambiguousOriginCount = 0;
+    uint16_t maxPropagationDepth = 0;
     std::vector<StructureFieldCandidate> fields;
 };
 
@@ -106,6 +122,8 @@ std::vector<GlobalCandidate> FindGlobalCandidates(const ModuleInfo& module, cons
                                                   const std::vector<XRefEntry>& xrefs);
 std::vector<FieldAccessCandidate> FindFieldAccesses(
     const std::vector<Instruction>& instructions, size_t maxCandidates = 100000);
+std::vector<FieldAccessCandidate> FindFieldAccesses(
+    const FunctionInfo& function, size_t maxCandidates = 100000);
 void AssignFieldFunctions(std::vector<FieldAccessCandidate>& fields,
                           const std::vector<FunctionInfo>& functions);
 std::vector<StructureCandidate> InferStructures(const std::vector<FieldAccessCandidate>& fields);

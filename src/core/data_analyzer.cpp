@@ -1,4 +1,5 @@
 #include "data_analyzer.h"
+#include "core/instruction_semantics.h"
 
 #include <algorithm>
 #include <iterator>
@@ -6,7 +7,7 @@
 #include <map>
 #include <set>
 #include <sstream>
-#include <unordered_map>
+#include <deque>
 
 namespace openreverse {
 
@@ -41,7 +42,104 @@ struct RegisterOrigin {
     std::string root;
     uint8_t argumentIndex = 0;
     int64_t adjustment = 0;
+    uint64_t originBlockAddress = 0;
+    uint16_t propagationDepth = 0;
+    uint16_t crossedBlocks = 0;
+    uint64_t callInstructionAddress = 0;
+    uint64_t callTargetAddress = 0;
 };
+
+using OriginState = std::map<std::string, RegisterOrigin>;
+
+OriginState SeedArgumentOrigins(uint64_t blockAddress)
+{
+    OriginState origins;
+    origins["rcx"] = {RegisterOriginKind::Argument, "rcx", 1, 0, blockAddress};
+    origins["rdx"] = {RegisterOriginKind::Argument, "rdx", 2, 0, blockAddress};
+    origins["r8"] = {RegisterOriginKind::Argument, "r8", 3, 0, blockAddress};
+    origins["r9"] = {RegisterOriginKind::Argument, "r9", 4, 0, blockAddress};
+    return origins;
+}
+
+bool SameOriginValue(const RegisterOrigin& left, const RegisterOrigin& right)
+{
+    return left.kind != RegisterOriginKind::Ambiguous &&
+           right.kind != RegisterOriginKind::Ambiguous &&
+           left.root == right.root && left.argumentIndex == right.argumentIndex &&
+           left.adjustment == right.adjustment &&
+           left.callInstructionAddress == right.callInstructionAddress &&
+           left.callTargetAddress == right.callTargetAddress;
+}
+
+bool SameOriginState(const OriginState& left, const OriginState& right)
+{
+    if (left.size() != right.size()) return false;
+    auto leftIt = left.begin();
+    auto rightIt = right.begin();
+    for (; leftIt != left.end(); ++leftIt, ++rightIt)
+    {
+        const auto& a = leftIt->second;
+        const auto& b = rightIt->second;
+        if (leftIt->first != rightIt->first || a.kind != b.kind || a.root != b.root ||
+            a.argumentIndex != b.argumentIndex || a.adjustment != b.adjustment ||
+            a.originBlockAddress != b.originBlockAddress)
+            return false;
+        if (a.callInstructionAddress != b.callInstructionAddress ||
+            a.callTargetAddress != b.callTargetAddress)
+            return false;
+    }
+    return true;
+}
+
+OriginState MergeOrigins(const std::vector<const OriginState*>& incoming)
+{
+    OriginState merged;
+    std::set<std::string> registers;
+    for (const auto* state : incoming)
+        for (const auto& [name, origin] : *state)
+            registers.insert(name);
+
+    for (const auto& name : registers)
+    {
+        const RegisterOrigin* first = nullptr;
+        bool ambiguous = false;
+        uint16_t maximumDepth = 0;
+        uint16_t maximumCrossedBlocks = 0;
+        for (const auto* state : incoming)
+        {
+            const auto found = state->find(name);
+            if (found == state->end())
+            {
+                ambiguous = true;
+                continue;
+            }
+            if (!first)
+                first = &found->second;
+            else if (!SameOriginValue(*first, found->second))
+                ambiguous = true;
+            maximumDepth = std::max(maximumDepth, found->second.propagationDepth);
+            maximumCrossedBlocks = std::max(maximumCrossedBlocks, found->second.crossedBlocks);
+        }
+        if (!first)
+            continue;
+        if (ambiguous || first->kind == RegisterOriginKind::Ambiguous)
+        {
+            RegisterOrigin value;
+            value.kind = RegisterOriginKind::Ambiguous;
+            value.propagationDepth = maximumDepth;
+            value.crossedBlocks = maximumCrossedBlocks;
+            merged[name] = std::move(value);
+        }
+        else
+        {
+            RegisterOrigin value = *first;
+            value.propagationDepth = maximumDepth;
+            value.crossedBlocks = maximumCrossedBlocks;
+            merged[name] = std::move(value);
+        }
+    }
+    return merged;
+}
 
 bool AddSigned(int64_t left, int64_t right, int64_t& result)
 {
@@ -50,6 +148,164 @@ bool AddSigned(int64_t left, int64_t right, int64_t& result)
         return false;
     result = left + right;
     return true;
+}
+
+void ProcessInstructions(const std::vector<Instruction>& instructions, OriginState& origins,
+                         uint64_t blockAddress, uint16_t predecessorCount,
+                         std::vector<FieldAccessCandidate>* result, size_t maxCandidates)
+{
+    for (const auto& instruction : instructions)
+    {
+        if (result)
+        {
+            for (const auto& memory : instruction.memoryOperands)
+            {
+                if (result->size() >= maxCandidates) return;
+                if (memory.ripRelative || memory.baseRegister.empty())
+                    continue;
+
+                const std::string base = CanonicalRegister(memory.baseRegister);
+                const auto origin = origins.find(base);
+                const bool stackBase = base == "rsp" || base == "rbp";
+                if (stackBase && (origin == origins.end() ||
+                    origin->second.kind == RegisterOriginKind::StackLocal))
+                    continue;
+
+                int64_t displacement = memory.displacement;
+                if (origin != origins.end() &&
+                    origin->second.kind != RegisterOriginKind::Ambiguous &&
+                    !AddSigned(displacement, origin->second.adjustment, displacement))
+                    continue;
+                if (displacement < -0x100000 || displacement > 0x100000)
+                    continue;
+
+                FieldAccessCandidate field;
+                field.instructionAddress = instruction.address;
+                field.displacement = displacement;
+                field.offset = displacement;
+                field.operandSize = memory.size;
+                field.operandIndex = memory.operandIndex;
+                field.baseRegister = memory.baseRegister;
+                field.indexRegister = memory.indexRegister;
+                field.scale = memory.scale;
+                field.instructionText = instruction.mnemonic + " " + instruction.operands;
+                field.sourceBlockAddress = blockAddress;
+                field.predecessorCount = predecessorCount;
+                if (origin != origins.end())
+                {
+                    field.originKind = origin->second.kind;
+                    field.originRegister = origin->second.root;
+                    field.argumentIndex = origin->second.argumentIndex;
+                    field.originAdjustment = origin->second.adjustment;
+                    field.originBlockAddress = origin->second.originBlockAddress;
+                    field.callInstructionAddress = origin->second.callInstructionAddress;
+                    field.callTargetAddress = origin->second.callTargetAddress;
+                    field.propagationDepth = origin->second.propagationDepth;
+                    field.interBlock = origin->second.crossedBlocks != 0;
+                    field.mergeAmbiguous = origin->second.kind == RegisterOriginKind::Ambiguous;
+                }
+                if (IsAddressCalculationInstruction(instruction))
+                    field.access = DataAccessType::Address;
+                else if (memory.read && memory.write)
+                    field.access = DataAccessType::ReadWrite;
+                else if (memory.write)
+                    field.access = DataAccessType::Write;
+                else
+                    field.access = DataAccessType::Read;
+                result->push_back(std::move(field));
+            }
+        }
+
+        std::string propagatedDestination;
+        if (IsMovePropagationInstruction(instruction) && instruction.decodedOperands.size() >= 2 &&
+            instruction.decodedOperands[0].type == OperandType::Register &&
+            instruction.decodedOperands[1].type == OperandType::Register)
+        {
+            const std::string destination = CanonicalRegister(
+                instruction.decodedOperands[0].registerName);
+            const std::string source = CanonicalRegister(instruction.decodedOperands[1].registerName);
+            const auto sourceOrigin = origins.find(source);
+            if (sourceOrigin != origins.end())
+            {
+                RegisterOrigin copied = sourceOrigin->second;
+                if (copied.kind != RegisterOriginKind::Ambiguous &&
+                    copied.kind != RegisterOriginKind::CallReturn)
+                    copied.kind = RegisterOriginKind::RegisterCopy;
+                if (copied.propagationDepth != (std::numeric_limits<uint16_t>::max)())
+                    ++copied.propagationDepth;
+                origins[destination] = std::move(copied);
+            }
+            else
+                origins.erase(destination);
+            propagatedDestination = destination;
+        }
+        else if (IsAddressCalculationInstruction(instruction) &&
+                 instruction.decodedOperands.size() >= 2 &&
+                 instruction.decodedOperands[0].type == OperandType::Register &&
+                 instruction.decodedOperands[1].type == OperandType::Memory &&
+                 instruction.decodedOperands[1].memory.indexRegister.empty())
+        {
+            const std::string destination = CanonicalRegister(
+                instruction.decodedOperands[0].registerName);
+            const auto& memory = instruction.decodedOperands[1].memory;
+            const std::string source = CanonicalRegister(memory.baseRegister);
+            const auto sourceOrigin = origins.find(source);
+            if (sourceOrigin != origins.end())
+            {
+                RegisterOrigin derived = sourceOrigin->second;
+                int64_t adjustment = 0;
+                if (derived.kind == RegisterOriginKind::Ambiguous)
+                    origins[destination] = derived;
+                else if (AddSigned(derived.adjustment, memory.displacement, adjustment))
+                {
+                    derived.adjustment = adjustment;
+                    if (derived.kind != RegisterOriginKind::CallReturn)
+                        derived.kind = RegisterOriginKind::RegisterCopy;
+                    if (derived.propagationDepth != (std::numeric_limits<uint16_t>::max)())
+                        ++derived.propagationDepth;
+                    origins[destination] = std::move(derived);
+                }
+                else
+                    origins.erase(destination);
+            }
+            else if (source == "rsp" || source == "rbp")
+            {
+                RegisterOrigin local;
+                local.kind = RegisterOriginKind::StackLocal;
+                local.root = source;
+                local.adjustment = memory.displacement;
+                local.originBlockAddress = blockAddress;
+                local.propagationDepth = 1;
+                origins[destination] = std::move(local);
+            }
+            else
+                origins.erase(destination);
+            propagatedDestination = destination;
+        }
+
+        for (const auto& written : instruction.registersWritten)
+        {
+            const std::string destination = CanonicalRegister(written);
+            if (destination != propagatedDestination)
+                origins.erase(destination);
+        }
+        if (instruction.isCall)
+        {
+            for (const char* volatileRegister : {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11"})
+                origins.erase(volatileRegister);
+            if (instruction.targetKind == InstructionTargetKind::Immediate)
+            {
+                RegisterOrigin returned;
+                returned.kind = RegisterOriginKind::CallReturn;
+                returned.root = "call_return";
+                returned.originBlockAddress = blockAddress;
+                returned.propagationDepth = 1;
+                returned.callInstructionAddress = instruction.address;
+                returned.callTargetAddress = instruction.targetAddress;
+                origins["rax"] = std::move(returned);
+            }
+        }
+    }
 }
 
 } // namespace
@@ -126,124 +382,92 @@ std::vector<FieldAccessCandidate> FindFieldAccesses(
     const std::vector<Instruction>& instructions, size_t maxCandidates)
 {
     std::vector<FieldAccessCandidate> result;
-    std::unordered_map<std::string, RegisterOrigin> origins;
-    origins["rcx"] = {RegisterOriginKind::Argument, "rcx", 1, 0};
-    origins["rdx"] = {RegisterOriginKind::Argument, "rdx", 2, 0};
-    origins["r8"] = {RegisterOriginKind::Argument, "r8", 3, 0};
-    origins["r9"] = {RegisterOriginKind::Argument, "r9", 4, 0};
+    OriginState origins = SeedArgumentOrigins(instructions.empty() ? 0 : instructions.front().address);
+    ProcessInstructions(instructions, origins, instructions.empty() ? 0 : instructions.front().address,
+                        0, &result, maxCandidates);
+    return result;
+}
 
-    for (const auto& instruction : instructions)
+std::vector<FieldAccessCandidate> FindFieldAccesses(
+    const FunctionInfo& function, size_t maxCandidates)
+{
+    std::vector<FieldAccessCandidate> result;
+    if (function.cfg.basicBlocks.empty() || maxCandidates == 0)
+        return result;
+
+    std::map<uint64_t, OriginState> inStates;
+    std::map<uint64_t, OriginState> outStates;
+    std::deque<uint64_t> worklist{function.cfg.entryAddress};
+    std::set<uint64_t> queued{function.cfg.entryAddress};
+    const OriginState entrySeed = SeedArgumentOrigins(function.cfg.entryAddress);
+
+    size_t iterations = 0;
+    const size_t iterationLimit = std::max<size_t>(
+        function.cfg.basicBlocks.size() * 16, function.cfg.basicBlocks.size());
+    while (!worklist.empty() && iterations++ < iterationLimit)
     {
-        for (const auto& memory : instruction.memoryOperands)
+        const uint64_t address = worklist.front();
+        worklist.pop_front();
+        queued.erase(address);
+        const BasicBlock* block = function.cfg.FindBlock(address);
+        if (!block) continue;
+
+        std::vector<const OriginState*> incoming;
+        if (address == function.cfg.entryAddress)
+            incoming.push_back(&entrySeed);
+        for (uint64_t predecessor : block->predecessors)
         {
-            if (result.size() >= maxCandidates) return result;
-            if (memory.ripRelative || memory.baseRegister.empty())
+            const auto found = outStates.find(predecessor);
+            if (found != outStates.end())
+                incoming.push_back(&found->second);
+        }
+        if (incoming.empty())
+            continue;
+
+        OriginState merged = MergeOrigins(incoming);
+        if (address != function.cfg.entryAddress)
+        {
+            for (auto& [name, origin] : merged)
+                origin.crossedBlocks = 1;
+        }
+        const auto existingIn = inStates.find(address);
+        const bool inputChanged = existingIn == inStates.end() ||
+                                  !SameOriginState(existingIn->second, merged);
+        if (inputChanged)
+            inStates[address] = merged;
+
+        OriginState output = std::move(merged);
+        ProcessInstructions(block->instructions, output, block->startAddress,
+                            static_cast<uint16_t>(std::min<size_t>(
+                                block->predecessors.size(),
+                                (std::numeric_limits<uint16_t>::max)())),
+                            nullptr, 0);
+        const auto existingOut = outStates.find(address);
+        if (existingOut != outStates.end() && SameOriginState(existingOut->second, output))
+            continue;
+        outStates[address] = std::move(output);
+        for (uint64_t successor : block->successors)
+        {
+            if (!function.cfg.FindBlock(successor) || !queued.insert(successor).second)
                 continue;
-
-            const std::string base = CanonicalRegister(memory.baseRegister);
-            const auto origin = origins.find(base);
-            const bool stackBase = base == "rsp" || base == "rbp";
-            if (stackBase && (origin == origins.end() || origin->second.kind == RegisterOriginKind::StackLocal))
-                continue;
-
-            int64_t displacement = memory.displacement;
-            if (origin != origins.end() &&
-                !AddSigned(displacement, origin->second.adjustment, displacement))
-                continue;
-            if (displacement < -0x100000 || displacement > 0x100000)
-                continue;
-
-            FieldAccessCandidate field;
-            field.instructionAddress = instruction.address;
-            field.displacement = displacement;
-            field.offset = displacement;
-            field.operandSize = memory.size;
-            field.operandIndex = memory.operandIndex;
-            field.baseRegister = memory.baseRegister;
-            field.indexRegister = memory.indexRegister;
-            field.scale = memory.scale;
-            field.instructionText = instruction.mnemonic + " " + instruction.operands;
-            if (origin != origins.end())
-            {
-                field.originKind = origin->second.kind;
-                field.originRegister = origin->second.root;
-                field.argumentIndex = origin->second.argumentIndex;
-                field.originAdjustment = origin->second.adjustment;
-            }
-            if (instruction.mnemonic == "lea")
-                field.access = DataAccessType::Address;
-            else if (memory.read && memory.write)
-                field.access = DataAccessType::ReadWrite;
-            else if (memory.write)
-                field.access = DataAccessType::Write;
-            else
-                field.access = DataAccessType::Read;
-            result.push_back(std::move(field));
+            worklist.push_back(successor);
         }
+    }
 
-        std::string propagatedDestination;
-        if ((instruction.mnemonic == "mov" || instruction.mnemonic == "movzx" ||
-             instruction.mnemonic == "movsxd") && instruction.decodedOperands.size() >= 2 &&
-            instruction.decodedOperands[0].type == OperandType::Register &&
-            instruction.decodedOperands[1].type == OperandType::Register)
-        {
-            const std::string destination = CanonicalRegister(
-                instruction.decodedOperands[0].registerName);
-            const std::string source = CanonicalRegister(instruction.decodedOperands[1].registerName);
-            const auto sourceOrigin = origins.find(source);
-            if (sourceOrigin != origins.end())
-            {
-                RegisterOrigin copied = sourceOrigin->second;
-                copied.kind = RegisterOriginKind::RegisterCopy;
-                origins[destination] = std::move(copied);
-            }
-            else
-                origins.erase(destination);
-            propagatedDestination = destination;
-        }
-        else if (instruction.mnemonic == "lea" && instruction.decodedOperands.size() >= 2 &&
-                 instruction.decodedOperands[0].type == OperandType::Register &&
-                 instruction.decodedOperands[1].type == OperandType::Memory &&
-                 instruction.decodedOperands[1].memory.indexRegister.empty())
-        {
-            const std::string destination = CanonicalRegister(
-                instruction.decodedOperands[0].registerName);
-            const auto& memory = instruction.decodedOperands[1].memory;
-            const std::string source = CanonicalRegister(memory.baseRegister);
-            const auto sourceOrigin = origins.find(source);
-            if (sourceOrigin != origins.end())
-            {
-                RegisterOrigin derived = sourceOrigin->second;
-                int64_t adjustment = 0;
-                if (AddSigned(derived.adjustment, memory.displacement, adjustment))
-                {
-                    derived.adjustment = adjustment;
-                    derived.kind = RegisterOriginKind::RegisterCopy;
-                    origins[destination] = std::move(derived);
-                }
-                else
-                    origins.erase(destination);
-            }
-            else if (source == "rsp" || source == "rbp")
-                origins[destination] = {RegisterOriginKind::StackLocal, source, 0, memory.displacement};
-            else
-                origins.erase(destination);
-            propagatedDestination = destination;
-        }
-
-        for (const auto& written : instruction.registersWritten)
-        {
-            const std::string destination = CanonicalRegister(written);
-            if (destination != propagatedDestination)
-                origins.erase(destination);
-        }
-        if (instruction.isCall)
-        {
-            for (const char* volatileRegister : {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11"})
-                origins.erase(volatileRegister);
-        }
-        if (instruction.isRet || FunctionAnalyzer::IsUnconditionalJump(instruction.mnemonic))
-            origins.clear();
+    for (const auto& block : function.cfg.basicBlocks)
+    {
+        const auto state = inStates.find(block.startAddress);
+        if (state == inStates.end()) continue;
+        OriginState origins = state->second;
+        ProcessInstructions(block.instructions, origins, block.startAddress,
+                            static_cast<uint16_t>(std::min<size_t>(
+                                block.predecessors.size(),
+                                (std::numeric_limits<uint16_t>::max)())),
+                            &result, maxCandidates);
+        for (auto& field : result)
+            if (field.functionAddress == 0)
+                field.functionAddress = function.startAddress;
+        if (result.size() >= maxCandidates) break;
     }
     return result;
 }
@@ -286,13 +510,17 @@ std::vector<StructureCandidate> InferStructures(const std::vector<FieldAccessCan
         if (access.functionAddress == 0) continue;
         const std::string context = access.argumentIndex != 0
             ? "arg" + std::to_string(access.argumentIndex)
-            : (!access.originRegister.empty() ? access.originRegister : access.baseRegister);
+            : (access.mergeAmbiguous ? "ambiguous_" + access.baseRegister :
+               (!access.originRegister.empty() ? access.originRegister : access.baseRegister));
         const GroupKey key{access.functionAddress, context};
         representatives.emplace(key, &access);
         auto& field = grouped[key][access.offset];
         field.offset = access.offset;
         field.size = std::max(field.size, access.operandSize);
         field.accessSites.push_back(access.instructionAddress);
+        if (access.interBlock) ++field.interBlockCount;
+        if (access.mergeAmbiguous) ++field.ambiguousOriginCount;
+        field.maxPropagationDepth = std::max(field.maxPropagationDepth, access.propagationDepth);
         if (std::find(field.baseRegisters.begin(), field.baseRegisters.end(), access.baseRegister) ==
             field.baseRegisters.end())
             field.baseRegisters.push_back(access.baseRegister);
@@ -332,10 +560,17 @@ std::vector<StructureCandidate> InferStructures(const std::vector<FieldAccessCan
         }
         size_t observations = 0;
         for (const auto& field : structure.fields)
+        {
             observations += field.readCount + field.writeCount + field.addressCount;
+            structure.interBlockObservationCount += field.interBlockCount;
+            structure.ambiguousOriginCount += field.ambiguousOriginCount;
+            structure.maxPropagationDepth = std::max(
+                structure.maxPropagationDepth, field.maxPropagationDepth);
+        }
         structure.evidenceScore = static_cast<uint32_t>(std::min<size_t>(observations, 100000));
-        structure.evidence = structure.argumentIndex != 0
-            ? EvidenceLevel::Inferred : EvidenceLevel::Heuristic;
+        structure.evidence = structure.ambiguousOriginCount != 0
+            ? EvidenceLevel::Partial
+            : structure.argumentIndex != 0 ? EvidenceLevel::Inferred : EvidenceLevel::Heuristic;
         result.push_back(std::move(structure));
     }
     return result;

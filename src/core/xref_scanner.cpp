@@ -1,4 +1,5 @@
 #include "xref_scanner.h"
+#include "core/instruction_semantics.h"
 #include "core/function_analyzer.h"
 #include "utils/helpers.h"
 #include <algorithm>
@@ -76,7 +77,7 @@ void XRefScanner::ScanInstructions(const std::vector<Instruction>& insts, const 
             else if (operand.type == OperandType::Memory && operand.memory.resolved)
             {
                 XRefType type = XRefType::Data;
-                if (ins.mnemonic == "lea")
+                if (IsAddressCalculationInstruction(ins))
                     type = XRefType::Address;
                 else if (operand.read && operand.write)
                     type = XRefType::ReadWrite;
