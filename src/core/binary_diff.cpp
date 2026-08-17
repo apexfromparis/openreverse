@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <deque>
+#include <map>
 
 namespace openreverse {
 
@@ -106,7 +108,30 @@ double MultisetSimilarity(std::vector<T> left, std::vector<T> right)
     return total == 0 ? 1.0 : static_cast<double>(common) / total;
 }
 
-uint64_t BuildCfgHash(const FunctionInfo& function)
+std::vector<uint64_t> BuildNgrams(const std::vector<uint64_t>& values, size_t width)
+{
+    std::vector<uint64_t> result;
+    if (values.empty() || width == 0) return result;
+    if (values.size() < width)
+    {
+        uint64_t hash = HashValue(kFnvOffset, values.size());
+        for (uint64_t value : values) hash = HashValue(hash, value);
+        result.push_back(hash);
+        return result;
+    }
+    result.reserve(values.size() - width + 1);
+    for (size_t start = 0; start + width <= values.size(); ++start)
+    {
+        uint64_t hash = HashValue(kFnvOffset, width);
+        for (size_t index = 0; index < width; ++index)
+            hash = HashValue(hash, values[start + index]);
+        result.push_back(hash);
+    }
+    return result;
+}
+
+uint64_t BuildCfgHash(const FunctionInfo& function,
+                      const std::vector<uint64_t>& neighborhoodTokens)
 {
     uint64_t hash = kFnvOffset;
     hash = HashValue(hash, function.cfg.basicBlocks.size());
@@ -114,12 +139,7 @@ uint64_t BuildCfgHash(const FunctionInfo& function)
     for (const auto& edge : function.cfg.edges)
         ++counts[static_cast<size_t>(edge.type)];
     for (size_t count : counts) hash = HashValue(hash, count);
-    std::vector<size_t> degrees;
-    degrees.reserve(function.cfg.basicBlocks.size());
-    for (const auto& block : function.cfg.basicBlocks)
-        degrees.push_back((block.predecessors.size() << 16) | block.successors.size());
-    std::sort(degrees.begin(), degrees.end());
-    for (size_t degree : degrees) hash = HashValue(hash, degree);
+    for (uint64_t token : neighborhoodTokens) hash = HashValue(hash, token);
     return hash;
 }
 
@@ -149,24 +169,110 @@ FunctionFingerprint BuildFunctionFingerprint(const FunctionInfo& function,
     fingerprint.referencedImports = context.referencedImports;
     fingerprint.referencedGlobals = context.referencedGlobals;
     fingerprint.signatureFragments = context.signatureFragments;
+    fingerprint.symbolNames = context.symbolNames;
     fingerprint.fields = context.fields;
     fingerprint.boundaryKnown = function.boundaryKnown;
     fingerprint.exported = function.isExported;
-    fingerprint.cfgHash = BuildCfgHash(function);
     for (const auto& edge : function.cfg.edges)
         ++fingerprint.edgeTypeCounts[static_cast<size_t>(edge.type)];
     fingerprint.normalizedHash = kFnvOffset;
-    for (const auto& block : function.cfg.basicBlocks)
+    std::map<uint64_t, size_t> blockByAddress;
+    std::vector<std::vector<uint64_t>> tokensByBlock(function.cfg.basicBlocks.size());
+    for (size_t blockIndex = 0; blockIndex < function.cfg.basicBlocks.size(); ++blockIndex)
     {
+        const auto& block = function.cfg.basicBlocks[blockIndex];
+        blockByAddress[block.startAddress] = blockIndex;
+        uint64_t blockHash = HashValue(kFnvOffset, block.instructions.size());
         for (const auto& instruction : block.instructions)
         {
             const uint64_t token = OperandClassToken(instruction, context);
+            tokensByBlock[blockIndex].push_back(token);
             fingerprint.instructionTokens.push_back(token);
             fingerprint.normalizedHash = HashValue(fingerprint.normalizedHash, token);
+            blockHash = HashValue(blockHash, token);
             ++fingerprint.instructionCount;
         }
+        const auto ngrams = BuildNgrams(tokensByBlock[blockIndex], 3);
+        fingerprint.orderedInstructionNgrams.insert(
+            fingerprint.orderedInstructionNgrams.end(), ngrams.begin(), ngrams.end());
+        fingerprint.basicBlockTokens.push_back(blockHash);
     }
     fingerprint.normalizedHash = HashValue(fingerprint.normalizedHash, fingerprint.instructionCount);
+
+    std::vector<size_t> traversal;
+    std::vector<bool> visited(function.cfg.basicBlocks.size(), false);
+    std::deque<size_t> pending;
+    const auto entry = blockByAddress.find(function.cfg.entryAddress);
+    if (entry != blockByAddress.end()) pending.push_back(entry->second);
+    else if (!function.cfg.basicBlocks.empty()) pending.push_back(0);
+    const auto drain = [&] {
+        while (!pending.empty())
+        {
+            const size_t index = pending.front();
+            pending.pop_front();
+            if (index >= visited.size() || visited[index]) continue;
+            visited[index] = true;
+            traversal.push_back(index);
+            std::vector<size_t> successors;
+            for (uint64_t successor : function.cfg.basicBlocks[index].successors)
+            {
+                const auto found = blockByAddress.find(successor);
+                if (found != blockByAddress.end() && !visited[found->second])
+                    successors.push_back(found->second);
+            }
+            std::sort(successors.begin(), successors.end(), [&](size_t left, size_t right) {
+                const uint64_t leftToken = fingerprint.basicBlockTokens[left];
+                const uint64_t rightToken = fingerprint.basicBlockTokens[right];
+                if (leftToken != rightToken) return leftToken < rightToken;
+                return left < right;
+            });
+            pending.insert(pending.end(), successors.begin(), successors.end());
+        }
+    };
+    drain();
+    for (size_t index = 0; index < visited.size(); ++index)
+    {
+        if (visited[index]) continue;
+        pending.push_back(index);
+        drain();
+    }
+    std::vector<uint64_t> orderedBlocks;
+    orderedBlocks.reserve(traversal.size());
+    for (size_t index : traversal)
+        orderedBlocks.push_back(fingerprint.basicBlockTokens[index]);
+    fingerprint.orderedBlockNgrams = BuildNgrams(orderedBlocks, 2);
+
+    for (size_t blockIndex = 0; blockIndex < function.cfg.basicBlocks.size(); ++blockIndex)
+    {
+        const auto& block = function.cfg.basicBlocks[blockIndex];
+        uint64_t neighborhood = HashValue(kFnvOffset, fingerprint.basicBlockTokens[blockIndex]);
+        neighborhood = HashValue(neighborhood, block.predecessors.size());
+        neighborhood = HashValue(neighborhood, block.successors.size());
+        neighborhood = HashValue(neighborhood, block.isTerminal ? 1 : 0);
+        std::vector<uint64_t> adjacent;
+        for (uint64_t predecessor : block.predecessors)
+        {
+            const auto found = blockByAddress.find(predecessor);
+            if (found != blockByAddress.end())
+                adjacent.push_back(HashValue(0x50524544ULL,
+                    fingerprint.basicBlockTokens[found->second]));
+        }
+        for (const auto& edge : function.cfg.edges)
+        {
+            if (edge.source != block.startAddress) continue;
+            const auto found = blockByAddress.find(edge.target);
+            uint64_t edgeToken = HashValue(0x53554343ULL, static_cast<uint64_t>(edge.type));
+            if (found != blockByAddress.end())
+                edgeToken = HashValue(edgeToken, fingerprint.basicBlockTokens[found->second]);
+            adjacent.push_back(edgeToken);
+        }
+        std::sort(adjacent.begin(), adjacent.end());
+        for (uint64_t token : adjacent) neighborhood = HashValue(neighborhood, token);
+        fingerprint.cfgNeighborhoodTokens.push_back(neighborhood);
+    }
+    std::sort(fingerprint.cfgNeighborhoodTokens.begin(),
+              fingerprint.cfgNeighborhoodTokens.end());
+    fingerprint.cfgHash = BuildCfgHash(function, fingerprint.cfgNeighborhoodTokens);
     return fingerprint;
 }
 
@@ -176,6 +282,14 @@ FunctionSimilarityBreakdown EvaluateFunctionFingerprints(
     FunctionSimilarityBreakdown result;
     result.normalizedInstructions = MultisetSimilarity(oldFunction.instructionTokens,
                                                         newFunction.instructionTokens);
+    result.orderedInstructions = MultisetSimilarity(oldFunction.orderedInstructionNgrams,
+                                                    newFunction.orderedInstructionNgrams);
+    result.basicBlocks = MultisetSimilarity(oldFunction.basicBlockTokens,
+                                            newFunction.basicBlockTokens);
+    result.orderedBlocks = MultisetSimilarity(oldFunction.orderedBlockNgrams,
+                                              newFunction.orderedBlockNgrams);
+    result.cfgNeighborhood = MultisetSimilarity(oldFunction.cfgNeighborhoodTokens,
+                                                newFunction.cfgNeighborhoodTokens);
     result.strings = MultisetSimilarity(oldFunction.referencedStrings,
                                         newFunction.referencedStrings);
     result.imports = MultisetSimilarity(oldFunction.referencedImports,
@@ -184,14 +298,19 @@ FunctionSimilarityBreakdown EvaluateFunctionFingerprints(
                                         newFunction.referencedGlobals);
     result.signatures = MultisetSimilarity(oldFunction.signatureFragments,
                                            newFunction.signatureFragments);
+    result.symbols = MultisetSimilarity(oldFunction.symbolNames, newFunction.symbolNames);
     const double blocks = CountSimilarity(oldFunction.basicBlockCount, newFunction.basicBlockCount);
     const double edges = CountSimilarity(oldFunction.edgeCount, newFunction.edgeCount);
     const double edgeKinds = MultisetSimilarity(
         std::vector<size_t>(oldFunction.edgeTypeCounts.begin(), oldFunction.edgeTypeCounts.end()),
         std::vector<size_t>(newFunction.edgeTypeCounts.begin(), newFunction.edgeTypeCounts.end()));
-    result.cfg = blocks * 0.4 + edges * 0.3 + edgeKinds * 0.3;
+    const double coarseCfg = blocks * 0.4 + edges * 0.3 + edgeKinds * 0.3;
+    result.cfg = coarseCfg * 0.35 + result.cfgNeighborhood * 0.65;
     result.calls = CountSimilarity(oldFunction.callCount, newFunction.callCount);
     result.size = CountSimilarity(oldFunction.instructionCount, newFunction.instructionCount);
+    if (std::min(oldFunction.instructionCount, newFunction.instructionCount) <= 3)
+        result.orderedInstructions = std::max(result.orderedInstructions,
+            result.normalizedInstructions * result.size);
     result.exactNormalized = oldFunction.instructionCount != 0 &&
         oldFunction.normalizedHash == newFunction.normalizedHash &&
         oldFunction.instructionTokens == newFunction.instructionTokens;
@@ -200,13 +319,17 @@ FunctionSimilarityBreakdown EvaluateFunctionFingerprints(
     const bool hasImports = !oldFunction.referencedImports.empty() || !newFunction.referencedImports.empty();
     const bool hasGlobals = !oldFunction.referencedGlobals.empty() || !newFunction.referencedGlobals.empty();
     const bool hasSignatures = !oldFunction.signatureFragments.empty() || !newFunction.signatureFragments.empty();
+    const bool hasSymbols = !oldFunction.symbolNames.empty() || !newFunction.symbolNames.empty();
     double totalWeight = 0.80;
-    result.total = result.normalizedInstructions * 0.52 + result.cfg * 0.14 +
-        result.calls * 0.07 + result.size * 0.07;
+    result.total = result.normalizedInstructions * 0.25 +
+        result.orderedInstructions * 0.20 + result.basicBlocks * 0.07 +
+        result.orderedBlocks * 0.05 + result.cfg * 0.16 +
+        result.calls * 0.04 + result.size * 0.03;
     if (hasStrings) { result.total += result.strings * 0.08; totalWeight += 0.08; }
     if (hasImports) { result.total += result.imports * 0.05; totalWeight += 0.05; }
     if (hasGlobals) { result.total += result.globals * 0.04; totalWeight += 0.04; }
     if (hasSignatures) { result.total += result.signatures * 0.03; totalWeight += 0.03; }
+    if (hasSymbols) { result.total += result.symbols * 0.05; totalWeight += 0.05; }
     result.total = totalWeight == 0.0 ? 0.0 : result.total / totalWeight;
     return result;
 }
@@ -221,13 +344,18 @@ double CompareFunctionFingerprints(const FunctionFingerprint& oldFunction,
         evidence->clear();
         if (result.exactNormalized) evidence->push_back("normalized instruction sequence is identical");
         else if (result.normalizedInstructions >= 0.8) evidence->push_back("normalized instructions closely match");
+        if (!result.exactNormalized && result.orderedInstructions >= 0.8)
+            evidence->push_back("ordered instruction windows closely match");
         if (result.strings >= 0.8 && (!oldFunction.referencedStrings.empty() ||
                                      !newFunction.referencedStrings.empty()))
             evidence->push_back("referenced strings match");
         if (result.imports >= 0.8 && (!oldFunction.referencedImports.empty() ||
                                      !newFunction.referencedImports.empty()))
             evidence->push_back("referenced imports match");
-        if (result.cfg >= 0.95) evidence->push_back("CFG shape matches");
+        if (result.symbols == 1.0 && (!oldFunction.symbolNames.empty() ||
+                                     !newFunction.symbolNames.empty()))
+            evidence->push_back("PDB function symbols match");
+        if (result.cfg >= 0.95) evidence->push_back("CFG neighborhoods match");
         if (result.calls == 1.0) evidence->push_back("call count matches");
         if (result.size == 1.0) evidence->push_back("instruction count matches");
     }
