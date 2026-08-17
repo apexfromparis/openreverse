@@ -44,6 +44,7 @@ setup_trace.txt
 report_test.md
 decompiled_report.md
 openreverse_scripts/
+openreverse-validation*.json
 
 # Local secrets and provider settings
 .env
