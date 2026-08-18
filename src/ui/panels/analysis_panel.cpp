@@ -1,8 +1,8 @@
 #include "analysis_panel.h"
 #include "app/application.h"
-#include "core/module_manager.h"
-#include "core/string_scanner.h"
-#include "ui/ui_manager.h"
+#include "targets/module_catalog.h"
+#include "analysis/string_scanner.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
 
@@ -66,9 +66,9 @@ void AnalysisPanel::StartAnalyzeCurrentModule(Application& app)
 {
     if (!app.isAttached || !app.processHandle)
         return;
-    auto* module = app.moduleManager.FindModuleByAddress(app.currentAddress);
-    if (!module && !app.moduleManager.GetModules().empty())
-        module = const_cast<ModuleInfo*>(&app.moduleManager.GetModules()[0]);
+    auto* module = app.moduleCatalog.FindModuleByAddress(app.currentAddress);
+    if (!module && !app.moduleCatalog.GetModules().empty())
+        module = const_cast<ModuleInfo*>(&app.moduleCatalog.GetModules()[0]);
     if (!module)
         return;
 
@@ -94,8 +94,8 @@ void AnalysisPanel::StartAnalyzeCurrentModule(Application& app)
         [this, application, ownedHandle, moduleCopy, is64Bit](
             const CancellationToken& cancellation,
             const AnalysisScheduler::ProgressCallback& progress) {
-            ModuleAnalyzer analyzer;
-            auto result = analyzer.AnalyzeLive(static_cast<HANDLE>(ownedHandle.get()), moduleCopy,
+            ModuleAnalysisPipeline pipeline;
+            auto result = pipeline.AnalyzeLive(static_cast<HANDLE>(ownedHandle.get()), moduleCopy,
                                                is64Bit, {}, &cancellation, progress);
             return [this, application, result = std::move(result)]() mutable {
                 analysisJobId_ = 0;
@@ -134,10 +134,10 @@ void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
         auto bytes = app.memoryReader.ReadBytes(app.processHandle, funcAddress, 65536);
         if (bytes.empty()) bytes = app.memoryReader.ReadBytes(app.processHandle, funcAddress, 8192);
         if (bytes.empty()) return;
-        activeFunction_ = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(),
+        activeFunction_ = functions::AnalyzeFunction(bytes.data(), bytes.size(),
             funcAddress, funcAddress, app.disassembler, app.is64Bit, bytes.size());
     }
-    if (const ModuleInfo* module = app.moduleManager.FindModuleByAddress(funcAddress))
+    if (const ModuleInfo* module = app.moduleCatalog.FindModuleByAddress(funcAddress))
     {
         if (const ProjectFunctionAnnotation* annotation =
                 app.analysisSession.FindFunctionAnnotation(funcAddress - module->baseAddress))
@@ -146,7 +146,7 @@ void AnalysisPanel::SelectFunction(Application& app, uint64_t funcAddress)
         }
     }
 
-    activeAssemblySummary_ = app.functionAnalyzer.GenerateAssemblySummary(activeFunction_, app.is64Bit);
+    activeAssemblySummary_ = functions::GenerateAssemblySummary(activeFunction_, app.is64Bit);
     app.NavigateToAddress(funcAddress);
 
     activeFunction_.xrefCount = analysis
@@ -165,7 +165,7 @@ void AnalysisPanel::Render(Application& app)
     if (analysisJobId_ != 0 && analysisJob.state == AnalysisJobState::Cancelled)
         analysisJobId_ = 0;
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     if (!app.processHandle || analysisWorking) ImGui::BeginDisabled();
     if (ImGui::Button("Analyze Active Module"))
     {
@@ -192,7 +192,7 @@ void AnalysisPanel::Render(Application& app)
         ImGui::TextColored(ImVec4(1.00f, 0.67f, 0.25f, 1.0f), "| Selected: %s (%s)",
                            activeFunction_.name.c_str(), helpers::FormatAddress(activeFunction_.startAddress, app.is64Bit).c_str());
     }
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
@@ -201,7 +201,7 @@ void AnalysisPanel::Render(Application& app)
         if (ImGui::BeginTabItem("Functions"))
         {
             if (!app.isAttached)
-                UIManager::EmptyState("Open a binary or attach to a process to analyze functions.");
+                workspace_ui::EmptyState("Open a binary or attach to a process to analyze functions.");
             else
                 RenderFunctionsTab(app);
             ImGui::EndTabItem();
@@ -209,7 +209,7 @@ void AnalysisPanel::Render(Application& app)
         if (ImGui::BeginTabItem("CFG Basic Blocks"))
         {
             if (!app.isAttached)
-                UIManager::EmptyState("Attach to a process to use CFG graph analysis.");
+                workspace_ui::EmptyState("Attach to a process to use CFG graph analysis.");
             else
                 RenderCFGTab(app);
             ImGui::EndTabItem();
@@ -217,7 +217,7 @@ void AnalysisPanel::Render(Application& app)
         if (ImGui::BeginTabItem("Assembly Summary"))
         {
             if (!app.isAttached)
-                UIManager::EmptyState("Open a binary or attach to inspect decoded control-flow evidence.");
+                workspace_ui::EmptyState("Open a binary or attach to inspect decoded control-flow evidence.");
             else
                 RenderAssemblySummaryTab(app);
             ImGui::EndTabItem();
@@ -225,7 +225,7 @@ void AnalysisPanel::Render(Application& app)
         if (ImGui::BeginTabItem("XREFs (Cross-References)"))
         {
             if (!app.isAttached)
-                UIManager::EmptyState("Attach to a process to scan cross-references.");
+                workspace_ui::EmptyState("Attach to a process to scan cross-references.");
             else
                 RenderXRefsTab(app);
             ImGui::EndTabItem();
@@ -239,9 +239,9 @@ void AnalysisPanel::Render(Application& app)
 void AnalysisPanel::RenderXRefsPanel(Application& app)
 {
     ImGui::Begin("XREFS", nullptr, ImGuiWindowFlags_None);
-    UIManager::PanelHeader("XREFS");
+    workspace_ui::PanelHeader("XREFS");
     if (!app.isAttached)
-        UIManager::EmptyState("Open a binary or attach to a process to inspect cross-references.");
+        workspace_ui::EmptyState("Open a binary or attach to a process to inspect cross-references.");
     else
         RenderXRefsTab(app);
     ImGui::End();
@@ -282,7 +282,7 @@ void AnalysisPanel::RenderFunctionsTab(Application& app)
         for (const auto& fn : analysis->functions)
         {
             std::string addrStr = helpers::FormatAddress(fn.startAddress, app.is64Bit);
-            const ModuleInfo* module = app.moduleManager.FindModuleByAddress(fn.startAddress);
+            const ModuleInfo* module = app.moduleCatalog.FindModuleByAddress(fn.startAddress);
             const uint64_t rva = module ? fn.startAddress - module->baseAddress : 0;
             const ProjectFunctionAnnotation* annotation = module
                 ? app.analysisSession.FindFunctionAnnotation(rva) : nullptr;
@@ -715,15 +715,15 @@ void AnalysisPanel::RenderAssemblySummaryTab(Application& app)
 
     ImGui::Separator();
 
-    if (UIManager::GetMonoFont())
-        ImGui::PushFont(UIManager::GetMonoFont());
+    if (workspace_ui::GetMonoFont())
+        ImGui::PushFont(workspace_ui::GetMonoFont());
 
     ImGui::BeginChild("AssemblySummaryTextWindow", ImVec2(0, 0), true,
                       ImGuiWindowFlags_HorizontalScrollbar);
     ImGui::TextUnformatted(activeAssemblySummary_.c_str());
     ImGui::EndChild();
 
-    if (UIManager::GetMonoFont())
+    if (workspace_ui::GetMonoFont())
         ImGui::PopFont();
 }
 
@@ -746,7 +746,7 @@ void AnalysisPanel::RenderXRefsTab(Application& app)
 
     if (incoming.empty() && outgoing.empty())
     {
-        UIManager::EmptyState("No cross-references available for the current selection.");
+        workspace_ui::EmptyState("No cross-references available for the current selection.");
         return;
     }
 
@@ -768,10 +768,10 @@ void AnalysisPanel::RenderXRefsTab(Application& app)
             ImGui::TableSetColumnIndex(1);
             const uint64_t navigationAddress = isIncoming ? xr.fromAddress : xr.toAddress;
             const std::string address = helpers::FormatAddress(navigationAddress, app.is64Bit);
-            if (ImFont* mono = UIManager::GetMonoFont()) ImGui::PushFont(mono);
+            if (ImFont* mono = workspace_ui::GetMonoFont()) ImGui::PushFont(mono);
             if (ImGui::Selectable(address.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                 app.NavigateToAddress(navigationAddress);
-            if (UIManager::GetMonoFont()) ImGui::PopFont();
+            if (workspace_ui::GetMonoFont()) ImGui::PopFont();
             ImGui::TableSetColumnIndex(2);
             const char* typeStr = (xr.type == XRefType::Call) ? "CALL" :
                                   (xr.type == XRefType::Jump) ? "JUMP" :

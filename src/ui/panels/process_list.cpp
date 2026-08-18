@@ -1,6 +1,6 @@
 #include "process_list.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 
 #include <imgui.h>
@@ -14,7 +14,7 @@ void ProcessListPanel::Render(Application& app)
 
     if (needsRefresh_)
     {
-        cachedProcesses_ = app.processManager.ListProcesses();
+        cachedProcesses_ = app.processAccess.ListProcesses();
         std::sort(cachedProcesses_.begin(), cachedProcesses_.end(),
             [](const ProcessInfo& a, const ProcessInfo& b) {
                 return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
@@ -24,18 +24,18 @@ void ProcessListPanel::Render(Application& app)
 
     char title[64];
     snprintf(title, sizeof(title), "PROCESSES (%zu)", cachedProcesses_.size());
-    UIManager::PanelHeader(title, app.isAttached && app.attachedPID != 0 ? "ATTACHED" : nullptr);
+    workspace_ui::PanelHeader(title, app.isAttached && app.attachedPID != 0 ? "ATTACHED" : nullptr);
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     if (ImGui::Button("Refresh"))
         needsRefresh_ = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Refresh process list (F5)");
 
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##filter", "Filter by name...", filterText_, sizeof(filterText_));
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 

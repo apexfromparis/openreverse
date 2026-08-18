@@ -1,6 +1,6 @@
 #include "pe_viewer.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include <imgui.h>
 #include <cstdio>
@@ -13,7 +13,7 @@ void PEViewerPanel::Render(Application& app)
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Open a binary or attach to a process to view PE headers and sections.");
+        workspace_ui::EmptyState("Open a binary or attach to a process to view PE headers and sections.");
         ImGui::End();
         return;
     }
@@ -32,7 +32,7 @@ void PEViewerPanel::Render(Application& app)
         }
     }
 
-    const auto& modules = app.moduleManager.GetModules();
+    const auto& modules = app.moduleCatalog.GetModules();
     if (ImGui::BeginCombo("Module##pe", loaded_ && loadedBase_ ? "Selected" : "Select module..."))
     {
         for (const auto& mod : modules)
@@ -54,7 +54,7 @@ void PEViewerPanel::Render(Application& app)
 
     if (!loaded_)
     {
-        UIManager::EmptyState("Select a module from the dropdown to view its PE header.");
+        workspace_ui::EmptyState("Select a module from the dropdown to view its PE header.");
         ImGui::End();
         return;
     }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/version_intelligence.h"
+#include "analysis/version_intelligence.h"
 
 #include <cstddef>
 #include <cstdint>

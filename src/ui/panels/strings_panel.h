@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
-#include "core/string_scanner.h"
+#include "analysis/string_scanner.h"
 namespace openreverse { class Application; namespace panels {
 class StringsPanel {
 public:

@@ -1,8 +1,10 @@
 #include "modules_panel.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include <imgui.h>
+
+#include <limits>
 
 namespace openreverse { namespace panels {
 
@@ -16,34 +18,33 @@ void ModulesPanel::Reset()
 void ModulesPanel::Render(Application& app)
 {
     ImGui::Begin("MODULES", nullptr, ImGuiWindowFlags_None);
-    UIManager::PanelHeader("MODULES");
+    workspace_ui::PanelHeader("MODULES");
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     if (ImGui::Button("Refresh"))
     {
         if (app.processHandle)
-            app.moduleManager.RefreshModules(app.processHandle);
+            app.moduleCatalog.RefreshModules(app.processHandle);
         cachedExports_.clear();
         selectedModule_ = -1;
     }
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##modfilter", "Filter modules...", filterText_, sizeof(filterText_));
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Attach to a process to view loaded modules.");
+        workspace_ui::EmptyState("Attach to a process to view loaded modules.");
         ImGui::End();
         return;
     }
 
-    const auto& modules = app.moduleManager.GetModules();
+    const auto& modules = app.moduleCatalog.GetModules();
     std::string filter = helpers::ToLower(filterText_);
 
-    // Compact module list; base/size/path remain visible in the tooltip.
     float exportHeight = showExports_ ? ImGui::GetContentRegionAvail().y * 0.4f : 0;
     float tableHeight = ImGui::GetContentRegionAvail().y - exportHeight - 30;
 
@@ -102,7 +103,9 @@ void ModulesPanel::Render(Application& app)
                 app.NavigateToAddress(mod.baseAddress);
             if (ImGui::MenuItem("View Exports", nullptr, false, app.processHandle != nullptr))
             {
-                cachedExports_ = app.moduleManager.GetExports(app.processHandle, mod.baseAddress);
+                const PEInfo pe = app.peParser.Parse(
+                    app.processHandle, mod.baseAddress, mod.size);
+                cachedExports_ = pe.valid ? pe.exports : std::vector<PEInfo::PEExportEntry>{};
                 showExports_ = true;
             }
             if (ImGui::MenuItem("Copy Base Address"))
@@ -113,9 +116,10 @@ void ModulesPanel::Render(Application& app)
 
     if (showExports_ && selectedModule_ >= 0 && selectedModule_ < static_cast<int>(modules.size()))
     {
+        const auto& selectedModule = modules[selectedModule_];
         ImGui::Separator();
         ImGui::Text("Exports (%s) - %zu functions",
-            modules[selectedModule_].name.c_str(), cachedExports_.size());
+            selectedModule.name.c_str(), cachedExports_.size());
 
         if (ImGui::SmallButton("Close##exports"))
             showExports_ = false;
@@ -132,17 +136,20 @@ void ModulesPanel::Render(Application& app)
 
             for (const auto& exp : cachedExports_)
             {
+                const uint64_t address = !exp.isForwarder &&
+                    exp.rva <= (std::numeric_limits<uint64_t>::max)() - selectedModule.baseAddress
+                    ? selectedModule.baseAddress + exp.rva : 0;
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
                 if (ImGui::Selectable(exp.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                 {
-                    app.NavigateToAddress(exp.address);
+                    app.NavigateToAddress(address);
                 }
 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextColored(ImVec4(0.4f, 0.6f, 0.8f, 1.0f), "%s",
-                    helpers::FormatAddress(exp.address, app.is64Bit).c_str());
+                    helpers::FormatAddress(address, app.is64Bit).c_str());
 
                 ImGui::TableSetColumnIndex(2);
                 ImGui::Text("%d", exp.ordinal);

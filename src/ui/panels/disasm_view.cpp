@@ -1,7 +1,7 @@
 #include "disasm_view.h"
 #include "app/application.h"
-#include "core/module_manager.h"
-#include "ui/ui_manager.h"
+#include "targets/module_catalog.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 
 #include <imgui.h>
@@ -49,9 +49,9 @@ void DisasmViewPanel::RefreshDisassembly(Application& app)
 void DisasmViewPanel::Render(Application& app)
 {
     ImGui::Begin("DISASSEMBLY", nullptr, ImGuiWindowFlags_None);
-    UIManager::PanelHeader("DISASSEMBLY", app.isAttached ? (app.is64Bit ? "x64 (Windows)" : "x86 (Windows)") : nullptr);
+    workspace_ui::PanelHeader("DISASSEMBLY", app.isAttached ? (app.is64Bit ? "x64 (Windows)" : "x86 (Windows)") : nullptr);
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     ImGui::Text("Function");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180.0f);
@@ -84,13 +84,13 @@ void DisasmViewPanel::Render(Application& app)
             needsRefresh_ = true;
         }
     }
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Attach to a process to disassemble code.");
+        workspace_ui::EmptyState("Attach to a process to disassemble code.");
         ImGui::End();
         return;
     }
@@ -130,7 +130,7 @@ void DisasmViewPanel::Render(Application& app)
             else
                 snprintf(addrStr, sizeof(addrStr), "%08X", (unsigned int)inst.address);
 
-            if (ImFont* mono = UIManager::GetMonoFont())
+            if (ImFont* mono = workspace_ui::GetMonoFont())
                 ImGui::PushFont(mono);
             ImGui::PushStyleColor(ImGuiCol_Text, isCurrent ? ImVec4(0.00f, 0.90f, 1.0f, 1.0f) : ImVec4(0.52f, 0.58f, 0.66f, 1.0f));
             if (ImGui::Selectable(addrStr, false, ImGuiSelectableFlags_SpanAllColumns))
@@ -147,7 +147,7 @@ void DisasmViewPanel::Render(Application& app)
                 }
                 if (ImGui::MenuItem("Copy address"))
                     ImGui::SetClipboardText(addrStr);
-                const ModuleInfo* mod = app.moduleManager.FindModuleByAddress(inst.address);
+                const ModuleInfo* mod = app.moduleCatalog.FindModuleByAddress(inst.address);
                 if (mod)
                 {
                     std::string offStr = helpers::FormatModuleOffset(mod->name, mod->baseAddress, inst.address, app.is64Bit);
@@ -171,15 +171,15 @@ void DisasmViewPanel::Render(Application& app)
                 ImGui::EndPopup();
             }
             ImGui::PopStyleColor();
-            if (UIManager::GetMonoFont())
+            if (workspace_ui::GetMonoFont())
                 ImGui::PopFont();
 
             ImGui::TableSetColumnIndex(2);
-            if (UIManager::GetMonoFont())
-                ImGui::PushFont(UIManager::GetMonoFont());
+            if (workspace_ui::GetMonoFont())
+                ImGui::PushFont(workspace_ui::GetMonoFont());
             std::string bytes = helpers::BytesToHex(inst.bytes, inst.size);
             ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.55f, 1.0f), "%s", bytes.c_str());
-            if (UIManager::GetMonoFont())
+            if (workspace_ui::GetMonoFont())
                 ImGui::PopFont();
 
             ImGui::TableSetColumnIndex(3);
@@ -207,7 +207,7 @@ void DisasmViewPanel::Render(Application& app)
             if ((inst.isJump || inst.isCall) && inst.targetAddress != 0)
             {
                 ImGui::SameLine();
-                auto* mod = app.moduleManager.FindModuleByAddress(inst.targetAddress);
+                auto* mod = app.moduleCatalog.FindModuleByAddress(inst.targetAddress);
                 if (mod)
                 {
                     uint64_t offset = inst.targetAddress - mod->baseAddress;
@@ -235,7 +235,7 @@ void DisasmViewPanel::Render(Application& app)
                 ImGui::BeginTooltip();
                 ImGui::Text("Target: %s", helpers::FormatAddress(inst.targetAddress, app.is64Bit).c_str());
 
-                auto* mod = app.moduleManager.FindModuleByAddress(inst.targetAddress);
+                auto* mod = app.moduleCatalog.FindModuleByAddress(inst.targetAddress);
                 if (mod)
                     ImGui::Text("Module: %s", mod->name.c_str());
 

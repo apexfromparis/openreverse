@@ -1,10 +1,10 @@
 #include "version_intelligence_panel.h"
 
 #include "app/application.h"
-#include "core/module_analyzer.h"
-#include "core/pe_parser.h"
-#include "core/project.h"
-#include "ui/ui_manager.h"
+#include "analysis/module_analysis.h"
+#include "analysis/pe_parser.h"
+#include "workspace/project.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 
 #include <commdlg.h>
@@ -94,8 +94,8 @@ bool LoadOldPeTarget(const std::string& selectedPath, VersionAnalysisTarget& tar
     ModuleAnalysisOptions options;
     options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
     options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
-    ModuleAnalyzer analyzer;
-    const auto analysis = analyzer.AnalyzeMappedImage(mapped, raw.size(), module, pe, options,
+    ModuleAnalysisPipeline pipeline;
+    const auto analysis = pipeline.AnalyzeMappedImage(mapped, raw.size(), module, pe, options,
         &cancellation, [&](float value) { if (progress) progress(value * 0.55f); });
     if (!analysis.success)
     {
@@ -378,8 +378,7 @@ void VersionIntelligencePanel::RenderFunctions(Application& app,
     }
     if (oldFunction && ImGui::CollapsingHeader("Old decoded CFG evidence"))
     {
-        FunctionAnalyzer analyzer;
-        const std::string summary = analyzer.GenerateAssemblySummary(*oldFunction,
+        const std::string summary = functions::GenerateAssemblySummary(*oldFunction,
             oldAnalysis_.analysis.is64Bit);
         ImGui::BeginChild("OldFunctionEvidence", ImVec2(0.0f, 180.0f), true,
                           ImGuiWindowFlags_HorizontalScrollbar);
@@ -397,7 +396,7 @@ void VersionIntelligencePanel::RenderMigrations(Application& app,
         if (comparison.migrations[index].kind == kind) rows.push_back(index);
     if (rows.empty())
     {
-        UIManager::EmptyState("No migration evidence of this type was produced.");
+        workspace_ui::EmptyState("No migration evidence of this type was produced.");
         return;
     }
     if (ImGui::BeginTable("VersionMigrations", 6, ImGuiTableFlags_Borders |
@@ -467,7 +466,7 @@ void VersionIntelligencePanel::Render(Application& app, bool* open)
         ImGui::End();
         return;
     }
-    UIManager::PanelHeader("VERSION INTELLIGENCE");
+    workspace_ui::PanelHeader("VERSION INTELLIGENCE");
     ImGui::TextDisabled("Old target");
     ImGui::SameLine();
     ImGui::TextUnformatted(oldPath_.empty() ? "Not selected" : oldPath_.c_str());
@@ -505,7 +504,7 @@ void VersionIntelligencePanel::Render(Application& app, bool* open)
     const VersionComparison* comparison = app.analysisSession.VersionIntelligence();
     if (!comparison)
     {
-        UIManager::EmptyState("Select an old project or binary and compare it with the current offline target.");
+        workspace_ui::EmptyState("Select an old project or binary and compare it with the current offline target.");
         ImGui::End();
         return;
     }

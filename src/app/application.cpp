@@ -3,7 +3,7 @@
 #include "utils/logger.h"
 #include "utils/helpers.h"
 #include "ui/panels/analysis_panel.h"
-#include "core/disassembler.h"
+#include "analysis/disassembler.h"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -169,7 +169,7 @@ bool Application::AttachToProcess(DWORD pid)
     if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
     analysisSession.ClearProject();
 
-    processHandle = processManager.OpenProcess(pid);
+    processHandle = processAccess.OpenProcess(pid);
     if (!processHandle)
     {
         const DWORD error = GetLastError();
@@ -181,10 +181,10 @@ bool Application::AttachToProcess(DWORD pid)
     attachedPID = pid;
     isAttached = true;
     targetKind = AnalysisTargetKind::LiveProcess;
-    is64Bit = processManager.IsProcess64Bit(processHandle);
+    is64Bit = processAccess.IsProcess64Bit(processHandle);
     memoryReader.SetOfflineBuffer(nullptr, 0);
 
-    auto processes = processManager.ListProcesses();
+    auto processes = processAccess.ListProcesses();
     for (auto& p : processes)
     {
         if (p.pid == pid)
@@ -197,7 +197,7 @@ bool Application::AttachToProcess(DWORD pid)
     disassembler.Init(is64Bit);
 
     memoryReader.RefreshRegions(processHandle);
-    moduleManager.RefreshModules(processHandle);
+    moduleCatalog.RefreshModules(processHandle);
 
     Logger::Get().Log(LogLevel::Info, "Attached to %s (PID: %d, %s)",
         attachedProcessName.c_str(), pid, is64Bit ? "x64" : "x86");
@@ -216,7 +216,7 @@ void Application::DetachFromProcess()
     xrefScanner.Clear();
     stringResults.clear();
     selectedBytes.clear();
-    moduleManager.Clear();
+    moduleCatalog.Clear();
     aiService.ClearConversation();
     hexEditorPanel.Reset();
     disasmViewPanel.Reset();
@@ -224,7 +224,7 @@ void Application::DetachFromProcess()
     ++targetGeneration;
     if (isAttached && processHandle)
     {
-        processManager.CloseProcess(processHandle);
+        processAccess.CloseProcess(processHandle);
         Logger::Get().Log(LogLevel::Info, "Detached from %s", attachedProcessName.c_str());
     }
     isAttached = false;
@@ -287,16 +287,16 @@ void Application::PublishModuleAnalysis(ModuleAnalysisResult result)
 bool Application::AnalyzeCurrentModuleSynchronously()
 {
     if (!isAttached || !processHandle) return false;
-    const ModuleInfo* module = moduleManager.FindModuleByAddress(currentAddress);
-    if (!module && !moduleManager.GetModules().empty())
-        module = &moduleManager.GetModules().front();
+    const ModuleInfo* module = moduleCatalog.FindModuleByAddress(currentAddress);
+    if (!module && !moduleCatalog.GetModules().empty())
+        module = &moduleCatalog.GetModules().front();
     if (!module)
     {
         Logger::Get().Log(LogLevel::Warning, "No module found to analyze.");
         return false;
     }
-    ModuleAnalyzer analyzer;
-    auto result = analyzer.AnalyzeLive(processHandle, *module, is64Bit);
+    ModuleAnalysisPipeline pipeline;
+    auto result = pipeline.AnalyzeLive(processHandle, *module, is64Bit);
     if (!result.success)
     {
         if (!result.cancelled)
@@ -587,8 +587,8 @@ bool Application::OpenBinaryFile(const std::string& filePath)
 
         memoryReader.SetOfflineBuffer(&offlineImageBuffer, info.imageBase);
         disassembler.Init(is64Bit);
-        moduleManager.Clear();
-        moduleManager.AddModule(attachedProcessName, info.imageBase, info.sizeOfImage, loadedFilePath);
+        moduleCatalog.Clear();
+        moduleCatalog.AddModule(attachedProcessName, info.imageBase, info.sizeOfImage, loadedFilePath);
 
         if (ImGui::GetCurrentContext())
         {
@@ -604,8 +604,8 @@ bool Application::OpenBinaryFile(const std::string& filePath)
                     ModuleAnalysisOptions options;
                     options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
                     options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
-                    ModuleAnalyzer analyzer;
-                    auto result = analyzer.AnalyzeMappedImage(
+                    ModuleAnalysisPipeline pipeline;
+                    auto result = pipeline.AnalyzeMappedImage(
                         mapped, raw.size(), module, info, options, &cancellation, progress);
                     std::string identityError;
                     ModuleIdentity identity;
@@ -636,8 +636,8 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         ModuleAnalysisOptions options;
         options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
         options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
-        ModuleAnalyzer analyzer;
-        auto result = analyzer.AnalyzeMappedImage(
+        ModuleAnalysisPipeline pipeline;
+        auto result = pipeline.AnalyzeMappedImage(
             offlineImageBuffer, offlineFileBuffer.size(), module, info, options);
         if (!result.success)
         {
@@ -720,8 +720,8 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
         extensionManager.NotifySessionChanged(targetGeneration, true);
         memoryReader.SetOfflineBuffer(&offlineImageBuffer, dump.pe.imageBase);
         disassembler.Init(is64Bit);
-        moduleManager.Clear();
-        moduleManager.AddModule(dump.module.name, dump.module.baseAddress,
+        moduleCatalog.Clear();
+        moduleCatalog.AddModule(dump.module.name, dump.module.baseAddress,
                                 dump.module.size, filePath);
 
         if (ImGui::GetCurrentContext())
@@ -735,8 +735,8 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
                 [application, generation, mapped, module, pe](
                     const CancellationToken& cancellation,
                     const AnalysisScheduler::ProgressCallback& progress) mutable {
-                    ModuleAnalyzer analyzer;
-                    auto result = analyzer.AnalyzeMappedImage(
+                    ModuleAnalysisPipeline pipeline;
+                    auto result = pipeline.AnalyzeMappedImage(
                         mapped, 0, module, pe, {}, &cancellation, progress);
                     return [application, generation, result = std::move(result)]() mutable {
                         if (application->targetGeneration != generation) return;
@@ -757,8 +757,8 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
             return true;
         }
 
-        ModuleAnalyzer analyzer;
-        auto analysis = analyzer.AnalyzeMappedImage(
+        ModuleAnalysisPipeline pipeline;
+        auto analysis = pipeline.AnalyzeMappedImage(
             offlineImageBuffer, 0, dump.module, dump.pe);
         if (!analysis.success)
         {
@@ -1252,7 +1252,7 @@ void Application::RenderToolbar()
     if (toolButton("##refresh", "Refresh current target", 5, isAttached))
     {
         processListPanel.ForceRefresh();
-        if (processHandle) moduleManager.RefreshModules(processHandle);
+        if (processHandle) moduleCatalog.RefreshModules(processHandle);
         NavigateToAddress(currentAddress);
     }
     toolbarDivider();
@@ -1537,7 +1537,7 @@ void Application::RenderStatusBar()
         }
 
         ImGui::SameLine(0, 7);
-        const ModuleInfo* curMod = moduleManager.FindModuleByAddress(currentAddress);
+        const ModuleInfo* curMod = moduleCatalog.FindModuleByAddress(currentAddress);
         if (curMod)
         {
             std::string offStr = helpers::FormatModuleOffset(curMod->name, curMod->baseAddress, currentAddress, is64Bit);

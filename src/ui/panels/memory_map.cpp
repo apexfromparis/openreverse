@@ -1,7 +1,7 @@
 #include "memory_map.h"
 #include "app/application.h"
-#include "core/module_manager.h"
-#include "ui/ui_manager.h"
+#include "targets/module_catalog.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
 #include <imgui.h>
@@ -13,28 +13,28 @@ void MemoryMapPanel::Render(Application& app)
 {
     ImGui::Begin("Memory Map", nullptr, ImGuiWindowFlags_None);
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     if (ImGui::Button("Refresh"))
     {
         if (app.isAttached)
             app.memoryReader.RefreshRegions(app.processHandle);
     }
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::Checkbox("Show Free", &showFree_);
     ImGui::SameLine();
     ImGui::Checkbox("Exec Only (X/RWX)", &showExecOnly_);
     ImGui::SameLine();
     ImGui::Checkbox("Private executable", &showPrivateExec_);
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##mmfilter", "Filter regions...", filterText_, sizeof(filterText_));
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Attach to a process to view the memory map.");
+        workspace_ui::EmptyState("Attach to a process to view the memory map.");
         ImGui::End();
         return;
     }
@@ -96,7 +96,7 @@ void MemoryMapPanel::Render(Application& app)
                     app.NavigateToAddress(region.baseAddress);
                 if (ImGui::MenuItem("Copy address"))
                     ImGui::SetClipboardText(addrStr.c_str());
-                const ModuleInfo* mod = app.moduleManager.FindModuleByAddress(region.baseAddress);
+                const ModuleInfo* mod = app.moduleCatalog.FindModuleByAddress(region.baseAddress);
                 if (mod)
                 {
                     std::string offStr = helpers::FormatModuleOffset(mod->name, mod->baseAddress, region.baseAddress, app.is64Bit);

@@ -2,7 +2,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-#include "core/pattern_scanner.h"
+#include "analysis/pattern_scanner.h"
 namespace openreverse { class Application; namespace panels {
 class ScannerPanel {
 public:

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/offset_model.h"
+#include "analysis/offset_model.h"
 
 #include <cstdint>
 #include <string>

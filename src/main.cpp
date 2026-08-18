@@ -1,6 +1,6 @@
 #include "app/application.h"
 #include "openreverse_version.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "cli/cli_repl.h"
 #include <algorithm>
 #include <cctype>
@@ -352,7 +352,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
-    openreverse::UIManager::ApplyTheme();
+    openreverse::workspace_ui::ApplyTheme();
 
     bool running = true;
     while (running)

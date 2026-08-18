@@ -1,25 +1,25 @@
-#include "core/disassembler.h"
-#include "core/address_space.h"
-#include "core/binary_diff.h"
-#include "core/dump_loader.h"
-#include "core/offset_model.h"
-#include "core/signature_engine.h"
-#include "core/analysis_scheduler.h"
-#include "core/analysis_database.h"
-#include "core/analysis_session.h"
-#include "core/data_analyzer.h"
-#include "core/dia_symbol_provider.h"
-#include "core/function_analyzer.h"
-#include "core/instruction_semantics.h"
-#include "core/memory_reader.h"
-#include "core/module_analyzer.h"
-#include "core/pattern_scanner.h"
-#include "core/pe_parser.h"
-#include "core/process_manager.h"
-#include "core/project.h"
-#include "core/string_scanner.h"
-#include "core/version_intelligence.h"
-#include "core/xref_scanner.h"
+#include "analysis/disassembler.h"
+#include "targets/address_space.h"
+#include "analysis/binary_diff.h"
+#include "targets/dump_loader.h"
+#include "analysis/offset_model.h"
+#include "analysis/signatures.h"
+#include "workspace/analysis_scheduler.h"
+#include "workspace/analysis_database.h"
+#include "workspace/analysis_session.h"
+#include "analysis/data_evidence.h"
+#include "analysis/dia_symbol_provider.h"
+#include "analysis/functions.h"
+#include "analysis/instruction_semantics.h"
+#include "targets/memory_reader.h"
+#include "analysis/module_analysis.h"
+#include "analysis/pattern_scanner.h"
+#include "analysis/pe_parser.h"
+#include "targets/process_access.h"
+#include "workspace/project.h"
+#include "analysis/string_scanner.h"
+#include "analysis/version_intelligence.h"
+#include "analysis/xref_scanner.h"
 #include "extensions/extension_manifest.h"
 #include "extensions/extension_manager.h"
 #include "utils/helpers.h"
@@ -284,7 +284,7 @@ void TestDiaSymbols()
     options.maxInstructions = 200000;
     options.maxCfgInstructions = 100000;
     options.maxFunctions = 20000;
-    const auto analysis = openreverse::ModuleAnalyzer{}.AnalyzeMappedImage(
+    const auto analysis = openreverse::ModuleAnalysisPipeline{}.AnalyzeMappedImage(
         mapped, raw.size(), module, pe, options);
     const auto symbolFunction = std::find_if(analysis.functions.begin(), analysis.functions.end(),
         [](const openreverse::FunctionInfo& function) {
@@ -492,8 +492,8 @@ void TestMappedAnalysisPipeline()
     std::vector<uint8_t> mapped;
     openreverse::PEParser::BuildMappedImage(raw, pe, mapped);
     openreverse::ModuleInfo module{"pipeline.exe", "pipeline.exe", pe.imageBase, pe.sizeOfImage};
-    openreverse::ModuleAnalyzer analyzer;
-    const auto analysis = analyzer.AnalyzeMappedImage(mapped, raw.size(), module, pe);
+    openreverse::ModuleAnalysisPipeline pipeline;
+    const auto analysis = pipeline.AnalyzeMappedImage(mapped, raw.size(), module, pe);
     const auto runtimeFunction = std::find_if(analysis.functions.begin(), analysis.functions.end(),
         [&](const openreverse::FunctionInfo& function) {
             return function.startAddress == pe.imageBase + 0x1010;
@@ -741,8 +741,8 @@ void TestLiveExecutableSections()
     options.maxFunctions = 100;
     options.maxStrings = 100;
     options.maxDuration = std::chrono::seconds(5);
-    openreverse::ModuleAnalyzer analyzer;
-    const auto analysis = analyzer.AnalyzeLive(GetCurrentProcess(), currentModule, true, options);
+    openreverse::ModuleAnalysisPipeline pipeline;
+    const auto analysis = pipeline.AnalyzeLive(GetCurrentProcess(), currentModule, true, options);
     Expect(analysis.success && analysis.codeBytesAnalyzed <= options.maxCodeBytes &&
            analysis.stringBytesAnalyzed <= options.maxStringBytes,
            "bounded live module analysis completes on the current test executable");
@@ -750,7 +750,7 @@ void TestLiveExecutableSections()
     openreverse::CancellationSource cancellation;
     cancellation.Cancel();
     const auto cancellationToken = cancellation.Token();
-    const auto cancelled = analyzer.AnalyzeLive(GetCurrentProcess(), currentModule, true, options,
+    const auto cancelled = pipeline.AnalyzeLive(GetCurrentProcess(), currentModule, true, options,
                                                 &cancellationToken);
     Expect(cancelled.cancelled && !cancelled.success,
            "live module analysis honors cancellation before executable scanning");
@@ -770,8 +770,7 @@ void TestDecodedFunctionCalls()
     };
     std::memcpy(code.data(), instructions, sizeof(instructions));
 
-    openreverse::FunctionAnalyzer analyzer;
-    const auto functions = analyzer.DiscoverFunctions(code.data(), code.size(), base, true);
+    const auto functions = openreverse::functions::DiscoverFunctions(code.data(), code.size(), base, true);
     const auto hasAddress = [&](uint64_t address) {
         return std::any_of(functions.begin(), functions.end(), [address](const openreverse::FunctionInfo& function) {
             return function.startAddress == address;
@@ -794,9 +793,9 @@ openreverse::FunctionInfo AnalyzeCFG(const std::vector<uint8_t>& code, uint64_t 
 {
     openreverse::Disassembler disassembler;
     Expect(disassembler.Init(true), "Capstone initializes for CFG test");
-    openreverse::FunctionAnalyzer analyzer;
-    return analyzer.AnalyzeFunction(code.data(), code.size(), base, base, disassembler, true,
-                                    code.size(), instructionBudget);
+
+    return openreverse::functions::AnalyzeFunction(
+        code.data(), code.size(), base, base, disassembler, true, code.size(), instructionBudget);
 }
 
 void TestRecursiveCFG()
@@ -813,8 +812,8 @@ void TestRecursiveCFG()
                "linear return emits a Return edge");
         Expect(function.cfg.basicBlocks[0].successors.empty() && function.cfg.basicBlocks[0].predecessors.empty(),
                "linear return block has no CFG neighbors");
-        openreverse::FunctionAnalyzer analyzer;
-        const std::string summary = analyzer.GenerateAssemblySummary(function, true);
+
+        const std::string summary = openreverse::functions::GenerateAssemblySummary(function, true);
         Expect(summary.find("nop") != std::string::npos &&
                summary.find("Every instruction below is decoded evidence") != std::string::npos &&
                summary.find("rax_result") == std::string::npos &&
@@ -1379,7 +1378,6 @@ void TestSignatures()
     openreverse::Disassembler disassembler;
     Expect(disassembler.Init(true), "signature test initializes x64 decoder");
     const auto instructions = disassembler.Disassemble(code, sizeof(code), base, 16);
-    openreverse::SignatureEngine engine;
     openreverse::SignatureRelationship relationship;
     relationship.kind = openreverse::SignatureTargetKind::RipRelativeOperand;
     relationship.operandIndex = 1;
@@ -1388,12 +1386,12 @@ void TestSignatures()
     options.maximumBytes = 32;
     options.imageBase = 0x140000000ULL;
     options.imageSize = 0x100000;
-    auto signature = engine.Generate(instructions, 0, relationship, options);
+    auto signature = openreverse::signatures::Generate(instructions, 0, relationship, options);
     Expect(signature.pattern.size() == 12 && signature.pattern[3].wildcard &&
            signature.pattern[6].wildcard && signature.pattern[8].wildcard &&
            signature.pattern[11].wildcard,
            "signature generation wildcards RIP displacement and relative call target bytes");
-    const auto resolved = engine.Resolve(signature, base, instructions);
+    const auto resolved = openreverse::signatures::Resolve(signature, base, instructions);
     Expect(resolved.valid && resolved.address == base + 7 + 0x10,
            "signature relationship resolves a RIP-relative global");
 
@@ -1405,11 +1403,11 @@ void TestSignatures()
            "signature fixture maps a PE image");
     std::memcpy(mapped.data() + 0x1010, code, sizeof(code));
     signature.stableId = "signature-test";
-    engine.Evaluate(signature, mapped, pe, raw.size());
+    openreverse::signatures::Evaluate(signature, mapped, pe, raw.size());
     Expect(signature.status == openreverse::SignatureStatus::Unique && signature.matchCount == 1,
            "signature uniqueness is measured across executable sections");
     std::memcpy(mapped.data() + 0x1050, code, sizeof(code));
-    engine.Evaluate(signature, mapped, pe, raw.size());
+    openreverse::signatures::Evaluate(signature, mapped, pe, raw.size());
     Expect(signature.status == openreverse::SignatureStatus::Ambiguous && signature.matchCount == 2,
            "duplicate signature matches are reported as ambiguous");
 
@@ -1420,8 +1418,10 @@ void TestSignatures()
     const auto fieldInstructions = disassembler.Disassemble(fieldCode, sizeof(fieldCode), base, 16);
     relationship.kind = openreverse::SignatureTargetKind::FieldDisplacement;
     relationship.operandIndex = 1;
-    auto fieldSignature = engine.Generate(fieldInstructions, 0, relationship, options);
-    const auto field = engine.Resolve(fieldSignature, base, fieldInstructions);
+    auto fieldSignature = openreverse::signatures::Generate(
+        fieldInstructions, 0, relationship, options);
+    const auto field = openreverse::signatures::Resolve(
+        fieldSignature, base, fieldInstructions);
     Expect(fieldSignature.pattern.size() == sizeof(fieldCode) && fieldSignature.pattern[2].wildcard &&
            fieldSignature.pattern[5].wildcard && field.valid && field.value == 0x1A8,
            "field signature wildcards and resolves the structure displacement");
@@ -1687,7 +1687,6 @@ void TestVersionIntelligence()
 
     openreverse::Disassembler signatureDisassembler;
     Expect(signatureDisassembler.Init(true), "version signature fixture initializes x64 decoder");
-    openreverse::SignatureEngine signatureEngine;
     openreverse::SignatureGenerationOptions signatureOptions;
     signatureOptions.minimumBytes = 12;
     signatureOptions.maximumBytes = 16;
@@ -1698,7 +1697,8 @@ void TestVersionIntelligence()
     fieldRelationship.operandIndex = 1;
     const auto fieldInstructions = signatureDisassembler.Disassemble(
         oldTarget.mappedImage.data() + 0x1040, oldFieldCode.size(), oldBase + 0x1040, 16);
-    auto fieldSignature = signatureEngine.Generate(fieldInstructions, 0, fieldRelationship, signatureOptions);
+    auto fieldSignature = openreverse::signatures::Generate(
+        fieldInstructions, 0, fieldRelationship, signatureOptions);
     fieldSignature.stableId = "field-relation";
 
     openreverse::SignatureRelationship ripRelationship;
@@ -1706,7 +1706,8 @@ void TestVersionIntelligence()
     ripRelationship.operandIndex = 1;
     const auto ripInstructions = signatureDisassembler.Disassemble(
         oldTarget.mappedImage.data() + 0x1080, oldRipCode.size(), oldBase + 0x1080, 16);
-    auto ripSignature = signatureEngine.Generate(ripInstructions, 0, ripRelationship, signatureOptions);
+    auto ripSignature = openreverse::signatures::Generate(
+        ripInstructions, 0, ripRelationship, signatureOptions);
     ripSignature.stableId = "rip-relation";
 
     oldTarget.analysis.signatures = {uniqueSignature, sharedScanSignature, brokenSignature, duplicateSignature,

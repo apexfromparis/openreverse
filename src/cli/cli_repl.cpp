@@ -1,7 +1,7 @@
 #include "cli_repl.h"
 #include "app/application.h"
 #include "openreverse_version.h"
-#include "app/automator.h"
+#include "app/live_analysis_report.h"
 #include "utils/helpers.h"
 #include <windows.h>
 #include <iostream>
@@ -236,7 +236,7 @@ bool CLIRepl::HandleOpen(Application& app, const std::vector<std::string>& args)
     std::cout << "[*] Analyzing PE binary offline: '" << exePath << "'...\n";
     if (app.OpenBinaryFile(exePath))
     {
-        uint64_t baseAddr = app.moduleManager.GetModules().empty() ? 0 : app.moduleManager.GetModules()[0].baseAddress;
+        uint64_t baseAddr = app.moduleCatalog.GetModules().empty() ? 0 : app.moduleCatalog.GetModules()[0].baseAddress;
         std::cout << "\033[1;32m[+] Successfully parsed offline target: " << app.attachedProcessName << " (" << (app.is64Bit ? "x64" : "x86") << ")\033[0m\n";
         std::cout << "[+] Base Address: \033[1;36m0x" << std::hex << baseAddr << "\033[0m\n";
         std::cout << "[+] Functions Discovered: \033[1;36m" << std::dec
@@ -312,8 +312,8 @@ void CLIRepl::HandleDecompile(Application& app, const std::vector<std::string>& 
         return;
     }
 
-    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
-    const std::string summary = app.functionAnalyzer.GenerateAssemblySummary(fi, app.is64Bit);
+    auto fi = functions::AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
+    const std::string summary = functions::GenerateAssemblySummary(fi, app.is64Bit);
     std::cout << "\n\033[1;36m" << summary << "\033[0m\n";
 }
 
@@ -328,7 +328,7 @@ void CLIRepl::HandleCFG(Application& app, const std::vector<std::string>& args)
     if (addr == 0) return;
 
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, 4096);
-    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
+    auto fi = functions::AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
 
     std::cout << "\n\033[1;33m[CFG] Control Flow Graph Basic Blocks for " << fi.name << " (V(G)=" << fi.cyclomaticComplexity << "):\033[0m\n";
     for (size_t i = 0; i < fi.cfg.basicBlocks.size(); ++i)
@@ -450,7 +450,7 @@ void CLIRepl::HandleDisasm(Application& app, const std::vector<std::string>& arg
 
 void CLIRepl::HandleModules(Application& app, const std::vector<std::string>& args)
 {
-    auto mods = app.moduleManager.GetModules();
+    auto mods = app.moduleCatalog.GetModules();
     std::cout << "\n\033[1;37mBase Address       Size        Module Name\033[0m\n";
     std::cout << "----------------------------------------------------------------------------\n";
     for (const auto& m : mods)
@@ -470,52 +470,52 @@ void CLIRepl::HandleReport(Application& app, const std::vector<std::string>& arg
         std::cout << "\033[1;31m[-] Could not generate report. Open a binary or attach to a process first.\033[0m\n";
         return;
     }
-    AutoAnalysisResult res;
+    LiveAnalysisReport report;
     if (app.isAttached && app.attachedPID == 0)
     {
-        res.success = true;
-        res.targetProcessName = app.attachedProcessName;
-        res.targetPid = 0;
-        if (!app.moduleManager.GetModules().empty())
-            res.baseAddress = app.moduleManager.GetModules()[0].baseAddress;
+        report.success = true;
+        report.targetProcessName = app.attachedProcessName;
+        report.targetPid = 0;
+        if (!app.moduleCatalog.GetModules().empty())
+            report.baseAddress = app.moduleCatalog.GetModules().front().baseAddress;
         const ModuleAnalysisState* analysis = app.CurrentAnalysis();
         if (!analysis) return;
-        res.functionsDiscovered = analysis->functions.size();
-        res.totalXrefs = analysis->xrefs.size();
-        res.stringsFound = analysis->strings.size();
+        report.functionsDiscovered = analysis->functions.size();
+        report.totalXrefs = analysis->xrefs.size();
+        report.stringsFound = analysis->strings.size();
         for (const auto& string : analysis->strings)
         {
-            if (string.category == "URL") res.urls.push_back(string.value);
-            if (string.category == "Registry Path") res.registryPaths.push_back(string.value);
+            if (string.category == "URL") report.urls.push_back(string.value);
+            if (string.category == "Registry Path") report.registryPaths.push_back(string.value);
         }
         for (const auto& function : analysis->functions)
         {
-            if (res.keyFunctions.size() >= 15) break;
+            if (report.keyFunctions.size() >= 15) break;
             auto bytes = app.memoryReader.ReadBytes(nullptr, function.startAddress, 4096);
-            auto analyzed = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(),
+            auto analyzed = functions::AnalyzeFunction(bytes.data(), bytes.size(),
                 function.startAddress, function.startAddress, app.disassembler, app.is64Bit, 4096);
             if (!function.name.empty()) analyzed.name = function.name;
-            AutoAnalysisResult::FunctionSummary summary;
+            LiveAnalysisReport::FunctionSummary summary;
             summary.address = analyzed.startAddress;
             summary.name = analyzed.name;
             summary.analyzedSize = analyzed.analyzedSize;
             summary.complexity = analyzed.cyclomaticComplexity;
             summary.xrefCount = static_cast<int>(app.analysisDatabase.FindXRefsTo(
                 analysis->module.baseAddress, analyzed.startAddress).size());
-            summary.assemblySummary = app.functionAnalyzer.GenerateAssemblySummary(analyzed, app.is64Bit);
-            res.keyFunctions.push_back(std::move(summary));
+            summary.assemblySummary = functions::GenerateAssemblySummary(analyzed, app.is64Bit);
+            report.keyFunctions.push_back(std::move(summary));
         }
     }
     else
     {
-        Automator automator;
-        res = automator.AnalyzeProcess(app, app.attachedPID, app.attachedProcessName);
+        const LiveAnalysisReporter reporter;
+        report = reporter.BuildForProcess(app, app.attachedPID, app.attachedProcessName);
     }
-    if (res.success)
+    if (report.success)
     {
-        std::string rep = Automator::FormatReport(res);
+        const std::string markdown = LiveAnalysisReporter::FormatMarkdown(report);
         std::ofstream ofs(outFile);
-        ofs << rep;
+        ofs << markdown;
         ofs.close();
         std::cout << "\033[1;32m[+] Complete Markdown report exported to: " << outFile << "\033[0m\n\n";
     }
@@ -1550,8 +1550,8 @@ std::string CLIRepl::AssemblySummaryFor(Application& app, uint64_t addr)
 {
     auto bytes = app.memoryReader.ReadBytes(app.processHandle, addr, 4096);
     if (bytes.empty()) return "";
-    auto fi = app.functionAnalyzer.AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
-    return app.functionAnalyzer.GenerateAssemblySummary(fi, app.is64Bit);
+    auto fi = functions::AnalyzeFunction(bytes.data(), bytes.size(), addr, addr, app.disassembler, app.is64Bit, 4096);
+    return functions::GenerateAssemblySummary(fi, app.is64Bit);
 }
 
 } // namespace openreverse

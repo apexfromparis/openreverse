@@ -1,6 +1,6 @@
 #include "console_panel.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/logger.h"
 #include <imgui.h>
 #include <sstream>
@@ -12,7 +12,7 @@ void ConsolePanel::Render(Application& app)
     ImGui::Begin("Console", nullptr, ImGuiWindowFlags_None);
     const auto entries = Logger::Get().Snapshot();
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     if (ImGui::Button("Clear"))
         Logger::Get().Clear();
     ImGui::SameLine();
@@ -26,14 +26,14 @@ void ConsolePanel::Render(Application& app)
         }
         ImGui::SetClipboardText(ss.str().c_str());
     }
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::Checkbox("DBG", &showDebug_); ImGui::SameLine();
     ImGui::Checkbox("INF", &showInfo_); ImGui::SameLine();
     ImGui::Checkbox("WRN", &showWarning_); ImGui::SameLine();
     ImGui::Checkbox("ERR", &showError_);
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::Text("Entries: %zu", entries.size());
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 

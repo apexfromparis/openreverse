@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <vector>
-#include "core/disassembler.h"
+#include "analysis/disassembler.h"
 
 namespace openreverse {
 class Application;

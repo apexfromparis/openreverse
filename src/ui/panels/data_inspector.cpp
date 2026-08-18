@@ -1,6 +1,6 @@
 #include "data_inspector.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include <imgui.h>
 #include <cstring>
@@ -14,18 +14,18 @@ void DataInspectorPanel::Render(Application& app)
 
     if (app.selectedBytes.empty())
     {
-        UIManager::EmptyState("Click a byte in the Hex Editor to inspect.");
+        workspace_ui::EmptyState("Click a byte in the Hex Editor to inspect.");
         ImGui::End();
         return;
     }
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     ImGui::TextColored(ImVec4(0.4f, 0.6f, 0.8f, 1.0f), "Address: %s",
         helpers::FormatAddress(app.currentAddress, app.is64Bit).c_str());
     ImGui::SameLine();
     if (ImGui::Button("Copy address"))
         ImGui::SetClipboardText(helpers::FormatAddress(app.currentAddress, app.is64Bit).c_str());
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
     ImGui::Separator();
 
     const uint8_t* data = app.selectedBytes.data();
