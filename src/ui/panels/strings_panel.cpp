@@ -1,6 +1,6 @@
 #include "strings_panel.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include <imgui.h>
 
@@ -25,17 +25,17 @@ void StringsPanel::Render(Application& app)
         results_ = analysis->strings;
     }
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     ImGui::Text("Min length");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(50.0f);
     ImGui::InputInt("##minlen", &minLength_, 0, 0);
     if (minLength_ < 2) minLength_ = 2;
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::Checkbox("ASCII", &scanAscii_);
     ImGui::SameLine();
     ImGui::Checkbox("Unicode", &scanUnicode_);
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     bool canScan = app.isAttached;
     if (!canScan) ImGui::BeginDisabled();
     if (ImGui::Button("Scan"))
@@ -65,16 +65,16 @@ void StringsPanel::Render(Application& app)
     if (!canScan) ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.5f, 1.0f), "%zu found", results_.size());
-    UIManager::ToolbarSeparator();
+    workspace_ui::ToolbarSeparator();
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##strfilter", "Filter strings...", filterText_, sizeof(filterText_));
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Open a binary or attach to a process to scan strings.");
+        workspace_ui::EmptyState("Open a binary or attach to a process to scan strings.");
         ImGui::End();
         return;
     }

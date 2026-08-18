@@ -1,10 +1,10 @@
 #include "offsets_panel.h"
 
 #include "app/application.h"
-#include "core/module_manager.h"
-#include "core/pattern_scanner.h"
-#include "core/signature_engine.h"
-#include "ui/ui_manager.h"
+#include "targets/module_catalog.h"
+#include "analysis/pattern_scanner.h"
+#include "analysis/signatures.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include "utils/logger.h"
 
@@ -80,7 +80,7 @@ std::string OffsetLocation(const OffsetRecord& offset)
 void OffsetsPanel::AddFromAddress(Application& app, uint64_t address,
                                   const std::string& defaultName)
 {
-    const ModuleInfo* module = app.moduleManager.FindModuleByAddress(address);
+    const ModuleInfo* module = app.moduleCatalog.FindModuleByAddress(address);
     if (!module) return;
     OffsetRecord offset;
     offset.address = address;
@@ -196,7 +196,6 @@ void OffsetsPanel::RebuildMigration(Application& app, const ModuleAnalysisState&
     if (app.offlineImageBuffer.empty() || importedProject_.signatures.empty()) return;
 
     PatternScanner scanner;
-    SignatureEngine signatureEngine;
     const size_t signatureLimit = std::min<size_t>(importedProject_.signatures.size(), 1000);
     for (size_t index = 0; index < signatureLimit; ++index)
     {
@@ -221,7 +220,7 @@ void OffsetsPanel::RebuildMigration(Application& app, const ModuleAnalysisState&
             const auto bytes = app.memoryReader.ReadBytes(nullptr, match, 64);
             const auto instructions = app.disassembler.Disassemble(
                 bytes.data(), bytes.size(), match, 16);
-            const auto resolved = signatureEngine.Resolve(signature, match, instructions);
+            const auto resolved = signatures::Resolve(signature, match, instructions);
             if (resolved.valid)
             {
                 row.candidateAddress = resolved.address;
@@ -237,10 +236,10 @@ void OffsetsPanel::RebuildMigration(Application& app, const ModuleAnalysisState&
 void OffsetsPanel::Render(Application& app)
 {
     ImGui::Begin("OFFSETS & STRUCTURES###STRUCTURES", nullptr, ImGuiWindowFlags_None);
-    UIManager::PanelHeader("OFFSETS & STRUCTURES");
+    workspace_ui::PanelHeader("OFFSETS & STRUCTURES");
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Open a binary or dump, or attach to an authorized process.");
+        workspace_ui::EmptyState("Open a binary or dump, or attach to an authorized process.");
         ImGui::End();
         return;
     }
@@ -250,7 +249,7 @@ void OffsetsPanel::Render(Application& app)
         analysis = &app.analysisDatabase.GetModules().begin()->second;
     if (!analysis)
     {
-        UIManager::EmptyState("Analyze the current module to build deterministic offset evidence.");
+        workspace_ui::EmptyState("Analyze the current module to build deterministic offset evidence.");
         ImGui::End();
         return;
     }
@@ -264,7 +263,7 @@ void OffsetsPanel::Render(Application& app)
     if (ImGui::BeginTabItem("Offsets"))
     {
         if (analysis->offsets.empty())
-            UIManager::EmptyState("No deterministic offsets are available for this module.");
+            workspace_ui::EmptyState("No deterministic offsets are available for this module.");
         else if (ImGui::BeginTable("OffsetRecords", 6,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
             ImGuiTableFlags_ScrollY))
@@ -313,13 +312,13 @@ void OffsetsPanel::Render(Application& app)
     if (ImGui::BeginTabItem("Structures"))
     {
         if (analysis->structures.empty())
-            UIManager::EmptyState("No compatible field groups were observed.");
+            workspace_ui::EmptyState("No compatible field groups were observed.");
         for (const auto& structure : analysis->structures)
         {
             ImGui::PushID(structure.name.c_str());
             const std::string evidence = std::string(EvidenceName(structure.evidence)) +
                 " · score " + std::to_string(structure.evidenceScore);
-            UIManager::SectionLabel(structure.name.c_str(), evidence.c_str());
+            workspace_ui::SectionLabel(structure.name.c_str(), evidence.c_str());
             ImGui::TextDisabled("Base %s | Function 0x%llX | Minimum observed size 0x%llX",
                 structure.baseRegister.c_str(),
                 static_cast<unsigned long long>(structure.functionAddress),
@@ -359,7 +358,7 @@ void OffsetsPanel::Render(Application& app)
     if (ImGui::BeginTabItem("Globals"))
     {
         if (analysis->globals.empty())
-            UIManager::EmptyState("No resolved references to non-executable sections were observed.");
+            workspace_ui::EmptyState("No resolved references to non-executable sections were observed.");
         else if (ImGui::BeginTable("Globals", 6,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
         {
@@ -389,7 +388,7 @@ void OffsetsPanel::Render(Application& app)
     if (ImGui::BeginTabItem("Signatures"))
     {
         if (analysis->signatures.empty())
-            UIManager::EmptyState("No decoded-instruction signatures were generated.");
+            workspace_ui::EmptyState("No decoded-instruction signatures were generated.");
         else if (ImGui::BeginTable("Signatures", 4,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
         {
@@ -400,7 +399,7 @@ void OffsetsPanel::Render(Application& app)
             {
                 ImGui::PushID(signature.stableId.c_str()); ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                const std::string pattern = SignatureEngine::FormatPattern(signature.pattern);
+                const std::string pattern = signatures::FormatPattern(signature.pattern);
                 ImGui::TextUnformatted(pattern.c_str());
                 ImGui::TableSetColumnIndex(1);
                 if (ImGui::Selectable(helpers::FormatAddress(signature.targetFunction, app.is64Bit).c_str()))
@@ -418,9 +417,9 @@ void OffsetsPanel::Render(Application& app)
     {
         if (!importStatus_.empty()) ImGui::TextWrapped("%s", importStatus_.c_str());
         if (importedProject_.module.sha256.empty() && importedProject_.signatures.empty())
-            UIManager::EmptyState("Import an older OpenReverse JSON project to evaluate its signatures.");
+            workspace_ui::EmptyState("Import an older OpenReverse JSON project to evaluate its signatures.");
         else if (app.offlineImageBuffer.empty())
-            UIManager::EmptyState("Migration scanning is available for static binaries and dumps.");
+            workspace_ui::EmptyState("Migration scanning is available for static binaries and dumps.");
         else
         {
             if (migrationAnalysisRevision_ != analysis->revision ||
@@ -431,7 +430,7 @@ void OffsetsPanel::Render(Application& app)
                     importedProject_.module.sha256 == analysis->identity.sha256
                         ? "same SHA-256" : "different SHA-256; review candidates");
             if (migrationRows_.empty())
-                UIManager::EmptyState("The imported project has no signatures to migrate.");
+                workspace_ui::EmptyState("The imported project has no signatures to migrate.");
             else if (ImGui::BeginTable("MigrationRows", 5,
                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
             {

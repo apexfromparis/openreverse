@@ -2,7 +2,7 @@
 
 #include <string>
 #include <vector>
-#include "core/process_manager.h"
+#include "targets/process_access.h"
 
 namespace openreverse {
 class Application;

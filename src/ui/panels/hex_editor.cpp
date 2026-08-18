@@ -1,6 +1,6 @@
 #include "hex_editor.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 
 #include <imgui.h>
@@ -43,9 +43,9 @@ void HexEditorPanel::RefreshBuffer(Application& app)
 void HexEditorPanel::Render(Application& app)
 {
     ImGui::Begin("HEX VIEW", nullptr, ImGuiWindowFlags_None);
-    UIManager::PanelHeader("HEX VIEW");
+    workspace_ui::PanelHeader("HEX VIEW");
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     ImGui::Text("Bytes");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
@@ -78,13 +78,13 @@ void HexEditorPanel::Render(Application& app)
             needsRefresh_ = true;
         }
     }
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Open a binary or attach to a process to inspect bytes.");
+        workspace_ui::EmptyState("Open a binary or attach to a process to inspect bytes.");
         ImGui::End();
         return;
     }
@@ -97,7 +97,7 @@ void HexEditorPanel::Render(Application& app)
     float currentEntropy = CalculateEntropy(buffer_.data(), buffer_.size());
     ImGui::TextDisabled("Entropy %.2f / 8.00", currentEntropy);
 
-    if (ImFont* mono = UIManager::GetMonoFont())
+    if (ImFont* mono = workspace_ui::GetMonoFont())
         ImGui::PushFont(mono);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.55f, 0.65f, 1.0f));
     ImGui::Text("  Address         ");
@@ -123,7 +123,7 @@ void HexEditorPanel::Render(Application& app)
 
     ImGui::EndChild();
 
-    if (UIManager::GetMonoFont())
+    if (workspace_ui::GetMonoFont())
         ImGui::PopFont();
 
     if (ImGui::IsWindowHovered())
@@ -172,8 +172,6 @@ void HexEditorPanel::RenderHexRow(Application& app, int row, uint64_t rowAddr)
                 ? ImVec4(0.32f, 0.36f, 0.40f, 1.0f)
                 : ImVec4(0.82f, 0.85f, 0.88f, 1.0f);
 
-            // Plain selectable text keeps the grid dense; the old framed byte
-            // buttons made every value look like an unrelated control.
             char byteLabel[16];
             snprintf(byteLabel, sizeof(byteLabel), "%02X##%d", byte, idx);
 

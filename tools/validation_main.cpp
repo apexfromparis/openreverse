@@ -1,6 +1,6 @@
-#include "core/module_analyzer.h"
-#include "core/pe_parser.h"
-#include "core/project.h"
+#include "analysis/module_analysis.h"
+#include "analysis/pe_parser.h"
+#include "workspace/project.h"
 
 #include <nlohmann/json.hpp>
 
@@ -99,8 +99,8 @@ json AnalyzeFile(const fs::path& root, const fs::path& path)
     options.maxStrings = 50000;
     options.maxDuration = std::chrono::seconds(60);
 
-    openreverse::ModuleAnalyzer analyzer;
-    const auto result = analyzer.AnalyzeMappedImage(mapped, raw.size(), module, pe, options);
+    openreverse::ModuleAnalysisPipeline pipeline;
+    const auto result = pipeline.AnalyzeMappedImage(mapped, raw.size(), module, pe, options);
     record["functions"] = result.functions.size();
     record["cfg_functions"] = result.cfgFunctionsAnalyzed;
     record["cfg_instructions"] = result.cfgInstructionsAnalyzed;

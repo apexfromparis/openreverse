@@ -1,5 +1,5 @@
 #pragma once
-#include "core/pe_parser.h"
+#include "analysis/pe_parser.h"
 namespace openreverse { class Application; namespace panels {
 class PEViewerPanel {
 public:

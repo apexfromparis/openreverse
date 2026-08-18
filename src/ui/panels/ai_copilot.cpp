@@ -1,6 +1,6 @@
 #include "ai_copilot.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 
 #include <imgui.h>
 #include <cstring>
@@ -24,7 +24,7 @@ void AICopilotPanel::RenderSettings(Application& app)
         return;
     }
 
-    UIManager::SectionLabel("Provider presets");
+    workspace_ui::SectionLabel("Provider presets");
     if (ImGui::Button("Ollama / Qwen Coder"))
     {
         strncpy_s(provider_, "Ollama", _TRUNCATE);
@@ -46,7 +46,7 @@ void AICopilotPanel::RenderSettings(Application& app)
         strncpy_s(model_, "qwen/qwen-2.5-coder-32b-instruct", _TRUNCATE);
     }
 
-    UIManager::SectionLabel("Connection");
+    workspace_ui::SectionLabel("Connection");
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("Provider", provider_, sizeof(provider_));
     ImGui::SetNextItemWidth(-1.0f);
@@ -77,10 +77,10 @@ void AICopilotPanel::RenderSettings(Application& app)
 void AICopilotPanel::Render(Application& app)
 {
     ImGui::Begin("AI ASSISTANT", nullptr, ImGuiWindowFlags_None);
-    UIManager::PanelHeader("AI ASSISTANT", model_);
+    workspace_ui::PanelHeader("AI ASSISTANT", model_);
 
     const auto& function = app.analysisPanel.GetActiveFunction();
-    UIManager::SectionLabel("Current context");
+    workspace_ui::SectionLabel("Current context");
     if (!app.isAttached)
     {
         ImGui::TextDisabled("Select a function or address to provide analysis context.");
@@ -118,7 +118,7 @@ void AICopilotPanel::Render(Application& app)
         sendAction("Review the current field and memory-access evidence for possible structure layout.");
     if (!app.isAttached || requestBusy) ImGui::EndDisabled();
 
-    UIManager::SectionLabel("Conversation");
+    workspace_ui::SectionLabel("Conversation");
     const float footerHeight = 112.0f;
     ImGui::BeginChild("AIConversation", ImVec2(0.0f, -footerHeight), true);
     const auto conversation = app.aiService.Conversation();

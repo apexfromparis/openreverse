@@ -3,11 +3,11 @@
 #include <cstdint>
 #include <vector>
 #include <string>
-#include "core/function_analyzer.h"
-#include "core/xref_scanner.h"
-#include "core/pe_parser.h"
-#include "core/disassembler.h"
-#include "core/module_analyzer.h"
+#include "analysis/functions.h"
+#include "analysis/xref_scanner.h"
+#include "analysis/pe_parser.h"
+#include "analysis/disassembler.h"
+#include "analysis/module_analysis.h"
 
 namespace openreverse {
 class Application;

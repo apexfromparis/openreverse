@@ -96,35 +96,49 @@ target_include_directories(imgui_lib PUBLIC
 )
 target_link_libraries(imgui_lib PUBLIC d3d11 d3dcompiler dxgi)
 
-set(OPENREVERSE_CORE_SOURCES
-    src/core/address_space.cpp
-    src/core/analysis_database.cpp
-    src/core/analysis_scheduler.cpp
-    src/core/analysis_session.cpp
-    src/core/binary_diff.cpp
-    src/core/data_analyzer.cpp
-    src/core/dia_symbol_provider.cpp
-    src/core/disassembler.cpp
-    src/core/dump_loader.cpp
-    src/core/function_analyzer.cpp
-    src/core/instruction_semantics.cpp
-    src/core/memory_reader.cpp
-    src/core/module_analyzer.cpp
-    src/core/module_manager.cpp
-    src/core/offset_model.cpp
-    src/core/pattern_scanner.cpp
-    src/core/pe_parser.cpp
-    src/core/process_manager.cpp
-    src/core/project.cpp
-    src/core/signature_engine.cpp
-    src/core/string_scanner.cpp
-    src/core/version_intelligence.cpp
-    src/core/xref_scanner.cpp
+set(OPENREVERSE_ANALYSIS_SOURCES
+    src/analysis/binary_diff.cpp
+    src/analysis/data_evidence.cpp
+    src/analysis/dia_symbol_provider.cpp
+    src/analysis/disassembler.cpp
+    src/analysis/functions.cpp
+    src/analysis/instruction_semantics.cpp
+    src/analysis/module_analysis.cpp
+    src/analysis/offset_model.cpp
+    src/analysis/pattern_scanner.cpp
+    src/analysis/pe_parser.cpp
+    src/analysis/signatures.cpp
+    src/analysis/string_scanner.cpp
+    src/analysis/version_intelligence.cpp
+    src/analysis/xref_scanner.cpp
+)
+
+set(OPENREVERSE_TARGET_SOURCES
+    src/targets/address_space.cpp
+    src/targets/dump_loader.cpp
+    src/targets/memory_reader.cpp
+    src/targets/module_catalog.cpp
+    src/targets/process_access.cpp
+)
+
+set(OPENREVERSE_WORKSPACE_SOURCES
+    src/workspace/analysis_database.cpp
+    src/workspace/analysis_scheduler.cpp
+    src/workspace/analysis_session.cpp
+    src/workspace/project.cpp
+)
+
+set(OPENREVERSE_SUPPORT_SOURCES
     src/utils/helpers.cpp
     src/utils/logger.cpp
 )
 
-add_library(OpenReverseCore STATIC ${OPENREVERSE_CORE_SOURCES})
+add_library(OpenReverseCore STATIC
+    ${OPENREVERSE_ANALYSIS_SOURCES}
+    ${OPENREVERSE_TARGET_SOURCES}
+    ${OPENREVERSE_WORKSPACE_SOURCES}
+    ${OPENREVERSE_SUPPORT_SOURCES}
+)
 target_include_directories(OpenReverseCore PUBLIC
     src
     sdk/include
@@ -196,7 +210,7 @@ add_library(OpenReverseUI STATIC
     src/ui/panels/scanner_panel.cpp
     src/ui/panels/strings_panel.cpp
     src/ui/panels/version_intelligence_panel.cpp
-    src/ui/ui_manager.cpp
+    src/ui/workspace_ui.cpp
 )
 target_include_directories(OpenReverseUI PUBLIC src)
 target_link_libraries(OpenReverseUI PUBLIC OpenReverseCore OpenReverseTextEditor imgui_lib)
@@ -211,7 +225,7 @@ add_executable(OpenReverse WIN32
     src/main.cpp
     src/ai/ai_service.cpp
     src/app/application.cpp
-    src/app/automator.cpp
+    src/app/live_analysis_report.cpp
     src/cli/cli_repl.cpp
     installer/app.manifest
     ${CMAKE_CURRENT_BINARY_DIR}/installer/app.rc

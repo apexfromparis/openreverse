@@ -1,18 +1,18 @@
 #pragma once
 
-#include "core/process_manager.h"
-#include "core/memory_reader.h"
-#include "core/disassembler.h"
-#include "core/module_manager.h"
-#include "core/string_scanner.h"
-#include "core/pe_parser.h"
-#include "core/function_analyzer.h"
-#include "core/xref_scanner.h"
-#include "core/analysis_scheduler.h"
-#include "core/analysis_database.h"
-#include "core/analysis_session.h"
-#include "core/dump_loader.h"
-#include "core/module_analyzer.h"
+#include "targets/process_access.h"
+#include "targets/memory_reader.h"
+#include "analysis/disassembler.h"
+#include "targets/module_catalog.h"
+#include "analysis/string_scanner.h"
+#include "analysis/pe_parser.h"
+#include "analysis/functions.h"
+#include "analysis/xref_scanner.h"
+#include "workspace/analysis_scheduler.h"
+#include "workspace/analysis_database.h"
+#include "workspace/analysis_session.h"
+#include "targets/dump_loader.h"
+#include "analysis/module_analysis.h"
 #include "extensions/extension_manager.h"
 #include "auth/auth_client.h"
 
@@ -56,13 +56,12 @@ public:
 
     void Render();
 
-    ProcessManager   processManager;
+    ProcessAccess   processAccess;
     MemoryReader     memoryReader;
     Disassembler     disassembler;
-    ModuleManager    moduleManager;
+    ModuleCatalog    moduleCatalog;
     StringScanner    stringScanner;
     PEParser         peParser;
-    FunctionAnalyzer functionAnalyzer;
     XRefScanner      xrefScanner;
     AnalysisScheduler analysisScheduler;
     AnalysisSession  analysisSession;

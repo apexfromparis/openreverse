@@ -1,6 +1,6 @@
 #include "bookmarks_panel.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include <imgui.h>
 #include <cstring>
@@ -11,9 +11,9 @@ namespace {
 
 const ModuleInfo* ActiveModule(const Application& app)
 {
-    const ModuleInfo* module = app.moduleManager.FindModuleByAddress(app.currentAddress);
-    if (!module && !app.moduleManager.GetModules().empty())
-        module = &app.moduleManager.GetModules().front();
+    const ModuleInfo* module = app.moduleCatalog.FindModuleByAddress(app.currentAddress);
+    if (!module && !app.moduleCatalog.GetModules().empty())
+        module = &app.moduleCatalog.GetModules().front();
     return module;
 }
 
@@ -23,7 +23,7 @@ void BookmarksPanel::Render(Application& app)
 {
     ImGui::Begin("Bookmarks", nullptr, ImGuiWindowFlags_None);
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     ImGui::Text("Address");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(140.0f);
@@ -77,7 +77,7 @@ void BookmarksPanel::Render(Application& app)
             app.analysisSession.AddBookmark(std::move(bk));
         }
     }
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     if (ImGui::BeginPopupModal("Bookmark address outside module", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize))
@@ -93,7 +93,7 @@ void BookmarksPanel::Render(Application& app)
     const ModuleInfo* module = ActiveModule(app);
     if (bookmarks.empty())
     {
-        UIManager::EmptyState("No bookmarks. Add an address or use \"Bookmark current\".");
+        workspace_ui::EmptyState("No bookmarks. Add an address or use \"Bookmark current\".");
     }
     else if (ImGui::BeginTable("BookmarksTable", 4,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))

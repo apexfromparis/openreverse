@@ -1,6 +1,6 @@
 #include "scanner_panel.h"
 #include "app/application.h"
-#include "ui/ui_manager.h"
+#include "ui/workspace_ui.h"
 #include "utils/helpers.h"
 #include <imgui.h>
 #include <cstring>
@@ -24,7 +24,7 @@ void ScannerPanel::Render(Application& app)
         ? app.analysisScheduler.GetJob(scanJobId_) : AnalysisJobSnapshot{};
     const bool scanWorking = scanJob.state == AnalysisJobState::Queued || scanJob.state == AnalysisJobState::Running;
 
-    UIManager::BeginToolbar();
+    workspace_ui::BeginToolbar();
     ImGui::Text("Preset");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(185.0f);
@@ -161,13 +161,13 @@ void ScannerPanel::Render(Application& app)
         report_.error = "Pattern scan cancelled";
         scanJobId_ = 0;
     }
-    UIManager::EndToolbar();
+    workspace_ui::EndToolbar();
 
     ImGui::Separator();
 
     if (!app.isAttached)
     {
-        UIManager::EmptyState("Open a binary or attach to a process to scan byte patterns.");
+        workspace_ui::EmptyState("Open a binary or attach to a process to scan byte patterns.");
         ImGui::End();
         return;
     }
@@ -201,7 +201,7 @@ void ScannerPanel::Render(Application& app)
             {
                 if (ImGui::MenuItem("Go to"))
                     app.NavigateToAddress(res.address);
-                auto* mod = app.moduleManager.FindModuleByAddress(res.address);
+                auto* mod = app.moduleCatalog.FindModuleByAddress(res.address);
                 if (mod)
                 {
                     std::string offStr = helpers::FormatModuleOffset(mod->name, mod->baseAddress, res.address, app.is64Bit);
@@ -218,7 +218,7 @@ void ScannerPanel::Render(Application& app)
             ImGui::TableSetColumnIndex(2);
             if (res.hasRawOffset) ImGui::Text("0x%08zX", res.rawOffset); else ImGui::TextDisabled("virtual");
             ImGui::TableSetColumnIndex(3);
-            auto* mod = app.moduleManager.FindModuleByAddress(res.address);
+            auto* mod = app.moduleCatalog.FindModuleByAddress(res.address);
             if (!res.sectionName.empty())
             {
                 ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.55f, 1.0f), "%s", res.sectionName.c_str());
