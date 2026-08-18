@@ -16,8 +16,10 @@ See [Building](docs/BUILDING.md) for output paths and smoke-test guidance.
 ## Changes
 
 - Keep each change focused and preserve C++17 and Windows x64 support.
-- Put analysis behavior in `src/core`, lifecycle coordination in `src/app`,
-  CLI interaction in `src/cli`, and presentation in `src/ui`.
+- Put algorithms and evidence models in `src/analysis`, target acquisition in
+  `src/targets`, canonical state and persistence in `src/workspace`, lifecycle
+  coordination in `src/app`, CLI interaction in `src/cli`, and presentation in
+  `src/ui`.
 - Treat inferred functions, boundaries, structures, and AI suggestions as
   non-authoritative; preserve decoded evidence and provenance.
 - Add or update a small fixture/test when analysis behavior changes.

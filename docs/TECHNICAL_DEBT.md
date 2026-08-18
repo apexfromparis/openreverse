@@ -1,6 +1,6 @@
 # OpenReverse technical debt
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Analysis accuracy
 
@@ -62,8 +62,8 @@ Last updated: 2026-08-17
 - Native dialogs, docking, DPI combinations, device-loss recovery, and the CFG
   visual result require manual Windows regression passes; pixel automation is
   intentionally not attempted.
-- Core touched paths are Unicode/long-path aware. Future Win32 additions must
-  continue using wide APIs and dynamic buffers.
+- Existing first-party file paths are Unicode/long-path aware. Future Win32
+  additions must continue using wide APIs and dynamic buffers.
 - The combined GUI/CLI executable uses the Windows GUI subsystem, so automation
   must wait explicitly for reliable exit codes.
 

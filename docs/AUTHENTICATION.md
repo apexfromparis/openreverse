@@ -1,14 +1,13 @@
 # Desktop authentication
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Status and selected flow
 
-Phase E is **PARTIAL**. The secure native-client foundation is implemented and
-covered by offline regression tests. A legitimate WorkOS AuthKit public client,
-its allowed loopback redirect configuration, and a live end-to-end provider
-test are still required before production account authentication can be called
-complete.
+The secure native-client foundation is implemented and covered by offline
+regression tests. Production use still requires a legitimate WorkOS AuthKit
+public client, its allowed loopback redirect configuration, and a live
+end-to-end provider test.
 
 OpenReverse uses WorkOS AuthKit as a native public client with OAuth 2.0
 Authorization Code and PKCE S256. The callback is an ephemeral IPv4 loopback
@@ -124,8 +123,7 @@ BYOK AI providers.
 
 ## Deferred work
 
-Phase E does not implement billing, subscriptions, entitlements, licenses,
-hosted AI, Pro distribution, or a commercial backend. Provider configuration
-and live login verification remain the Phase E completion blocker. Phase F will
-introduce a separate backend boundary for future commercial services; no fake
-backend or insecure fallback is created here.
+Provider configuration and live login verification remain required before
+production use. Billing, subscriptions, entitlements, licenses, hosted AI, Pro
+distribution, and commercial backend services are not implemented here.
+Authentication remains separate from any future entitlement boundary.

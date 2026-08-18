@@ -154,7 +154,7 @@ corpus binaries or reports.
 ## Architecture and AI privacy
 
 The [architecture](docs/ARCHITECTURE.md) and
-[analysis pipeline](docs/ANALYSIS_PIPELINE.md) documents describe target
+[analysis pipeline](docs/ANALYSIS.md) documents describe target
 ownership, scheduling, and analysis boundaries.
 
 Account authentication is optional and never gates Community analysis. Its

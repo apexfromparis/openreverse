@@ -1,4 +1,4 @@
-# Analysis pipeline
+# OpenReverse analysis
 
 OpenReverse publishes disk files, dumps, and authorized live modules into the
 same `ModuleAnalysisResult` and `AnalysisDatabase` models.
@@ -65,7 +65,7 @@ signatures once per import/database revision and reports `Unique`, `Ambiguous`,
 `Not found`, or `Invalid`. Only unique valid results expose a candidate; no weak
 or ambiguous candidate is silently accepted.
 
-Function fingerprint comparison is a separate core foundation. It returns
+Function fingerprint comparison is a separate comparison foundation. It returns
 ranked candidates with explicit similarity scores and contributing evidence.
 
 ## Local corpus validation
@@ -82,7 +82,8 @@ flags, errors, and stage timings. Local reports are ignored by Git.
 Desktop PE/dump analysis runs through `AnalysisScheduler`. Workers receive a
 cooperative cancellation token and return a UI-thread completion callback.
 Callbacks whose target generation no longer matches are discarded. CLI mode may
-invoke the same module analyzer synchronously because it has no render loop.
+invoke the same `ModuleAnalysisPipeline` synchronously because it has no render
+loop.
 
 Detach and shutdown cancel and join active analysis before target memory and
 panel state are released.

@@ -1,15 +1,27 @@
 # OpenReverse architecture
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Composition
 
 OpenReverse is a Windows C++17 application using Win32, DirectX 11, Dear ImGui,
-Capstone, WinHTTP, DbgHelp, BCrypt, and nlohmann/json. `Application` remains the
-composition root for target lifecycle, analysis services, the scheduler,
-navigation, and panels. `AnalysisSession` now owns the canonical
-`AnalysisDatabase` plus persistent project/user state; `Application` keeps a
-compatibility reference while orchestration moves incrementally to the session.
+Capstone, WinHTTP, DbgHelp, BCrypt, and nlohmann/json. The first-party source
+tree follows the product's ownership boundaries:
+
+- `src/analysis` contains PE parsing, disassembly, function and data evidence,
+  signatures, diffs, and the bounded module-analysis pipeline.
+- `src/targets` contains address spaces, dump loading, memory reads, process
+  access, and the current module catalog.
+- `src/workspace` owns canonical analysis state, scheduling, session state, and
+  `.orev` persistence.
+- `src/app` composes those domains and coordinates desktop/CLI lifecycles.
+- `src/auth`, `src/extensions`, and `src/ai` are controlled subsystem
+  boundaries; `src/ui` and `src/cli` are presentation and interaction layers.
+
+`Application` remains the composition root for target lifecycle, analysis,
+navigation, and panels. `AnalysisSession` owns the canonical `AnalysisDatabase`
+plus persistent project/user state; `Application` keeps a compatibility
+reference while orchestration moves incrementally to the session.
 
 ## Persistent projects
 
@@ -47,7 +59,7 @@ require an explicit module selection.
 
 ## Shared analysis pipeline
 
-`ModuleAnalyzer` owns the common live and mapped-image pipelines. The pipeline
+`ModuleAnalysisPipeline` owns the common live and mapped-image pipeline. It
 validates PE metadata, decodes bounded executable ranges, discovers functions,
 builds CFGs and operand-level Xrefs, scans strings, derives globals and field
 evidence, builds typed offsets, and generates bounded candidate signatures.
@@ -140,9 +152,11 @@ from the canonical published result; they do not run separate pipelines.
 
 The build reflects these dependency boundaries with explicit reusable
 `OpenReverseCore`, `OpenReverseAuth`, `OpenReverseExtensions`, and
-`OpenReverseUI` libraries. Core does not depend on Dear ImGui. The CLI command
-implementation uses `Application` orchestration and canonical session/database
-queries, never panel state.
+`OpenReverseUI` libraries. Analysis and target code do not depend on Dear ImGui.
+The CLI command implementation uses `Application` orchestration and canonical
+session/database queries, never panel state. Extension hosting depends on the
+versioned C ABI rather than UI internals; auth does not depend on the AI or UI
+layers.
 
 ## Native extension boundary
 
@@ -180,7 +194,7 @@ namespace, and account logout does not mutate projects or AI keys. See
 
 Authentication is not an entitlement boundary and does not gate Community
 features. Billing, licensing, subscriptions, hosted services, and authoritative
-entitlements remain outside this repository phase.
+entitlements remain outside this Community repository.
 
 ## Lifecycle and safety
 
