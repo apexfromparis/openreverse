@@ -152,6 +152,8 @@ private:
     std::string      pendingDumpPath_;
     std::string      dumpImportError_;
     std::string      accountUiMessage_;
+    char             accountEmailBuf_[256] = "";
+    char             accountPasswordBuf_[256] = "";
     std::vector<DumpModuleMetadata> pendingDumpModules_;
     int              pendingDumpModuleIndex_ = 0;
     int              dumpArchitectureIndex_ = 1;

@@ -158,7 +158,6 @@ void Application::Shutdown()
     if (shutdown_)
         return;
     shutdown_ = true;
-    accountAuth_.CancelLogin();
     analysisScheduler.Shutdown();
     DetachFromProcess();
     if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
@@ -909,7 +908,7 @@ void Application::RenderExtensionsWindow()
 
 void Application::RenderAccountWindow()
 {
-    ImGui::SetNextWindowSize(ImVec2(470.0f, 260.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 320.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Settings > Account", &showAccount_))
     {
         ImGui::End();
@@ -917,102 +916,142 @@ void Application::RenderAccountWindow()
     }
 
     const auth::AuthStatus status = accountAuth_.Status();
+    const auth::AccountServiceConfig& config = accountAuth_.Config();
+
     ImGui::TextUnformatted("OpenReverse Account");
     ImGui::Separator();
-    ImGui::Text("Status: %s", auth::AuthSession::StateName(status.state));
-    if (status.state == auth::AuthState::SignedIn && !status.email.empty())
-        ImGui::TextUnformatted(status.email.c_str());
-    else
-        ImGui::TextDisabled("%s", status.message.c_str());
 
     if (!accountUiMessage_.empty())
-        ImGui::TextColored(ImVec4(0.94f, 0.45f, 0.30f, 1.0f), "%s",
-                           accountUiMessage_.c_str());
+    {
+        ImGui::TextColored(ImVec4(0.94f, 0.45f, 0.30f, 1.0f), "%s", accountUiMessage_.c_str());
+        ImGui::Spacing();
+    }
 
-    const bool loginActive = status.state == auth::AuthState::WaitingForBrowser ||
-        status.state == auth::AuthState::ProcessingCallback ||
-        status.state == auth::AuthState::ExchangingCode;
-    if (status.state == auth::AuthState::WaitingForBrowser)
+    if (status.state == auth::AuthState::SignedIn)
     {
-        if (ImGui::Button("Cancel Sign In"))
+        if (!status.displayName.empty())
+            ImGui::TextUnformatted(status.displayName.c_str());
+        if (!status.email.empty())
+            ImGui::TextDisabled("%s", status.email.c_str());
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (status.isProActive)
         {
-            accountAuth_.CancelLogin();
-            accountUiMessage_.clear();
+            ImGui::Text("Plan: OpenReverse Pro");
+            if (!status.subscriptionStatus.empty())
+                ImGui::Text("Status: %s", status.subscriptionStatus.c_str());
+
+            if (!status.currentPeriodEnd.empty())
+            {
+                if (status.cancelAtPeriodEnd)
+                    ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Pro remains active until %s.", status.currentPeriodEnd.c_str());
+                else
+                    ImGui::Text("Renews: %s", status.currentPeriodEnd.c_str());
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Manage Billing"))
+            {
+                const std::string url = config.billingManageUrl.empty() ? "https://openreverse.dev/account" : config.billingManageUrl;
+                const std::wstring wideUrl(url.begin(), url.end());
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            ImGui::SameLine();
         }
-    }
-    else if (status.state == auth::AuthState::ProcessingCallback ||
-             status.state == auth::AuthState::ExchangingCode)
-    {
-        ImGui::BeginDisabled();
-        ImGui::Button("Completing Sign In...");
-        ImGui::EndDisabled();
-    }
-    else if (status.state == auth::AuthState::SignedIn)
-    {
-        ImGui::BeginDisabled();
-        ImGui::Button("Manage Account");
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Account portal configuration is deferred.");
+        else
+        {
+            ImGui::Text("Plan: Community");
+            ImGui::Spacing();
+        }
+
+        if (ImGui::Button("Manage Account"))
+        {
+            const std::string url = config.accountManageUrl.empty() ? "https://openreverse.dev/account" : config.accountManageUrl;
+            const std::wstring wideUrl(url.begin(), url.end());
+            ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
         ImGui::SameLine();
+
+        if (ImGui::Button("Refresh"))
+        {
+            std::string error;
+            if (!accountAuth_.StartProfileRefresh(error)) accountUiMessage_ = error;
+            else accountUiMessage_.clear();
+        }
+        ImGui::SameLine();
+
         if (ImGui::Button("Sign Out"))
         {
-            std::string logoutUrl;
             std::string error;
-            if (!accountAuth_.Logout(logoutUrl, error)) accountUiMessage_ = error;
+            if (!accountAuth_.SignOut(error)) accountUiMessage_ = error;
             else accountUiMessage_.clear();
-            if (!logoutUrl.empty())
-            {
-                const std::wstring wideUrl(logoutUrl.begin(), logoutUrl.end());
-                const HINSTANCE launched = ShellExecuteW(nullptr, L"open", wideUrl.c_str(),
-                                                          nullptr, nullptr, SW_SHOWNORMAL);
-                if (reinterpret_cast<INT_PTR>(launched) <= 32)
-                    accountUiMessage_ = "Signed out locally; the provider logout page could not be opened.";
-            }
         }
     }
     else
     {
-        const bool canSignIn = !loginActive && status.providerConfigured &&
-            status.state != auth::AuthState::Refreshing &&
-            status.state != auth::AuthState::LoggingOut;
-        if (!canSignIn) ImGui::BeginDisabled();
-        if (ImGui::Button("Sign In"))
-        {
-            std::string authorizationUrl;
-            std::string error;
-            if (!accountAuth_.StartLogin(authorizationUrl, error))
-            {
-                accountUiMessage_ = error;
-            }
-            else
-            {
-                accountUiMessage_.clear();
-                const std::wstring wideUrl(authorizationUrl.begin(), authorizationUrl.end());
-                const HINSTANCE launched = ShellExecuteW(nullptr, L"open", wideUrl.c_str(),
-                                                          nullptr, nullptr, SW_SHOWNORMAL);
-                if (reinterpret_cast<INT_PTR>(launched) <= 32)
-                {
-                    accountAuth_.CancelLogin();
-                    accountUiMessage_ = "The system browser could not be opened.";
-                }
-            }
-        }
-        if (!canSignIn) ImGui::EndDisabled();
+        ImGui::TextWrapped("Sign in with the same account used on openreverse.dev.");
+        ImGui::Spacing();
 
-        if (status.state == auth::AuthState::ReauthenticationRequired &&
-            status.providerConfigured)
+        ImGui::TextUnformatted("Email");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##AccountEmail", accountEmailBuf_, sizeof(accountEmailBuf_));
+
+        ImGui::TextUnformatted("Password");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##AccountPassword", accountPasswordBuf_, sizeof(accountPasswordBuf_), ImGuiInputTextFlags_Password);
+
+        ImGui::Spacing();
+
+        const bool busy = status.state == auth::AuthState::SigningIn ||
+                          status.state == auth::AuthState::Refreshing ||
+                          status.state == auth::AuthState::SigningOut;
+
+        if (busy) ImGui::BeginDisabled();
+
+        if (ImGui::Button("Sign In", ImVec2(120.0f, 0.0f)))
         {
+            std::string email = accountEmailBuf_;
+            std::string password = accountPasswordBuf_;
+            SecureZeroMemory(accountPasswordBuf_, sizeof(accountPasswordBuf_));
+            accountPasswordBuf_[0] = '\0';
+
+            std::string error;
+            if (!accountAuth_.StartPasswordLogin(std::move(email), std::move(password), error))
+                accountUiMessage_ = error;
+            else
+                accountUiMessage_.clear();
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Create Account"))
+        {
+            const std::string url = config.signupUrl.empty() ? "https://openreverse.dev/signup" : config.signupUrl;
+            const std::wstring wideUrl(url.begin(), url.end());
+            ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+
+        if (busy)
+        {
+            ImGui::EndDisabled();
             ImGui::SameLine();
-            if (ImGui::Button("Refresh Session"))
+            ImGui::TextDisabled("%s", auth::AuthSession::StateName(status.state));
+        }
+
+        if (status.state == auth::AuthState::ReauthenticationRequired || status.state == auth::AuthState::Error)
+        {
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", status.message.c_str());
+            if (ImGui::Button("Retry Stored Session"))
             {
                 std::string error;
                 if (!accountAuth_.StartRefresh(error)) accountUiMessage_ = error;
                 else accountUiMessage_.clear();
             }
         }
-        if (!status.providerConfigured)
-            ImGui::TextDisabled("Account sign-in requires a configured public desktop client ID.");
     }
 
     ImGui::Spacing();
