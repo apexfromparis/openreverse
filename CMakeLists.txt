@@ -129,6 +129,7 @@ set(OPENREVERSE_WORKSPACE_SOURCES
 )
 
 set(OPENREVERSE_SUPPORT_SOURCES
+    src/app/app_preferences.cpp
     src/utils/helpers.cpp
     src/utils/logger.cpp
 )
@@ -354,7 +355,7 @@ if(BUILD_TESTING)
     add_executable(OpenReverseAuthTests
         tests/auth_tests.cpp
     )
-    target_link_libraries(OpenReverseAuthTests PRIVATE OpenReverseAuth)
+    target_link_libraries(OpenReverseAuthTests PRIVATE OpenReverseAuth OpenReverseCore)
     openreverse_enable_first_party_warnings(OpenReverseAuthTests)
     add_test(NAME OpenReverse.Auth COMMAND OpenReverseAuthTests)
 

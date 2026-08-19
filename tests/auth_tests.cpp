@@ -4,6 +4,7 @@
 #include "auth/loopback_callback.h"
 #include "auth/pkce.h"
 #include "auth/secure_credentials.h"
+#include "app/app_preferences.h"
 
 #include <windows.h>
 
@@ -77,6 +78,44 @@ public:
 
     bool IsConfigured() const override { return configured; }
     const AccountServiceConfig& Config() const override { return config; }
+
+    std::string BuildBrowserAuthorizationUrl(const std::string& codeChallenge,
+                                             const std::string& state,
+                                             const std::string& redirectUri) const override
+    {
+        return config.accountApiBaseUrl + "/auth/desktop?code_challenge=" + codeChallenge +
+               "&code_challenge_method=S256&state=" + state + "&redirect_uri=" + redirectUri;
+    }
+
+    bool ExchangeAuthCode(const std::string& authCode,
+                          const std::string& codeVerifier,
+                          AuthTokenResponse& response,
+                          std::string& error) override
+    {
+        ++codeExchanges;
+        if (!configured)
+        {
+            error = "Provider not configured";
+            return false;
+        }
+        if (codeVerifier.empty())
+        {
+            error = "Missing code verifier";
+            return false;
+        }
+        if (authCode == "valid_auth_code")
+        {
+            response.accessToken = "access-token-from-code";
+            response.refreshToken = "refresh-token-from-code";
+            response.user.id = "11111111-1111-1111-1111-111111111111";
+            response.user.email = "browser.user@example.test";
+            response.user.displayName = "Browser User";
+            response.expiresAtUnix = 2000000000;
+            return true;
+        }
+        error = "Invalid authorization code";
+        return false;
+    }
 
     bool SignInWithPassword(const std::string& email,
                             const std::string& password,
@@ -177,6 +216,7 @@ public:
     int refreshes = 0;
     int signOuts = 0;
     int profileRequests = 0;
+    int codeExchanges = 0;
 };
 
 void TestPkce()
@@ -426,6 +466,98 @@ void TestCommercialAuthorityAndFailClosed()
     Expect(!session.RefreshAccountSnapshot(error), "identity mismatch is rejected");
 }
 
+void TestBrowserAuthAndPkceLifecycle()
+{
+    auto api = std::make_shared<FakeAccountApi>();
+    auto store = std::make_shared<MemoryCredentialStore>();
+    AuthSession session(api, store);
+    std::string error;
+
+    // 1. Begin browser login generates valid URL with PKCE challenge and state
+    std::string browserUrl;
+    Expect(session.BeginBrowserLogin(browserUrl, error), "begin browser login succeeds");
+    Expect(!browserUrl.empty(), "browser URL is not empty");
+    Expect(browserUrl.find("code_challenge=") != std::string::npos, "URL contains PKCE code_challenge");
+    Expect(browserUrl.find("code_challenge_method=S256") != std::string::npos, "URL specifies S256 method");
+    Expect(browserUrl.find("state=") != std::string::npos, "URL contains random state");
+    Expect(browserUrl.find("redirect_uri=") != std::string::npos, "URL contains redirect_uri");
+
+    auto status = session.Status();
+    Expect(status.state == AuthState::WaitingForBrowser, "session state is WaitingForBrowser");
+
+    // Extract state from URL
+    const size_t statePos = browserUrl.find("state=");
+    std::string stateValue;
+    if (statePos != std::string::npos)
+    {
+        const size_t ampPos = browserUrl.find('&', statePos);
+        stateValue = (ampPos == std::string::npos)
+            ? browserUrl.substr(statePos + 6)
+            : browserUrl.substr(statePos + 6, ampPos - (statePos + 6));
+    }
+    Expect(!stateValue.empty(), "extracted state value is non-empty");
+
+    // 2. Reject callback with invalid state (CSRF / Replay protection)
+    Expect(!session.CompleteAuthCodeLogin("valid_auth_code", "wrong_state_value", error),
+           "rejects callback with wrong state");
+
+    // 3. Test cancellation
+    Expect(session.BeginBrowserLogin(browserUrl, error), "start browser login for cancel test");
+    Expect(session.CancelBrowserLogin(error), "cancel browser login succeeds");
+    status = session.Status();
+    Expect(status.state == AuthState::SignedOut, "state is SignedOut after cancellation");
+
+    // 4. Successful code exchange and session establishment
+    api->mockSnapshot.user.displayName = "Browser User";
+    api->mockSnapshot.user.email = "browser.user@example.test";
+    Expect(session.BeginBrowserLogin(browserUrl, error), "start browser login for success test");
+    const size_t statePos2 = browserUrl.find("state=");
+    std::string validState;
+    if (statePos2 != std::string::npos)
+    {
+        const size_t ampPos = browserUrl.find('&', statePos2);
+        validState = (ampPos == std::string::npos)
+            ? browserUrl.substr(statePos2 + 6)
+            : browserUrl.substr(statePos2 + 6, ampPos - (statePos2 + 6));
+    }
+    Expect(session.CompleteAuthCodeLogin("valid_auth_code", validState, error),
+           "completes authentication with valid code and matching state");
+
+    status = session.Status();
+    Expect(status.state == AuthState::SignedIn, "state is SignedIn after successful exchange");
+    Expect(status.displayName == "Browser User", "display name matches user from code exchange");
+    Expect(store->stores > 0, "refresh token was saved to credential store");
+
+    // 5. Sign out clears session
+    Expect(session.SignOut(error), "sign out succeeds");
+    status = session.Status();
+    Expect(status.state == AuthState::SignedOut, "state is SignedOut after logout");
+}
+
+void TestAppPreferencesAndOnboarding()
+{
+    // Test AppPreferences save and load
+    openreverse::AppPreferences prefs;
+    Expect(!prefs.onboardingSeen, "default onboardingSeen is false");
+
+    prefs.onboardingSeen = true;
+    Expect(prefs.Save(), "saving preferences succeeds");
+
+    openreverse::AppPreferences loaded = openreverse::AppPreferences::Load();
+    Expect(loaded.onboardingSeen, "loaded onboardingSeen is true");
+
+    // Signing out does not reset onboarding preference
+    auto api = std::make_shared<FakeAccountApi>();
+    auto store = std::make_shared<MemoryCredentialStore>();
+    AuthSession session(api, store);
+    std::string error;
+    session.SignInWithPassword("valid@example.test", "correct_password", error);
+    session.SignOut(error);
+
+    openreverse::AppPreferences afterLogout = openreverse::AppPreferences::Load();
+    Expect(afterLogout.onboardingSeen, "onboardingSeen remains true after sign out");
+}
+
 } // namespace
 
 int main()
@@ -438,6 +570,8 @@ int main()
     TestSessionRestoreAndRefreshRotation();
     TestAccountSyncFailureAndLogoutWarning();
     TestCommercialAuthorityAndFailClosed();
+    TestBrowserAuthAndPkceLifecycle();
+    TestAppPreferencesAndOnboarding();
 
     if (failures == 0)
     {
