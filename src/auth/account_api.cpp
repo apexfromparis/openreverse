@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -20,13 +21,13 @@ namespace openreverse::auth {
 
 namespace {
 
-constexpr char kAuthorizationEndpoint[] =
-    "https://api.workos.com/user_management/authorize";
-constexpr wchar_t kApiHost[] = L"api.workos.com";
-constexpr wchar_t kAuthenticationPath[] = L"/user_management/authenticate";
-constexpr char kLogoutEndpoint[] =
-    "https://api.workos.com/user_management/sessions/logout";
 constexpr size_t kMaximumResponseBytes = 1024 * 1024;
+constexpr char kDefaultSupabaseUrl[] = "https://auth.openreverse.dev";
+constexpr char kDefaultSupabaseKey[] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.client_publishable_placeholder";
+constexpr char kDefaultAccountApiBaseUrl[] = "https://openreverse.dev";
+constexpr char kDefaultSignupUrl[] = "https://openreverse.dev/signup";
+constexpr char kDefaultAccountManageUrl[] = "https://openreverse.dev/account";
+constexpr char kDefaultBillingManageUrl[] = "https://openreverse.dev/account";
 
 bool IsSafeIdentifier(const std::string& value, size_t maximum)
 {
@@ -37,49 +38,19 @@ bool IsSafeIdentifier(const std::string& value, size_t maximum)
     });
 }
 
-bool IsBase64UrlValue(const std::string& value, size_t requiredLength)
+std::string GetEnvVar(const char* name)
 {
-    return value.size() == requiredLength &&
-        std::all_of(value.begin(), value.end(), [](unsigned char character) {
-            return std::isalnum(character) || character == '-' || character == '_';
-        });
+    std::array<char, 1024> buffer{};
+    const DWORD length = GetEnvironmentVariableA(name, buffer.data(),
+                                                 static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) return {};
+    return std::string(buffer.data(), length);
 }
 
-bool IsValidLoopbackRedirect(const std::string& value)
+int64_t CurrentTimeUnix()
 {
-    constexpr char prefix[] = "http://127.0.0.1:";
-    constexpr char suffix[] = "/callback";
-    if (value.rfind(prefix, 0) != 0 || value.size() > 256 ||
-        value.size() <= sizeof(prefix) - 1 + sizeof(suffix) - 1 ||
-        value.compare(value.size() - (sizeof(suffix) - 1), sizeof(suffix) - 1, suffix) != 0)
-        return false;
-    const size_t start = sizeof(prefix) - 1;
-    const size_t length = value.size() - start - (sizeof(suffix) - 1);
-    if (length == 0 || length > 5) return false;
-    unsigned int port = 0;
-    for (size_t index = 0; index < length; ++index)
-    {
-        const unsigned char character = static_cast<unsigned char>(value[start + index]);
-        if (!std::isdigit(character)) return false;
-        port = port * 10 + static_cast<unsigned int>(character - '0');
-    }
-    return port > 0 && port <= 65535;
-}
-
-std::string UrlEncode(const std::string& value)
-{
-    std::ostringstream encoded;
-    encoded << std::uppercase << std::hex;
-    for (unsigned char character : value)
-    {
-        if (std::isalnum(character) || character == '-' || character == '_' ||
-            character == '.' || character == '~')
-            encoded << static_cast<char>(character);
-        else
-            encoded << '%' << std::setw(2) << std::setfill('0')
-                    << static_cast<unsigned int>(character);
-    }
-    return encoded.str();
+    const auto now = std::chrono::system_clock::now();
+    return std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
 }
 
 bool ReadHttpResponse(HINTERNET request, std::string& body, std::string& error)
@@ -90,13 +61,13 @@ bool ReadHttpResponse(HINTERNET request, std::string& body, std::string& error)
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request, &available))
         {
-            error = "Authentication service response could not be read";
+            error = "Account service response could not be read";
             return false;
         }
         if (available == 0) return true;
         if (body.size() + available > kMaximumResponseBytes)
         {
-            error = "Authentication service response exceeds the 1 MiB limit";
+            error = "Account service response exceeds the 1 MiB limit";
             return false;
         }
         const size_t offset = body.size();
@@ -104,74 +75,304 @@ bool ReadHttpResponse(HINTERNET request, std::string& body, std::string& error)
         DWORD received = 0;
         if (!WinHttpReadData(request, body.data() + offset, available, &received))
         {
-            error = "Authentication service response could not be read";
+            error = "Account service response could not be read";
             return false;
         }
         body.resize(offset + received);
     }
 }
 
-bool ExtractJwtMetadata(const std::string& token, int64_t& expiration,
-                        std::string& sessionId)
+struct ParsedUrl {
+    std::wstring host;
+    INTERNET_PORT port = INTERNET_DEFAULT_HTTPS_PORT;
+    std::wstring path;
+    bool isHttps = true;
+};
+
+bool ParseHttpsUrl(const std::string& urlString, ParsedUrl& parsed, std::string& error)
 {
-    expiration = 0;
-    sessionId.clear();
-    const size_t first = token.find('.');
-    const size_t second = first == std::string::npos ? std::string::npos : token.find('.', first + 1);
-    if (first == std::string::npos || second == std::string::npos || second <= first + 1)
-        return false;
-    std::vector<uint8_t> decoded;
-    if (!Base64UrlDecode(token.substr(first + 1, second - first - 1), decoded) ||
-        decoded.size() > 64 * 1024)
-        return false;
-    try
+    parsed = {};
+    if (urlString.empty() || urlString.size() > 2048)
     {
-        const auto payload = nlohmann::json::parse(decoded.begin(), decoded.end());
-        if (payload.contains("exp") && payload["exp"].is_number_integer())
-            expiration = payload["exp"].get<int64_t>();
-        if (payload.contains("sid") && payload["sid"].is_string())
-            sessionId = payload["sid"].get<std::string>();
-    }
-    catch (...)
-    {
-        SecureZeroMemory(decoded.data(), decoded.size());
+        error = "Invalid endpoint URL";
         return false;
     }
-    SecureZeroMemory(decoded.data(), decoded.size());
-    return IsSafeIdentifier(sessionId, 256) && expiration > 0;
+    const std::wstring wideUrl(urlString.begin(), urlString.end());
+    URL_COMPONENTS components{};
+    components.dwStructSize = sizeof(components);
+    components.dwSchemeLength = static_cast<DWORD>(-1);
+    components.dwHostNameLength = static_cast<DWORD>(-1);
+    components.dwUrlPathLength = static_cast<DWORD>(-1);
+    components.dwExtraInfoLength = static_cast<DWORD>(-1);
+
+    if (!WinHttpCrackUrl(wideUrl.c_str(), static_cast<DWORD>(wideUrl.size()), 0, &components))
+    {
+        error = "Invalid endpoint URL format";
+        return false;
+    }
+
+    if (components.nScheme != INTERNET_SCHEME_HTTPS && components.nScheme != INTERNET_SCHEME_HTTP)
+    {
+        error = "Endpoint must use HTTPS";
+        return false;
+    }
+
+    // In production account flows, reject non-HTTPS except for local loopback tests
+    if (components.nScheme != INTERNET_SCHEME_HTTPS)
+    {
+        const std::wstring host(components.lpszHostName, components.dwHostNameLength);
+        if (host != L"127.0.0.1" && host != L"localhost")
+        {
+            error = "Account service endpoint must use HTTPS";
+            return false;
+        }
+        parsed.isHttps = false;
+    }
+    else
+    {
+        parsed.isHttps = true;
+    }
+
+    parsed.host.assign(components.lpszHostName, components.dwHostNameLength);
+    parsed.port = components.nPort;
+    parsed.path.assign(components.lpszUrlPath, components.dwUrlPathLength + components.dwExtraInfoLength);
+    if (parsed.path.empty()) parsed.path = L"/";
+    return true;
 }
 
-bool ParseTokenResponse(const std::string& body, AuthTokenResponse& response,
+bool ExecuteHttpRequest(const std::string& url,
+                        const wchar_t* method,
+                        const std::wstring& customHeaders,
+                        const std::string& requestBody,
+                        std::string& responseBody,
+                        DWORD& statusCode,
                         std::string& error)
+{
+    responseBody.clear();
+    statusCode = 0;
+    error.clear();
+
+    ParsedUrl parsedUrl;
+    if (!ParseHttpsUrl(url, parsedUrl, error))
+        return false;
+
+    HINTERNET session = WinHttpOpen(L"OpenReverse/2.0 Account",
+                                    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session)
+    {
+        error = "HTTPS session could not be created";
+        return false;
+    }
+    WinHttpSetTimeouts(session, 10000, 10000, 10000, 15000);
+
+    HINTERNET connection = WinHttpConnect(session, parsedUrl.host.c_str(), parsedUrl.port, 0);
+    DWORD openFlags = parsedUrl.isHttps ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = connection ? WinHttpOpenRequest(connection, method, parsedUrl.path.c_str(),
+        nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, openFlags) : nullptr;
+
+    bool success = false;
+    if (request)
+    {
+        DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY,
+                         &redirectPolicy, sizeof(redirectPolicy));
+
+        const wchar_t* headersPtr = customHeaders.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : customHeaders.c_str();
+        DWORD headersLength = customHeaders.empty() ? 0 : static_cast<DWORD>(customHeaders.size());
+
+        void* bodyPtr = requestBody.empty() ? nullptr : const_cast<char*>(requestBody.data());
+        DWORD bodyLength = static_cast<DWORD>(requestBody.size());
+
+        success = WinHttpSendRequest(request, headersPtr, headersLength,
+                                     bodyPtr, bodyLength, bodyLength, 0) &&
+                  WinHttpReceiveResponse(request, nullptr);
+
+        if (success)
+        {
+            DWORD status = 0;
+            DWORD size = sizeof(status);
+            success = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                          WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) &&
+                      ReadHttpResponse(request, responseBody, error);
+            if (success) statusCode = status;
+        }
+    }
+
+    if (!success && error.empty()) error = "HTTPS request to account service failed";
+    if (request) WinHttpCloseHandle(request);
+    if (connection) WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return success;
+}
+
+bool ParseSupabaseTokenResponse(const std::string& body, AuthTokenResponse& response, std::string& error)
 {
     ClearAuthTokenResponse(response);
     try
     {
         const auto document = nlohmann::json::parse(body);
-        if (!document.is_object() || !document.contains("access_token") ||
-            !document["access_token"].is_string() || !document.contains("refresh_token") ||
-            !document["refresh_token"].is_string() || !document.contains("user") ||
-            !document["user"].is_object())
-            throw std::runtime_error("missing authentication response fields");
-        const auto& user = document["user"];
-        if (!user.contains("email") || !user["email"].is_string() ||
-            !user.contains("id") || !user["id"].is_string())
-            throw std::runtime_error("missing user identity fields");
+        if (!document.is_object() ||
+            !document.contains("access_token") || !document["access_token"].is_string() ||
+            !document.contains("refresh_token") || !document["refresh_token"].is_string() ||
+            !document.contains("user") || !document["user"].is_object())
+        {
+            error = "Authentication response is missing required token fields";
+            return false;
+        }
+
+        const auto& userObj = document["user"];
+        if (!userObj.contains("id") || !userObj["id"].is_string())
+        {
+            error = "Authentication response is missing user identity";
+            return false;
+        }
+
+        const std::string userId = userObj["id"].get<std::string>();
+        if (!IsValidUuid(userId))
+        {
+            error = "Authentication response contains an invalid user UUID";
+            return false;
+        }
+
         response.accessToken = document["access_token"].get<std::string>();
         response.refreshToken = document["refresh_token"].get<std::string>();
-        response.user.email = user["email"].get<std::string>();
-        response.user.userId = user["id"].get<std::string>();
+        response.user.id = userId;
+
+        if (userObj.contains("email") && userObj["email"].is_string())
+            response.user.email = userObj["email"].get<std::string>();
+
+        if (userObj.contains("user_metadata") && userObj["user_metadata"].is_object())
+        {
+            const auto& meta = userObj["user_metadata"];
+            if (meta.contains("display_name") && meta["display_name"].is_string())
+                response.user.displayName = meta["display_name"].get<std::string>();
+            else if (meta.contains("name") && meta["name"].is_string())
+                response.user.displayName = meta["name"].get<std::string>();
+
+            if (meta.contains("avatar_url") && meta["avatar_url"].is_string())
+                response.user.avatarUrl = meta["avatar_url"].get<std::string>();
+        }
+
+        int64_t expiresIn = 3600;
+        if (document.contains("expires_in") && document["expires_in"].is_number_integer())
+            expiresIn = document["expires_in"].get<int64_t>();
+        response.expiresAtUnix = CurrentTimeUnix() + expiresIn;
+
         if (response.accessToken.empty() || response.accessToken.size() > 64 * 1024 ||
-            response.refreshToken.empty() || response.refreshToken.size() > 2048 ||
-            response.user.email.size() > 512 || response.user.userId.size() > 512 ||
-            !ExtractJwtMetadata(response.accessToken, response.expiresAtUnix,
-                                response.sessionId))
-            throw std::runtime_error("authentication response exceeds limits");
+            response.refreshToken.empty() || response.refreshToken.size() > 4096 ||
+            response.user.email.size() > 512 || response.user.displayName.size() > 256)
+        {
+            ClearAuthTokenResponse(response);
+            error = "Authentication tokens exceed safe size limits";
+            return false;
+        }
     }
     catch (...)
     {
         ClearAuthTokenResponse(response);
-        error = "Authentication service returned an invalid bounded response";
+        error = "Failed to parse authentication response";
+        return false;
+    }
+    return true;
+}
+
+bool ParseAccountSnapshotResponse(const std::string& body,
+                                  const std::string& expectedUserId,
+                                  AccountSnapshot& snapshot,
+                                  std::string& error)
+{
+    ClearAccountSnapshot(snapshot);
+    try
+    {
+        const auto document = nlohmann::json::parse(body);
+        if (!document.is_object() ||
+            !document.contains("user") || !document["user"].is_object() ||
+            !document.contains("subscription") || !document["subscription"].is_object())
+        {
+            error = "Account endpoint returned a malformed response";
+            return false;
+        }
+
+        const auto& userObj = document["user"];
+        if (!userObj.contains("id") || !userObj["id"].is_string())
+        {
+            error = "Account profile missing canonical user ID";
+            return false;
+        }
+
+        const std::string userId = userObj["id"].get<std::string>();
+        if (!IsValidUuid(userId))
+        {
+            error = "Account profile contains invalid user UUID";
+            return false;
+        }
+
+        if (!expectedUserId.empty() && userId != expectedUserId)
+        {
+            error = "Account identity mismatch between auth session and profile";
+            return false;
+        }
+
+        snapshot.user.id = userId;
+        if (userObj.contains("email") && userObj["email"].is_string())
+            snapshot.user.email = userObj["email"].get<std::string>();
+        if (userObj.contains("display_name") && userObj["display_name"].is_string())
+            snapshot.user.displayName = userObj["display_name"].get<std::string>();
+        if (userObj.contains("avatar_url") && userObj["avatar_url"].is_string())
+            snapshot.user.avatarUrl = userObj["avatar_url"].get<std::string>();
+
+        const auto& subObj = document["subscription"];
+        std::string plan = "community";
+        if (subObj.contains("plan") && subObj["plan"].is_string())
+            plan = subObj["plan"].get<std::string>();
+
+        std::string status;
+        if (subObj.contains("status") && subObj["status"].is_string())
+            status = subObj["status"].get<std::string>();
+
+        bool isProActive = false;
+        if (subObj.contains("is_pro_active") && subObj["is_pro_active"].is_boolean())
+            isProActive = subObj["is_pro_active"].get<bool>();
+
+        std::string currentPeriodEnd;
+        if (subObj.contains("current_period_end") && subObj["current_period_end"].is_string())
+            currentPeriodEnd = subObj["current_period_end"].get<std::string>();
+
+        bool cancelAtPeriodEnd = false;
+        if (subObj.contains("cancel_at_period_end") && subObj["cancel_at_period_end"].is_boolean())
+            cancelAtPeriodEnd = subObj["cancel_at_period_end"].get<bool>();
+
+        snapshot.subscription.plan = plan;
+        snapshot.subscription.status = status;
+        snapshot.subscription.currentPeriodEnd = currentPeriodEnd;
+        snapshot.subscription.cancelAtPeriodEnd = cancelAtPeriodEnd;
+
+        // Commercial fail-closed rule:
+        // is_pro_active must be true ONLY if plan is "pro" and status is active/trialing.
+        // Inconsistent state (e.g. plan == "community" but is_pro_active == true) fails closed.
+        if (isProActive && plan == "pro" && (status == "active" || status == "trialing"))
+        {
+            snapshot.subscription.isProActive = true;
+        }
+        else
+        {
+            snapshot.subscription.isProActive = false;
+        }
+
+        if (snapshot.user.email.size() > 512 || snapshot.user.displayName.size() > 256 ||
+            snapshot.subscription.plan.size() > 64 || snapshot.subscription.status.size() > 64)
+        {
+            ClearAccountSnapshot(snapshot);
+            error = "Account data exceeds safe bounds";
+            return false;
+        }
+    }
+    catch (...)
+    {
+        ClearAccountSnapshot(snapshot);
+        error = "Failed to parse account snapshot";
         return false;
     }
     return true;
@@ -179,182 +380,260 @@ bool ParseTokenResponse(const std::string& body, AuthTokenResponse& response,
 
 } // namespace
 
-WorkOSAccountApi::WorkOSAccountApi(std::string clientId) : clientId_(std::move(clientId)) {}
-
-WorkOSAccountApi WorkOSAccountApi::FromEnvironment()
+bool IsValidUuid(const std::string& value)
 {
-    std::array<char, 512> value{};
-    const DWORD length = GetEnvironmentVariableA("OPENREVERSE_WORKOS_CLIENT_ID", value.data(),
-                                                  static_cast<DWORD>(value.size()));
-    if (length == 0 || length >= value.size()) return WorkOSAccountApi({});
-    return WorkOSAccountApi(std::string(value.data(), length));
-}
-
-bool WorkOSAccountApi::IsConfigured() const
-{
-    return clientId_.rfind("client_", 0) == 0 && IsSafeIdentifier(clientId_, 256);
-}
-
-bool WorkOSAccountApi::BuildAuthorizationUrl(const std::string& redirectUri,
-                                              const std::string& state,
-                                              const std::string& codeChallenge,
-                                              std::string& url,
-                                              std::string& error) const
-{
-    url.clear();
-    error.clear();
-    if (!IsConfigured())
+    if (value.size() != 36) return false;
+    for (size_t i = 0; i < 36; ++i)
     {
-        error = "A public WorkOS desktop client ID is not configured";
-        return false;
+        if (i == 8 || i == 13 || i == 18 || i == 23)
+        {
+            if (value[i] != '-') return false;
+        }
+        else
+        {
+            if (!std::isxdigit(static_cast<unsigned char>(value[i]))) return false;
+        }
     }
-    if (!IsValidLoopbackRedirect(redirectUri) || !IsBase64UrlValue(state, 43) ||
-        !IsBase64UrlValue(codeChallenge, 43))
-    {
-        error = "Authentication redirect, state, or PKCE challenge is invalid";
-        return false;
-    }
-    url = std::string(kAuthorizationEndpoint) +
-        "?response_type=code&provider=authkit&client_id=" + UrlEncode(clientId_) +
-        "&redirect_uri=" + UrlEncode(redirectUri) +
-        "&state=" + UrlEncode(state) +
-        "&code_challenge_method=S256&code_challenge=" + UrlEncode(codeChallenge);
     return true;
 }
 
-bool WorkOSAccountApi::ExchangeAuthorizationCode(const std::string& code,
-                                                  const std::string& codeVerifier,
-                                                  const std::string&,
-                                                  AuthTokenResponse& response,
-                                                  std::string& error)
+SupabaseAccountApi::SupabaseAccountApi(AccountServiceConfig config)
+    : config_(std::move(config))
 {
-    if (!IsConfigured() || code.empty() || code.size() > 2048 ||
-        !IsValidPkceVerifier(codeVerifier))
-    {
-        error = "Authorization code exchange input is invalid";
-        return false;
-    }
-    nlohmann::json body = {
-        {"client_id", clientId_},
-        {"grant_type", "authorization_code"},
-        {"code", code},
-        {"code_verifier", codeVerifier}
-    };
-    std::string serialized = body.dump();
-    const bool result = Authenticate(serialized, response, error);
-    SecureClear(serialized);
-    return result;
 }
 
-bool WorkOSAccountApi::Refresh(const std::string& refreshToken,
-                               AuthTokenResponse& response, std::string& error)
+SupabaseAccountApi SupabaseAccountApi::FromEnvironment()
 {
-    if (!IsConfigured() || refreshToken.empty() || refreshToken.size() > 2048)
-    {
-        error = "Stored account refresh input is invalid";
-        return false;
-    }
-    nlohmann::json body = {
-        {"client_id", clientId_},
-        {"grant_type", "refresh_token"},
-        {"refresh_token", refreshToken}
-    };
-    std::string serialized = body.dump();
-    const bool result = Authenticate(serialized, response, error);
-    SecureClear(serialized);
-    return result;
+    AccountServiceConfig config;
+    config.supabaseUrl = GetEnvVar("OPENREVERSE_SUPABASE_URL");
+    if (config.supabaseUrl.empty()) config.supabaseUrl = kDefaultSupabaseUrl;
+
+    config.supabasePublishableKey = GetEnvVar("OPENREVERSE_SUPABASE_ANON_KEY");
+    if (config.supabasePublishableKey.empty())
+        config.supabasePublishableKey = GetEnvVar("OPENREVERSE_SUPABASE_PUBLISHABLE_KEY");
+    if (config.supabasePublishableKey.empty()) config.supabasePublishableKey = kDefaultSupabaseKey;
+
+    config.accountApiBaseUrl = GetEnvVar("OPENREVERSE_ACCOUNT_API_URL");
+    if (config.accountApiBaseUrl.empty())
+        config.accountApiBaseUrl = GetEnvVar("OPENREVERSE_WEBSITE_URL");
+    if (config.accountApiBaseUrl.empty()) config.accountApiBaseUrl = kDefaultAccountApiBaseUrl;
+
+    config.signupUrl = config.accountApiBaseUrl + "/signup";
+    config.accountManageUrl = config.accountApiBaseUrl + "/account";
+    config.billingManageUrl = config.accountApiBaseUrl + "/account";
+    return SupabaseAccountApi(std::move(config));
 }
 
-bool WorkOSAccountApi::BuildLogoutUrl(const std::string& sessionId,
-                                       std::string& url, std::string& error) const
+bool SupabaseAccountApi::IsConfigured() const
 {
-    url.clear();
-    error.clear();
-    if (!IsSafeIdentifier(sessionId, 256))
-    {
-        error = "Account session identifier is unavailable for remote logout";
-        return false;
-    }
-    url = std::string(kLogoutEndpoint) + "?session_id=" + UrlEncode(sessionId);
-    return true;
+    return !config_.supabaseUrl.empty() && !config_.supabasePublishableKey.empty() &&
+           !config_.accountApiBaseUrl.empty();
 }
 
-bool WorkOSAccountApi::Authenticate(const std::string& body,
-                                     AuthTokenResponse& response, std::string& error)
+bool SupabaseAccountApi::SignInWithPassword(const std::string& email,
+                                            const std::string& password,
+                                            AuthTokenResponse& response,
+                                            std::string& error)
 {
     ClearAuthTokenResponse(response);
     error.clear();
-    if (body.empty() || body.size() > 16 * 1024)
+
+    if (!IsConfigured())
     {
-        error = "Authentication request exceeds limits";
+        error = "Account service is not configured";
         return false;
     }
-    HINTERNET session = WinHttpOpen(L"OpenReverse/2.0 Auth", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session)
+
+    if (email.empty() || email.size() > 512 || password.empty() || password.size() > 512)
     {
-        error = "Authentication HTTPS session could not be created";
+        error = "Invalid email or password input";
         return false;
     }
-    WinHttpSetTimeouts(session, 10000, 10000, 10000, 15000);
-    HINTERNET connection = WinHttpConnect(session, kApiHost, INTERNET_DEFAULT_HTTPS_PORT, 0);
-    HINTERNET request = connection ? WinHttpOpenRequest(connection, L"POST", kAuthenticationPath,
-        nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
-    bool success = false;
+
+    nlohmann::json requestJson = {
+        {"email", email},
+        {"password", password}
+    };
+    std::string requestBody = requestJson.dump();
+
+    std::string endpoint = config_.supabaseUrl;
+    if (endpoint.back() == '/') endpoint.pop_back();
+    endpoint += "/auth/v1/token?grant_type=password";
+
+    std::wstring headers = L"Content-Type: application/json\r\nAccept: application/json\r\n";
+    headers += L"apikey: " + std::wstring(config_.supabasePublishableKey.begin(), config_.supabasePublishableKey.end()) + L"\r\n";
+
     std::string responseBody;
-    if (request)
+    DWORD statusCode = 0;
+    const bool executed = ExecuteHttpRequest(endpoint, L"POST", headers, requestBody, responseBody, statusCode, error);
+    SecureClear(requestBody);
+
+    if (!executed) return false;
+
+    if (statusCode != 200)
     {
-        DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-        if (!WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY,
-                              &redirectPolicy, sizeof(redirectPolicy)))
+        std::string errDetail;
+        try
         {
-            error = "Authentication HTTPS redirect policy could not be applied";
+            const auto doc = nlohmann::json::parse(responseBody);
+            if (doc.contains("error_description") && doc["error_description"].is_string())
+                errDetail = doc["error_description"].get<std::string>();
+            else if (doc.contains("msg") && doc["msg"].is_string())
+                errDetail = doc["msg"].get<std::string>();
         }
-        const wchar_t headers[] = L"Content-Type: application/json\r\nAccept: application/json\r\n";
-        success = error.empty() && WinHttpSendRequest(request, headers, static_cast<DWORD>(-1L),
-            const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
-            static_cast<DWORD>(body.size()), 0) && WinHttpReceiveResponse(request, nullptr);
-        if (success)
-        {
-            DWORD status = 0;
-            DWORD size = sizeof(status);
-            success = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE |
-                WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size,
-                WINHTTP_NO_HEADER_INDEX) && ReadHttpResponse(request, responseBody, error);
-            if (success && status != 200)
-            {
-                std::string code;
-                try
-                {
-                    const auto responseDocument = nlohmann::json::parse(responseBody);
-                    if (responseDocument.contains("error") &&
-                        responseDocument["error"].is_string())
-                        code = responseDocument["error"].get<std::string>();
-                }
-                catch (...) {}
-                error = "Authentication service rejected the request";
-                if (IsSafeIdentifier(code, 64)) error += " (" + code + ")";
-                success = false;
-            }
-        }
+        catch (...) {}
+        SecureClear(responseBody);
+
+        if (statusCode == 400 || statusCode == 401)
+            error = errDetail.empty() ? "Invalid email or password." : errDetail;
+        else
+            error = "Authentication failed (server error " + std::to_string(statusCode) + ")";
+        return false;
     }
-    if (!success && error.empty()) error = "Authentication HTTPS request failed";
-    if (success) success = ParseTokenResponse(responseBody, response, error);
+
+    const bool parsed = ParseSupabaseTokenResponse(responseBody, response, error);
     SecureClear(responseBody);
-    if (request) WinHttpCloseHandle(request);
-    if (connection) WinHttpCloseHandle(connection);
-    WinHttpCloseHandle(session);
-    return success;
+    return parsed;
+}
+
+bool SupabaseAccountApi::RefreshSession(const std::string& refreshToken,
+                                        AuthTokenResponse& response,
+                                        std::string& error)
+{
+    ClearAuthTokenResponse(response);
+    error.clear();
+
+    if (!IsConfigured())
+    {
+        error = "Account service is not configured";
+        return false;
+    }
+
+    if (refreshToken.empty() || refreshToken.size() > 4096)
+    {
+        error = "Stored session token is invalid";
+        return false;
+    }
+
+    nlohmann::json requestJson = {
+        {"refresh_token", refreshToken}
+    };
+    std::string requestBody = requestJson.dump();
+
+    std::string endpoint = config_.supabaseUrl;
+    if (endpoint.back() == '/') endpoint.pop_back();
+    endpoint += "/auth/v1/token?grant_type=refresh_token";
+
+    std::wstring headers = L"Content-Type: application/json\r\nAccept: application/json\r\n";
+    headers += L"apikey: " + std::wstring(config_.supabasePublishableKey.begin(), config_.supabasePublishableKey.end()) + L"\r\n";
+
+    std::string responseBody;
+    DWORD statusCode = 0;
+    const bool executed = ExecuteHttpRequest(endpoint, L"POST", headers, requestBody, responseBody, statusCode, error);
+    SecureClear(requestBody);
+
+    if (!executed) return false;
+
+    if (statusCode != 200)
+    {
+        SecureClear(responseBody);
+        error = "Session expired or revoked (status " + std::to_string(statusCode) + ")";
+        return false;
+    }
+
+    const bool parsed = ParseSupabaseTokenResponse(responseBody, response, error);
+    SecureClear(responseBody);
+    return parsed;
+}
+
+bool SupabaseAccountApi::SignOut(const std::string& accessToken,
+                                 std::string& error)
+{
+    error.clear();
+    if (!IsConfigured() || accessToken.empty()) return true;
+
+    std::string endpoint = config_.supabaseUrl;
+    if (endpoint.back() == '/') endpoint.pop_back();
+    endpoint += "/auth/v1/logout";
+
+    std::wstring headers = L"Content-Type: application/json\r\nAccept: application/json\r\n";
+    headers += L"apikey: " + std::wstring(config_.supabasePublishableKey.begin(), config_.supabasePublishableKey.end()) + L"\r\n";
+    headers += L"Authorization: Bearer " + std::wstring(accessToken.begin(), accessToken.end()) + L"\r\n";
+
+    std::string responseBody;
+    DWORD statusCode = 0;
+    ExecuteHttpRequest(endpoint, L"POST", headers, "{}", responseBody, statusCode, error);
+    SecureClear(responseBody);
+    return true;
+}
+
+bool SupabaseAccountApi::GetAccountProfile(const std::string& accessToken,
+                                           const std::string& expectedUserId,
+                                           AccountSnapshot& snapshot,
+                                           std::string& error)
+{
+    ClearAccountSnapshot(snapshot);
+    error.clear();
+
+    if (!IsConfigured())
+    {
+        error = "Account service is not configured";
+        return false;
+    }
+
+    if (accessToken.empty() || accessToken.size() > 64 * 1024)
+    {
+        error = "Invalid access token for account request";
+        return false;
+    }
+
+    std::string endpoint = config_.accountApiBaseUrl;
+    if (endpoint.back() == '/') endpoint.pop_back();
+    endpoint += "/api/me";
+
+    std::wstring headers = L"Accept: application/json\r\n";
+    headers += L"Authorization: Bearer " + std::wstring(accessToken.begin(), accessToken.end()) + L"\r\n";
+
+    std::string responseBody;
+    DWORD statusCode = 0;
+    const bool executed = ExecuteHttpRequest(endpoint, L"GET", headers, "", responseBody, statusCode, error);
+
+    if (!executed) return false;
+
+    if (statusCode != 200)
+    {
+        SecureClear(responseBody);
+        error = "Account profile verification failed (status " + std::to_string(statusCode) + ")";
+        return false;
+    }
+
+    const bool parsed = ParseAccountSnapshotResponse(responseBody, expectedUserId, snapshot, error);
+    SecureClear(responseBody);
+    return parsed;
 }
 
 void ClearAuthTokenResponse(AuthTokenResponse& response)
 {
     SecureClear(response.accessToken);
     SecureClear(response.refreshToken);
+    SecureClear(response.user.id);
     SecureClear(response.user.email);
-    SecureClear(response.user.userId);
-    SecureClear(response.sessionId);
+    SecureClear(response.user.displayName);
+    SecureClear(response.user.avatarUrl);
     response.expiresAtUnix = 0;
+}
+
+void ClearAccountSnapshot(AccountSnapshot& snapshot)
+{
+    SecureClear(snapshot.user.id);
+    SecureClear(snapshot.user.email);
+    SecureClear(snapshot.user.displayName);
+    SecureClear(snapshot.user.avatarUrl);
+    snapshot.subscription.plan = "community";
+    snapshot.subscription.status.clear();
+    snapshot.subscription.isProActive = false;
+    snapshot.subscription.currentPeriodEnd.clear();
+    snapshot.subscription.cancelAtPeriodEnd = false;
 }
 
 } // namespace openreverse::auth

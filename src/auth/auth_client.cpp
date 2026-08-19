@@ -1,6 +1,6 @@
 #include "auth_client.h"
+#include "pkce.h"
 
-#include <chrono>
 #include <utility>
 
 namespace openreverse::auth {
@@ -9,7 +9,7 @@ namespace {
 
 std::shared_ptr<IAccountApi> CreateDefaultApi()
 {
-    return std::make_shared<WorkOSAccountApi>(WorkOSAccountApi::FromEnvironment());
+    return std::make_shared<SupabaseAccountApi>(SupabaseAccountApi::FromEnvironment());
 }
 
 std::shared_ptr<IAccountCredentialStore> CreateDefaultCredentialStore()
@@ -30,78 +30,51 @@ DesktopAuthClient::DesktopAuthClient(
     : api_(std::move(api)), credentials_(std::move(credentials)),
       session_(api_, credentials_)
 {
+    // Attempt non-blocking startup restore in background
     std::string ignored;
-    session_.RestoreStoredSession(ignored);
+    StartRefresh(ignored);
 }
 
 DesktopAuthClient::~DesktopAuthClient()
 {
-    CancelLogin();
     JoinWorker();
 }
 
-bool DesktopAuthClient::StartLogin(std::string& authorizationUrl, std::string& error)
+bool DesktopAuthClient::StartPasswordLogin(std::string email, std::string password, std::string& error)
 {
-    authorizationUrl.clear();
     error.clear();
-    CancelLogin();
     JoinFinishedWorker();
-    if (!callbackServer_.Start(error)) return false;
-
-    AuthLaunch launch;
-    if (!session_.BeginLogin(callbackServer_.CallbackUri(),
-                             AuthSession::TimePoint::clock::now(), launch, error))
+    if (workerActive_.load())
     {
-        callbackServer_.Stop();
+        error = "Another account operation is already active.";
+        SecureClear(password);
         return false;
     }
 
-    authorizationUrl = std::move(launch.authorizationUrl);
-    cancelled_.store(false);
     workerActive_.store(true);
     try
     {
         std::lock_guard<std::mutex> lock(workerMutex_);
-        worker_ = std::thread([this]() {
+        worker_ = std::thread([this, userEmail = std::move(email), userPass = std::move(password)]() mutable {
             try
             {
-                std::string requestTarget;
-                std::string listenerError;
-                const bool received = callbackServer_.WaitForRequest(
-                    AuthSession::LoginTimeout(), cancelled_, requestTarget, listenerError);
-                callbackServer_.Stop();
-                if (!cancelled_.load())
-                {
-                    if (received)
-                    {
-                        std::string callbackError;
-                        session_.ProcessCallback(requestTarget,
-                            AuthSession::TimePoint::clock::now(), callbackError);
-                    }
-                    else if (!session_.CheckTimeout(AuthSession::TimePoint::clock::now()))
-                    {
-                        session_.FailOperation(listenerError.empty()
-                            ? "Authentication callback failed." : listenerError);
-                    }
-                }
+                std::string loginError;
+                session_.SignInWithPassword(userEmail, userPass, loginError);
             }
             catch (...)
             {
-                callbackServer_.Stop();
-                if (!cancelled_.load())
-                    session_.FailOperation("Authentication operation failed safely.");
+                session_.FailOperation("Authentication operation failed unexpectedly.");
             }
+            SecureClear(userPass);
             workerActive_.store(false);
         });
     }
     catch (...)
     {
-        cancelled_.store(true);
         workerActive_.store(false);
-        callbackServer_.Stop();
-        session_.CancelLogin();
-        authorizationUrl.clear();
-        error = "Authentication worker could not be started";
+        SecureClear(password);
+        error = "Could not start sign-in worker thread.";
+        session_.FailOperation(error);
         return false;
     }
     return true;
@@ -113,10 +86,10 @@ bool DesktopAuthClient::StartRefresh(std::string& error)
     JoinFinishedWorker();
     if (workerActive_.load())
     {
-        error = "Another account operation is already active";
+        error = "Another account operation is already active.";
         return false;
     }
-    cancelled_.store(false);
+
     workerActive_.store(true);
     try
     {
@@ -124,12 +97,12 @@ bool DesktopAuthClient::StartRefresh(std::string& error)
         worker_ = std::thread([this]() {
             try
             {
-                std::string ignored;
-                session_.RefreshStoredSession(ignored);
+                std::string refreshError;
+                session_.RestoreStoredSession(refreshError);
             }
             catch (...)
             {
-                session_.FailOperation("Account refresh failed safely.");
+                session_.FailOperation("Session restoration failed unexpectedly.");
             }
             workerActive_.store(false);
         });
@@ -137,31 +110,73 @@ bool DesktopAuthClient::StartRefresh(std::string& error)
     catch (...)
     {
         workerActive_.store(false);
-        session_.FailOperation("Account refresh worker could not be started.");
-        error = "Account refresh worker could not be started";
+        error = "Could not start session restoration worker thread.";
         return false;
     }
     return true;
 }
 
-void DesktopAuthClient::CancelLogin()
+bool DesktopAuthClient::StartProfileRefresh(std::string& error)
 {
-    cancelled_.store(true);
-    callbackServer_.Stop();
-    session_.CancelLogin();
-    JoinWorker();
-    workerActive_.store(false);
+    error.clear();
+    JoinFinishedWorker();
+    if (workerActive_.load())
+    {
+        error = "Another account operation is already active.";
+        return false;
+    }
+
+    workerActive_.store(true);
+    try
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        worker_ = std::thread([this]() {
+            try
+            {
+                std::string profileError;
+                session_.RefreshAccountSnapshot(profileError);
+            }
+            catch (...)
+            {
+                session_.FailOperation("Profile refresh failed unexpectedly.");
+            }
+            workerActive_.store(false);
+        });
+    }
+    catch (...)
+    {
+        workerActive_.store(false);
+        error = "Could not start profile refresh worker thread.";
+        return false;
+    }
+    return true;
 }
 
-bool DesktopAuthClient::Logout(std::string& providerLogoutUrl, std::string& error)
+bool DesktopAuthClient::SignOut(std::string& error)
 {
-    CancelLogin();
-    return session_.Logout(providerLogoutUrl, error);
+    JoinWorker();
+    return session_.SignOut(error);
 }
 
 AuthStatus DesktopAuthClient::Status() const
 {
     return session_.Status();
+}
+
+AccountSnapshot DesktopAuthClient::Snapshot() const
+{
+    return session_.Snapshot();
+}
+
+bool DesktopAuthClient::IsProActive() const
+{
+    return session_.IsProActive();
+}
+
+const AccountServiceConfig& DesktopAuthClient::Config() const
+{
+    static const AccountServiceConfig kEmptyConfig{};
+    return api_ ? api_->Config() : kEmptyConfig;
 }
 
 void DesktopAuthClient::JoinFinishedWorker()

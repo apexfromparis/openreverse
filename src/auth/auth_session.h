@@ -14,27 +14,27 @@ namespace openreverse::auth {
 
 enum class AuthState {
     SignedOut,
-    StartingLogin,
-    WaitingForBrowser,
-    ProcessingCallback,
-    ExchangingCode,
+    SigningIn,
     SignedIn,
     Refreshing,
     ReauthenticationRequired,
     Error,
-    LoggingOut
+    SigningOut
 };
 
 struct AuthStatus {
     AuthState state = AuthState::SignedOut;
     std::string email;
+    std::string displayName;
+    std::string userId;
+    std::string plan = "community";
+    std::string subscriptionStatus;
+    bool isProActive = false;
+    std::string currentPeriodEnd;
+    bool cancelAtPeriodEnd = false;
     std::string message;
     int64_t accessTokenExpiresAtUnix = 0;
     bool providerConfigured = false;
-};
-
-struct AuthLaunch {
-    std::string authorizationUrl;
 };
 
 class AuthSession {
@@ -49,46 +49,31 @@ public:
     AuthSession& operator=(const AuthSession&) = delete;
 
     bool RestoreStoredSession(std::string& error);
-    bool BeginLogin(const std::string& callbackUri, TimePoint now,
-                    AuthLaunch& launch, std::string& error);
-    bool ProcessCallback(const std::string& requestTarget, TimePoint now,
-                         std::string& error);
-    bool CheckTimeout(TimePoint now);
-    void CancelLogin();
-    void FailOperation(const std::string& message);
+    bool SignInWithPassword(const std::string& email,
+                            const std::string& password,
+                            std::string& error);
     bool RefreshStoredSession(std::string& error);
-    bool Logout(std::string& providerLogoutUrl, std::string& error);
+    bool RefreshAccountSnapshot(std::string& error);
+    bool SignOut(std::string& error);
+    void FailOperation(const std::string& message);
 
     AuthStatus Status() const;
+    AccountSnapshot Snapshot() const;
+    bool IsProActive() const;
     static const char* StateName(AuthState state);
-    static constexpr std::chrono::minutes LoginTimeout() { return std::chrono::minutes(5); }
 
 private:
-    struct PendingAuth {
-        std::string state;
-        std::string codeVerifier;
-        std::string callbackUri;
-        TimePoint createdAt;
-        AuthState cancelState = AuthState::SignedOut;
-    };
-
-    void InvalidatePendingLocked();
     void ClearActiveSessionLocked();
-    bool ApplyTokenResponse(uint64_t generation, AuthTokenResponse& response,
-                            std::string& error);
+    bool ApplyTokenResponseLocked(AuthTokenResponse& response, std::string& error);
 
     std::shared_ptr<IAccountApi> api_;
     std::shared_ptr<IAccountCredentialStore> credentials_;
     mutable std::mutex mutex_;
     AuthState state_ = AuthState::SignedOut;
     std::string message_ = "Not signed in.";
-    std::string email_;
-    std::string userId_;
-    std::string sessionId_;
     std::string accessToken_;
     int64_t accessTokenExpiresAtUnix_ = 0;
-    std::optional<PendingAuth> pending_;
-    uint64_t generation_ = 0;
+    AccountSnapshot snapshot_;
 };
 
 } // namespace openreverse::auth

@@ -1,31 +1,10 @@
 #include "auth_session.h"
-
-#include "auth_callback.h"
 #include "pkce.h"
-
-#include <windows.h>
 
 #include <algorithm>
 #include <utility>
 
 namespace openreverse::auth {
-
-namespace {
-
-bool ConstantTimeEqual(const std::string& left, const std::string& right)
-{
-    size_t difference = left.size() ^ right.size();
-    const size_t length = (std::max)(left.size(), right.size());
-    for (size_t index = 0; index < length; ++index)
-    {
-        const unsigned char a = index < left.size() ? left[index] : 0;
-        const unsigned char b = index < right.size() ? right[index] : 0;
-        difference |= a ^ b;
-    }
-    return difference == 0;
-}
-
-} // namespace
 
 AuthSession::AuthSession(std::shared_ptr<IAccountApi> api,
                          std::shared_ptr<IAccountCredentialStore> credentials)
@@ -36,376 +15,339 @@ AuthSession::AuthSession(std::shared_ptr<IAccountApi> api,
 AuthSession::~AuthSession()
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    InvalidatePendingLocked();
     ClearActiveSessionLocked();
 }
 
 bool AuthSession::RestoreStoredSession(std::string& error)
 {
-    StoredAccountCredential stored;
-    const CredentialReadResult result = credentials_->Read(stored, error);
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (result == CredentialReadResult::Missing)
+    error.clear();
+    StoredAccountCredential credential;
+    std::string readError;
+    const CredentialReadResult readResult = credentials_
+        ? credentials_->Read(credential, readError) : CredentialReadResult::Missing;
+
+    if (readResult == CredentialReadResult::Missing)
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         state_ = AuthState::SignedOut;
         message_ = "Not signed in.";
         return true;
     }
-    if (result == CredentialReadResult::Error)
-    {
-        state_ = AuthState::Error;
-        message_ = error;
-        return false;
-    }
-    email_ = stored.email;
-    userId_ = stored.userId;
-    sessionId_ = stored.sessionId;
-    ClearStoredCredential(stored);
-    state_ = AuthState::ReauthenticationRequired;
-    message_ = "A stored account session requires refresh or sign-in.";
-    return true;
-}
 
-bool AuthSession::BeginLogin(const std::string& callbackUri, TimePoint now,
-                             AuthLaunch& launch, std::string& error)
-{
-    launch = {};
-    error.clear();
-    if (!api_ || !credentials_ || !api_->IsConfigured())
-    {
-        error = "A public WorkOS desktop client ID is not configured";
-        return false;
-    }
-    PkcePair pkce;
-    std::string state;
-    if (!GeneratePkcePair(pkce, error) || !GenerateAuthState(state, error))
-    {
-        SecureClear(pkce.verifier);
-        SecureClear(state);
-        return false;
-    }
-    if (!api_->BuildAuthorizationUrl(callbackUri, state, pkce.challenge,
-                                      launch.authorizationUrl, error))
-    {
-        SecureClear(pkce.verifier);
-        SecureClear(state);
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (state_ == AuthState::WaitingForBrowser || state_ == AuthState::ProcessingCallback ||
-        state_ == AuthState::ExchangingCode || state_ == AuthState::Refreshing ||
-        state_ == AuthState::LoggingOut)
-    {
-        SecureClear(pkce.verifier);
-        SecureClear(state);
-        launch = {};
-        error = "Another account operation is already active";
-        return false;
-    }
-    const AuthState cancelState = state_ == AuthState::ReauthenticationRequired
-        ? AuthState::ReauthenticationRequired : AuthState::SignedOut;
-    InvalidatePendingLocked();
-    ++generation_;
-    pending_ = PendingAuth{std::move(state), std::move(pkce.verifier), callbackUri,
-                           now, cancelState};
-    state_ = AuthState::WaitingForBrowser;
-    message_ = "Waiting for browser authentication. No account credential has been received.";
-    return true;
-}
-
-bool AuthSession::ProcessCallback(const std::string& requestTarget, TimePoint now,
-                                  std::string& error)
-{
-    error.clear();
-    AuthCallback callback;
-    if (!ParseAuthCallbackTarget(requestTarget, callback, error))
+    if (readResult == CredentialReadResult::Error)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (pending_)
-        {
-            InvalidatePendingLocked();
-            ++generation_;
-            state_ = AuthState::Error;
-            message_ = error;
-        }
-        SecureClear(callback.code);
+        state_ = AuthState::ReauthenticationRequired;
+        message_ = "Stored account session could not be read.";
+        error = readError;
         return false;
     }
 
-    std::string verifier;
-    std::string callbackUri;
-    uint64_t generation = 0;
+    if (!api_ || !api_->IsConfigured())
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!pending_ || state_ != AuthState::WaitingForBrowser)
-        {
-            error = "Authentication callback has no active login transaction";
-            SecureClear(callback.code);
-            return false;
-        }
-        if (now - pending_->createdAt >= LoginTimeout())
-        {
-            InvalidatePendingLocked();
-            ++generation_;
-            state_ = AuthState::SignedOut;
-            message_ = "Sign-in timed out. Start a new login attempt.";
-            error = "Authentication callback arrived after the login timeout";
-            SecureClear(callback.code);
-            return false;
-        }
-        state_ = AuthState::ProcessingCallback;
-        if (!ConstantTimeEqual(callback.state, pending_->state))
-        {
-            InvalidatePendingLocked();
-            ++generation_;
-            state_ = AuthState::Error;
-            message_ = "Authentication callback rejected: state mismatch.";
-            error = message_;
-            SecureClear(callback.code);
-            return false;
-        }
-        if (callback.kind == AuthCallbackKind::ProviderError)
-        {
-            InvalidatePendingLocked();
-            ++generation_;
-            state_ = AuthState::Error;
-            message_ = "Authentication was not completed by the provider.";
-            error = message_;
-            return false;
-        }
-        verifier = std::move(pending_->codeVerifier);
-        callbackUri = pending_->callbackUri;
-        pending_->state.clear();
-        pending_->callbackUri.clear();
-        pending_.reset();
-        generation = generation_;
-        state_ = AuthState::ExchangingCode;
-        message_ = "Completing secure authorization code exchange.";
+        state_ = AuthState::ReauthenticationRequired;
+        message_ = "Account provider is not configured.";
+        ClearStoredCredential(credential);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Refreshing;
+        message_ = "Restoring account session...";
     }
 
     AuthTokenResponse response;
-    const bool exchanged = api_->ExchangeAuthorizationCode(
-        callback.code, verifier, callbackUri, response, error);
-    SecureClear(callback.code);
-    SecureClear(verifier);
-    callbackUri.clear();
-    if (!exchanged)
+    std::string refreshError;
+    const bool refreshed = api_->RefreshSession(credential.refreshToken, response, refreshError);
+    ClearStoredCredential(credential);
+
+    if (!refreshed)
     {
-        ClearAuthTokenResponse(response);
+        std::string deleteError;
+        if (credentials_) credentials_->Delete(deleteError);
+
         std::lock_guard<std::mutex> lock(mutex_);
-        if (generation == generation_)
-        {
-            state_ = AuthState::Error;
-            message_ = error.empty() ? "Authorization code exchange failed." : error;
-        }
+        ClearActiveSessionLocked();
+        state_ = AuthState::ReauthenticationRequired;
+        message_ = "Session expired or revoked. Please sign in.";
+        error = refreshError;
         return false;
     }
-    return ApplyTokenResponse(generation, response, error);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ApplyTokenResponseLocked(response, error);
 }
 
-bool AuthSession::CheckTimeout(TimePoint now)
+bool AuthSession::SignInWithPassword(const std::string& email,
+                                     const std::string& password,
+                                     std::string& error)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!pending_ || now - pending_->createdAt < LoginTimeout()) return false;
-    InvalidatePendingLocked();
-    ++generation_;
-    state_ = AuthState::SignedOut;
-    message_ = "Sign-in timed out. Start a new login attempt.";
-    return true;
-}
+    error.clear();
+    if (!api_ || !api_->IsConfigured())
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Account provider is not configured.";
+        error = message_;
+        return false;
+    }
 
-void AuthSession::CancelLogin()
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    const AuthState destination = pending_ ? pending_->cancelState :
-        (state_ == AuthState::ReauthenticationRequired
-            ? AuthState::ReauthenticationRequired : AuthState::SignedOut);
-    InvalidatePendingLocked();
-    ++generation_;
-    if (state_ == AuthState::SignedIn)
     {
-        message_ = "Signed in securely.";
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::SigningIn;
+        message_ = "Signing in to OpenReverse account...";
     }
-    else if (state_ == AuthState::ReauthenticationRequired)
-    {
-        message_ = "A stored account session requires refresh or sign-in.";
-    }
-    else
-    {
-        state_ = destination;
-        message_ = destination == AuthState::ReauthenticationRequired
-            ? "A stored account session requires refresh or sign-in." : "Not signed in.";
-    }
-}
 
-void AuthSession::FailOperation(const std::string& message)
-{
+    AuthTokenResponse response;
+    const bool success = api_->SignInWithPassword(email, password, response, error);
+
+    if (!success)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = error.empty() ? "Sign in failed." : error;
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_ != AuthState::WaitingForBrowser &&
-        state_ != AuthState::ProcessingCallback && state_ != AuthState::ExchangingCode &&
-        state_ != AuthState::Refreshing)
-        return;
-    InvalidatePendingLocked();
-    ++generation_;
-    state_ = AuthState::Error;
-    message_ = message.empty() ? "Authentication operation failed." : message;
+    return ApplyTokenResponseLocked(response, error);
 }
 
 bool AuthSession::RefreshStoredSession(std::string& error)
 {
     error.clear();
-    StoredAccountCredential stored;
-    const CredentialReadResult read = credentials_->Read(stored, error);
-    if (read != CredentialReadResult::Found)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        state_ = read == CredentialReadResult::Missing
-            ? AuthState::SignedOut : AuthState::Error;
-        message_ = read == CredentialReadResult::Missing
-            ? "Not signed in." : error;
-        return false;
-    }
-    uint64_t generation = 0;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ++generation_;
-        generation = generation_;
-        state_ = AuthState::Refreshing;
-        message_ = "Refreshing the account session.";
-    }
-    AuthTokenResponse response;
-    const bool refreshed = api_->Refresh(stored.refreshToken, response, error);
-    ClearStoredCredential(stored);
-    if (!refreshed)
-    {
-        ClearAuthTokenResponse(response);
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (generation == generation_)
-        {
-            state_ = AuthState::ReauthenticationRequired;
-            message_ = error.empty() ? "Account session requires sign-in." : error;
-        }
-        return false;
-    }
-    return ApplyTokenResponse(generation, response, error);
-}
+    StoredAccountCredential credential;
+    std::string readError;
+    const CredentialReadResult readResult = credentials_
+        ? credentials_->Read(credential, readError) : CredentialReadResult::Missing;
 
-bool AuthSession::Logout(std::string& providerLogoutUrl, std::string& error)
-{
-    providerLogoutUrl.clear();
-    error.clear();
-    std::string sessionId;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ++generation_;
-        InvalidatePendingLocked();
-        state_ = AuthState::LoggingOut;
-        message_ = "Signing out.";
-        sessionId = sessionId_;
-    }
-    std::string remoteError;
-    if (!sessionId.empty()) api_->BuildLogoutUrl(sessionId, providerLogoutUrl, remoteError);
-    const bool deleted = credentials_->Delete(error);
+    if (readResult != CredentialReadResult::Found || credential.refreshToken.empty())
     {
         std::lock_guard<std::mutex> lock(mutex_);
         ClearActiveSessionLocked();
         state_ = AuthState::SignedOut;
-        message_ = deleted ? "Not signed in." : error;
+        message_ = "No stored session to refresh.";
+        error = message_;
+        ClearStoredCredential(credential);
+        return false;
     }
-    return deleted;
+
+    if (!api_ || !api_->IsConfigured())
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Account provider is not configured.";
+        error = message_;
+        ClearStoredCredential(credential);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Refreshing;
+        message_ = "Refreshing account session...";
+    }
+
+    AuthTokenResponse response;
+    const bool refreshed = api_->RefreshSession(credential.refreshToken, response, error);
+    ClearStoredCredential(credential);
+
+    if (!refreshed)
+    {
+        std::string deleteError;
+        if (credentials_) credentials_->Delete(deleteError);
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        ClearActiveSessionLocked();
+        state_ = AuthState::ReauthenticationRequired;
+        message_ = "Account session expired. Please sign in again.";
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ApplyTokenResponseLocked(response, error);
+}
+
+bool AuthSession::RefreshAccountSnapshot(std::string& error)
+{
+    error.clear();
+    std::string token;
+    std::string userId;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != AuthState::SignedIn || accessToken_.empty())
+        {
+            error = "Not signed in";
+            return false;
+        }
+        token = accessToken_;
+        userId = snapshot_.user.id;
+    }
+
+    AccountSnapshot updated;
+    const bool fetched = api_ ? api_->GetAccountProfile(token, userId, updated, error) : false;
+    SecureClear(token);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != AuthState::SignedIn) return false;
+
+    if (fetched)
+    {
+        snapshot_ = updated;
+        message_ = "Account profile up to date.";
+        return true;
+    }
+    else
+    {
+        message_ = "Failed to synchronize profile: " + error;
+        return false;
+    }
+}
+
+bool AuthSession::SignOut(std::string& error)
+{
+    error.clear();
+    std::string token;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::SigningOut;
+        message_ = "Signing out...";
+        token = accessToken_;
+    }
+
+    if (api_ && !token.empty())
+    {
+        std::string ignored;
+        api_->SignOut(token, ignored);
+    }
+    SecureClear(token);
+
+    if (credentials_)
+    {
+        std::string deleteError;
+        credentials_->Delete(deleteError);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    ClearActiveSessionLocked();
+    state_ = AuthState::SignedOut;
+    message_ = "Signed out.";
+    return true;
+}
+
+void AuthSession::FailOperation(const std::string& message)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_ = AuthState::Error;
+    message_ = message.empty() ? "Authentication operation failed." : message;
 }
 
 AuthStatus AuthSession::Status() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    return {state_, email_, message_, accessTokenExpiresAtUnix_,
-            api_ && api_->IsConfigured()};
+    AuthStatus status;
+    status.state = state_;
+    status.email = snapshot_.user.email;
+    status.displayName = snapshot_.user.displayName;
+    status.userId = snapshot_.user.id;
+    status.plan = snapshot_.subscription.plan;
+    status.subscriptionStatus = snapshot_.subscription.status;
+    status.isProActive = snapshot_.subscription.isProActive;
+    status.currentPeriodEnd = snapshot_.subscription.currentPeriodEnd;
+    status.cancelAtPeriodEnd = snapshot_.subscription.cancelAtPeriodEnd;
+    status.message = message_;
+    status.accessTokenExpiresAtUnix = accessTokenExpiresAtUnix_;
+    status.providerConfigured = api_ ? api_->IsConfigured() : false;
+    return status;
+}
+
+AccountSnapshot AuthSession::Snapshot() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return snapshot_;
+}
+
+bool AuthSession::IsProActive() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_ == AuthState::SignedIn && snapshot_.subscription.isProActive;
 }
 
 const char* AuthSession::StateName(AuthState state)
 {
     switch (state)
     {
-    case AuthState::SignedOut: return "Signed out";
-    case AuthState::StartingLogin: return "Starting sign-in";
-    case AuthState::WaitingForBrowser: return "Waiting for browser";
-    case AuthState::ProcessingCallback: return "Processing callback";
-    case AuthState::ExchangingCode: return "Exchanging code";
-    case AuthState::SignedIn: return "Signed in";
-    case AuthState::Refreshing: return "Refreshing";
-    case AuthState::ReauthenticationRequired: return "Sign-in required";
-    case AuthState::Error: return "Error";
-    case AuthState::LoggingOut: return "Signing out";
+    case AuthState::SignedOut: return "Signed Out";
+    case AuthState::SigningIn: return "Signing In";
+    case AuthState::SignedIn: return "Signed In";
+    case AuthState::Refreshing: return "Refreshing Session";
+    case AuthState::ReauthenticationRequired: return "Reauthentication Required";
+    case AuthState::Error: return "Authentication Error";
+    case AuthState::SigningOut: return "Signing Out";
+    default: return "Unknown";
     }
-    return "Unknown";
-}
-
-void AuthSession::InvalidatePendingLocked()
-{
-    if (!pending_) return;
-    SecureClear(pending_->state);
-    SecureClear(pending_->codeVerifier);
-    pending_->callbackUri.clear();
-    pending_.reset();
 }
 
 void AuthSession::ClearActiveSessionLocked()
 {
     SecureClear(accessToken_);
-    SecureClear(email_);
-    SecureClear(userId_);
-    SecureClear(sessionId_);
     accessTokenExpiresAtUnix_ = 0;
+    ClearAccountSnapshot(snapshot_);
 }
 
-bool AuthSession::ApplyTokenResponse(uint64_t generation, AuthTokenResponse& response,
-                                     std::string& error)
+bool AuthSession::ApplyTokenResponseLocked(AuthTokenResponse& response, std::string& error)
 {
-    StoredAccountCredential stored{response.refreshToken, response.user.email,
-                                   response.user.userId, response.sessionId};
+    if (response.accessToken.empty() || response.refreshToken.empty() || response.user.id.empty())
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (generation != generation_ || state_ == AuthState::SignedOut)
+        ClearActiveSessionLocked();
+        state_ = AuthState::Error;
+        message_ = "Received invalid authentication tokens.";
+        error = message_;
+        ClearAuthTokenResponse(response);
+        return false;
+    }
+
+    // Persist refresh token securely in Windows Credential Manager
+    if (credentials_)
+    {
+        StoredAccountCredential cred;
+        cred.refreshToken = response.refreshToken;
+        cred.email = response.user.email;
+        cred.userId = response.user.id;
+        std::string storeError;
+        if (!credentials_->Store(cred, storeError))
         {
-            ClearStoredCredential(stored);
+            ClearActiveSessionLocked();
+            state_ = AuthState::Error;
+            message_ = "Could not store account session credentials securely.";
+            error = message_;
             ClearAuthTokenResponse(response);
-            error = "Authentication result was cancelled";
             return false;
         }
     }
-    if (!credentials_->Store(stored, error))
-    {
-        ClearStoredCredential(stored);
-        ClearAuthTokenResponse(response);
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (generation == generation_)
-        {
-            state_ = AuthState::Error;
-            message_ = error;
-        }
-        return false;
-    }
-    ClearStoredCredential(stored);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (generation != generation_)
-    {
-        std::string ignored;
-        credentials_->Delete(ignored);
-        ClearAuthTokenResponse(response);
-        error = "Authentication result was cancelled";
-        return false;
-    }
-    ClearActiveSessionLocked();
-    accessToken_ = std::move(response.accessToken);
-    SecureClear(response.refreshToken);
-    email_ = std::move(response.user.email);
-    userId_ = std::move(response.user.userId);
-    sessionId_ = std::move(response.sessionId);
+    accessToken_ = response.accessToken;
     accessTokenExpiresAtUnix_ = response.expiresAtUnix;
+    snapshot_.user = response.user;
+    snapshot_.subscription.plan = "community";
+    snapshot_.subscription.isProActive = false;
+
+    // Query /api/me for authoritative profile and subscription
+    if (api_)
+    {
+        AccountSnapshot profileSnapshot;
+        std::string profileError;
+        if (api_->GetAccountProfile(accessToken_, response.user.id, profileSnapshot, profileError))
+        {
+            snapshot_ = profileSnapshot;
+        }
+    }
+
     state_ = AuthState::SignedIn;
-    message_ = "Signed in securely.";
+    message_ = "Signed in.";
+    ClearAuthTokenResponse(response);
     return true;
 }
 

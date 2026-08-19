@@ -1,68 +1,95 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace openreverse::auth {
 
 struct AccountUser {
+    std::string id;          // Supabase Auth auth.users.id (UUID)
     std::string email;
-    std::string userId;
+    std::string displayName;
+    std::string avatarUrl;
+};
+
+struct SubscriptionState {
+    std::string plan = "community";  // "community", "pro"
+    std::string status;              // "active", "canceled", "past_due", etc.
+    bool isProActive = false;
+    std::string currentPeriodEnd;    // ISO timestamp or date string
+    bool cancelAtPeriodEnd = false;
+};
+
+struct AccountSnapshot {
+    AccountUser user;
+    SubscriptionState subscription;
 };
 
 struct AuthTokenResponse {
     std::string accessToken;
     std::string refreshToken;
     AccountUser user;
-    std::string sessionId;
     int64_t expiresAtUnix = 0;
+};
+
+struct AccountServiceConfig {
+    std::string supabaseUrl;
+    std::string supabasePublishableKey;
+    std::string accountApiBaseUrl;
+    std::string signupUrl;
+    std::string accountManageUrl;
+    std::string billingManageUrl;
 };
 
 class IAccountApi {
 public:
     virtual ~IAccountApi() = default;
     virtual bool IsConfigured() const = 0;
-    virtual bool BuildAuthorizationUrl(const std::string& redirectUri,
-                                       const std::string& state,
-                                       const std::string& codeChallenge,
-                                       std::string& url, std::string& error) const = 0;
-    virtual bool ExchangeAuthorizationCode(const std::string& code,
-                                           const std::string& codeVerifier,
-                                           const std::string& redirectUri,
-                                           AuthTokenResponse& response,
-                                           std::string& error) = 0;
-    virtual bool Refresh(const std::string& refreshToken,
-                         AuthTokenResponse& response, std::string& error) = 0;
-    virtual bool BuildLogoutUrl(const std::string& sessionId,
-                                std::string& url, std::string& error) const = 0;
+    virtual const AccountServiceConfig& Config() const = 0;
+    virtual bool SignInWithPassword(const std::string& email,
+                                    const std::string& password,
+                                    AuthTokenResponse& response,
+                                    std::string& error) = 0;
+    virtual bool RefreshSession(const std::string& refreshToken,
+                                AuthTokenResponse& response,
+                                std::string& error) = 0;
+    virtual bool SignOut(const std::string& accessToken,
+                         std::string& error) = 0;
+    virtual bool GetAccountProfile(const std::string& accessToken,
+                                   const std::string& expectedUserId,
+                                   AccountSnapshot& snapshot,
+                                   std::string& error) = 0;
 };
 
-class WorkOSAccountApi final : public IAccountApi {
+class SupabaseAccountApi final : public IAccountApi {
 public:
-    explicit WorkOSAccountApi(std::string clientId);
-    static WorkOSAccountApi FromEnvironment();
+    explicit SupabaseAccountApi(AccountServiceConfig config);
+    static SupabaseAccountApi FromEnvironment();
 
     bool IsConfigured() const override;
-    bool BuildAuthorizationUrl(const std::string& redirectUri,
-                               const std::string& state,
-                               const std::string& codeChallenge,
-                               std::string& url, std::string& error) const override;
-    bool ExchangeAuthorizationCode(const std::string& code,
-                                   const std::string& codeVerifier,
-                                   const std::string& redirectUri,
-                                   AuthTokenResponse& response,
-                                   std::string& error) override;
-    bool Refresh(const std::string& refreshToken,
-                 AuthTokenResponse& response, std::string& error) override;
-    bool BuildLogoutUrl(const std::string& sessionId,
-                        std::string& url, std::string& error) const override;
+    const AccountServiceConfig& Config() const override { return config_; }
+
+    bool SignInWithPassword(const std::string& email,
+                            const std::string& password,
+                            AuthTokenResponse& response,
+                            std::string& error) override;
+    bool RefreshSession(const std::string& refreshToken,
+                        AuthTokenResponse& response,
+                        std::string& error) override;
+    bool SignOut(const std::string& accessToken,
+                 std::string& error) override;
+    bool GetAccountProfile(const std::string& accessToken,
+                           const std::string& expectedUserId,
+                           AccountSnapshot& snapshot,
+                           std::string& error) override;
 
 private:
-    bool Authenticate(const std::string& body, AuthTokenResponse& response,
-                      std::string& error);
-    std::string clientId_;
+    AccountServiceConfig config_;
 };
 
+bool IsValidUuid(const std::string& value);
 void ClearAuthTokenResponse(AuthTokenResponse& response);
+void ClearAccountSnapshot(AccountSnapshot& snapshot);
 
 } // namespace openreverse::auth

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "auth_session.h"
-#include "loopback_callback.h"
 
 #include <atomic>
 #include <memory>
@@ -21,11 +20,15 @@ public:
     DesktopAuthClient(const DesktopAuthClient&) = delete;
     DesktopAuthClient& operator=(const DesktopAuthClient&) = delete;
 
-    bool StartLogin(std::string& authorizationUrl, std::string& error);
+    bool StartPasswordLogin(std::string email, std::string password, std::string& error);
     bool StartRefresh(std::string& error);
-    void CancelLogin();
-    bool Logout(std::string& providerLogoutUrl, std::string& error);
+    bool StartProfileRefresh(std::string& error);
+    bool SignOut(std::string& error);
+
     AuthStatus Status() const;
+    AccountSnapshot Snapshot() const;
+    bool IsProActive() const;
+    const AccountServiceConfig& Config() const;
 
 private:
     void JoinFinishedWorker();
@@ -34,8 +37,6 @@ private:
     std::shared_ptr<IAccountApi> api_;
     std::shared_ptr<IAccountCredentialStore> credentials_;
     AuthSession session_;
-    LoopbackCallbackServer callbackServer_;
-    std::atomic_bool cancelled_{false};
     std::atomic_bool workerActive_{false};
     mutable std::mutex workerMutex_;
     std::thread worker_;
