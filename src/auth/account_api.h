@@ -37,6 +37,7 @@ struct AccountServiceConfig {
     std::string supabaseUrl;
     std::string supabasePublishableKey;
     std::string accountApiBaseUrl;
+    std::string desktopAuthUrl;
     std::string signupUrl;
     std::string accountManageUrl;
     std::string billingManageUrl;
@@ -47,6 +48,13 @@ public:
     virtual ~IAccountApi() = default;
     virtual bool IsConfigured() const = 0;
     virtual const AccountServiceConfig& Config() const = 0;
+    virtual std::string BuildBrowserAuthorizationUrl(const std::string& codeChallenge,
+                                                     const std::string& state,
+                                                     const std::string& redirectUri) const = 0;
+    virtual bool ExchangeAuthCode(const std::string& authCode,
+                                  const std::string& codeVerifier,
+                                  AuthTokenResponse& response,
+                                  std::string& error) = 0;
     virtual bool SignInWithPassword(const std::string& email,
                                     const std::string& password,
                                     AuthTokenResponse& response,
@@ -70,6 +78,13 @@ public:
     bool IsConfigured() const override;
     const AccountServiceConfig& Config() const override { return config_; }
 
+    std::string BuildBrowserAuthorizationUrl(const std::string& codeChallenge,
+                                             const std::string& state,
+                                             const std::string& redirectUri) const override;
+    bool ExchangeAuthCode(const std::string& authCode,
+                          const std::string& codeVerifier,
+                          AuthTokenResponse& response,
+                          std::string& error) override;
     bool SignInWithPassword(const std::string& email,
                             const std::string& password,
                             AuthTokenResponse& response,

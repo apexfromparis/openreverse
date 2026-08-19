@@ -1,4 +1,5 @@
 #include "auth_session.h"
+#include "auth_callback.h"
 #include "pkce.h"
 
 #include <algorithm>
@@ -73,6 +74,258 @@ bool AuthSession::RestoreStoredSession(std::string& error)
         state_ = AuthState::ReauthenticationRequired;
         message_ = "Session expired or revoked. Please sign in.";
         error = refreshError;
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return ApplyTokenResponseLocked(response, error);
+}
+
+bool AuthSession::BeginBrowserLogin(std::string& browserUrl, std::string& error)
+{
+    error.clear();
+    browserUrl.clear();
+
+    if (!api_ || !api_->IsConfigured())
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Account provider is not configured.";
+        error = message_;
+        return false;
+    }
+
+    PkcePair pkce;
+    std::string pkceError;
+    if (!GeneratePkcePair(pkce, pkceError))
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Failed to initialize PKCE security parameters.";
+        error = pkceError;
+        return false;
+    }
+
+    std::string state;
+    std::string stateError;
+    if (!GenerateAuthState(state, stateError))
+    {
+        SecureClear(pkce.verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Failed to initialize state security parameters.";
+        error = stateError;
+        return false;
+    }
+
+    auto server = std::make_unique<LoopbackCallbackServer>();
+    std::string serverError;
+    if (!server->Start(serverError))
+    {
+        SecureClear(pkce.verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Failed to start local callback listener.";
+        error = serverError;
+        return false;
+    }
+
+    const std::string redirectUri = server->CallbackUri();
+    const std::string url = api_->BuildBrowserAuthorizationUrl(pkce.challenge, state, redirectUri);
+    if (url.empty())
+    {
+        server->Stop();
+        SecureClear(pkce.verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = "Failed to construct browser authorization URL.";
+        error = message_;
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pendingVerifier_ = std::move(pkce.verifier);
+        pendingState_ = std::move(state);
+        loopbackServer_ = std::move(server);
+        state_ = AuthState::WaitingForBrowser;
+        message_ = "Waiting for sign-in...";
+        browserUrl = url;
+    }
+
+    return true;
+}
+
+bool AuthSession::WaitForBrowserCallback(const std::atomic_bool& cancelled, std::string& error)
+{
+    error.clear();
+    std::unique_ptr<LoopbackCallbackServer> server;
+    std::string expectedState;
+    std::string verifier;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != AuthState::WaitingForBrowser || !loopbackServer_)
+        {
+            error = "No active browser authentication in progress.";
+            return false;
+        }
+        server = std::move(loopbackServer_);
+        expectedState = pendingState_;
+        verifier = pendingVerifier_;
+    }
+
+    std::string requestTarget;
+    std::string waitError;
+    // Bounded timeout: 120 seconds
+    const bool received = server->WaitForRequest(std::chrono::seconds(120), cancelled, requestTarget, waitError);
+    server->Stop();
+
+    if (cancelled.load())
+    {
+        SecureClear(verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::SignedOut;
+        message_ = "Not signed in.";
+        return false;
+    }
+
+    if (!received)
+    {
+        SecureClear(verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::Error;
+        message_ = "Sign-in timed out. Please try again.";
+        error = message_;
+        return false;
+    }
+
+    AuthCallback callback;
+    std::string parseError;
+    if (!ParseAuthCallbackTarget(requestTarget, callback, parseError))
+    {
+        SecureClear(verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::Error;
+        message_ = "Received invalid callback from browser.";
+        error = parseError;
+        return false;
+    }
+
+    if (callback.state != expectedState || expectedState.empty())
+    {
+        SecureClear(verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::Error;
+        message_ = "Authentication state mismatch. Possible replay or CSRF attempt.";
+        error = message_;
+        return false;
+    }
+
+    if (callback.kind == AuthCallbackKind::ProviderError)
+    {
+        SecureClear(verifier);
+        std::lock_guard<std::mutex> lock(mutex_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::Error;
+        message_ = callback.providerError.empty() ? "Sign-in could not be completed." : callback.providerError;
+        error = message_;
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::CompletingAuthentication;
+        message_ = "Completing authentication...";
+    }
+
+    AuthTokenResponse response;
+    std::string exchangeError;
+    const bool exchanged = api_->ExchangeAuthCode(callback.code, verifier, response, exchangeError);
+    SecureClear(verifier);
+
+    if (!exchanged)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::Error;
+        message_ = exchangeError.empty() ? "Could not complete authorization code exchange." : exchangeError;
+        error = message_;
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    SecureClear(pendingVerifier_);
+    pendingState_.clear();
+    return ApplyTokenResponseLocked(response, error);
+}
+
+bool AuthSession::CancelBrowserLogin(std::string& error)
+{
+    error.clear();
+    std::unique_ptr<LoopbackCallbackServer> server;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        server = std::move(loopbackServer_);
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::SignedOut;
+        message_ = "Not signed in.";
+    }
+    if (server)
+    {
+        server->Stop();
+    }
+    return true;
+}
+
+bool AuthSession::CompleteAuthCodeLogin(const std::string& code, const std::string& state, std::string& error)
+{
+    error.clear();
+    std::string verifier;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state.empty() || state != pendingState_)
+        {
+            state_ = AuthState::Error;
+            message_ = "Authentication state mismatch.";
+            error = message_;
+            return false;
+        }
+        verifier = pendingVerifier_;
+        SecureClear(pendingVerifier_);
+        pendingState_.clear();
+        state_ = AuthState::CompletingAuthentication;
+        message_ = "Completing authentication...";
+    }
+
+    if (loopbackServer_)
+    {
+        loopbackServer_->Stop();
+        loopbackServer_.reset();
+    }
+
+    AuthTokenResponse response;
+    std::string exchangeError;
+    const bool exchanged = api_ ? api_->ExchangeAuthCode(code, verifier, response, exchangeError) : false;
+    SecureClear(verifier);
+
+    if (!exchanged)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_ = AuthState::Error;
+        message_ = exchangeError.empty() ? "Could not complete authorization code exchange." : exchangeError;
+        error = message_;
         return false;
     }
 
@@ -296,6 +549,8 @@ const char* AuthSession::StateName(AuthState state)
     {
     case AuthState::SignedOut: return "Signed Out";
     case AuthState::SigningIn: return "Signing In";
+    case AuthState::WaitingForBrowser: return "Waiting for Browser";
+    case AuthState::CompletingAuthentication: return "Completing Authentication";
     case AuthState::SignedIn: return "Signed In";
     case AuthState::Refreshing: return "Refreshing Session";
     case AuthState::ReauthenticationRequired: return "Reauthentication Required";
@@ -311,6 +566,13 @@ void AuthSession::ClearActiveSessionLocked()
     accessTokenExpiresAtUnix_ = 0;
     ClearAccountSnapshot(snapshot_);
     accountSyncFailed_ = false;
+    SecureClear(pendingVerifier_);
+    pendingState_.clear();
+    if (loopbackServer_)
+    {
+        loopbackServer_->Stop();
+        loopbackServer_.reset();
+    }
 }
 
 bool AuthSession::ApplyTokenResponseLocked(AuthTokenResponse& response, std::string& error)

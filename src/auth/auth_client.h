@@ -20,6 +20,8 @@ public:
     DesktopAuthClient(const DesktopAuthClient&) = delete;
     DesktopAuthClient& operator=(const DesktopAuthClient&) = delete;
 
+    bool StartBrowserLogin(std::string& error);
+    bool CancelBrowserLogin(std::string& error);
     bool StartPasswordLogin(std::string email, std::string password, std::string& error);
     bool StartRefresh(std::string& error);
     bool StartProfileRefresh(std::string& error);
@@ -38,6 +40,7 @@ private:
     std::shared_ptr<IAccountCredentialStore> credentials_;
     AuthSession session_;
     std::atomic_bool workerActive_{false};
+    std::atomic_bool browserCancelled_{false};
     mutable std::mutex workerMutex_;
     std::thread worker_;
 };

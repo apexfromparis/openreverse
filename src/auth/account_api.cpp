@@ -41,6 +41,29 @@ std::string GetEnvVar(const char* name)
     return std::string(buffer.data(), length);
 }
 
+std::string UrlEncode(const std::string& value)
+{
+    std::ostringstream escaped;
+    escaped.fill('0');
+    escaped << std::hex;
+
+    for (char c : value)
+    {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.' || c == '~')
+        {
+            escaped << c;
+        }
+        else
+        {
+            escaped << std::uppercase;
+            escaped << '%' << std::setw(2) << int(static_cast<unsigned char>(c));
+            escaped << std::nouppercase;
+        }
+    }
+
+    return escaped.str();
+}
+
 int64_t CurrentTimeUnix()
 {
     const auto now = std::chrono::system_clock::now();
@@ -411,6 +434,9 @@ SupabaseAccountApi SupabaseAccountApi::FromEnvironment()
 
     if (!config.accountApiBaseUrl.empty())
     {
+        config.desktopAuthUrl = GetEnvVar("OPENREVERSE_DESKTOP_AUTH_URL");
+        if (config.desktopAuthUrl.empty())
+            config.desktopAuthUrl = config.accountApiBaseUrl + "/auth/desktop";
         config.signupUrl = config.accountApiBaseUrl + "/signup";
         config.accountManageUrl = config.accountApiBaseUrl + "/account";
         config.billingManageUrl = config.accountApiBaseUrl + "/account";
@@ -453,6 +479,95 @@ bool SupabaseAccountApi::IsConfigured() const
     if (!ParseHttpsUrl(config_.accountApiBaseUrl, parsedApi, error)) return false;
 
     return true;
+}
+
+std::string SupabaseAccountApi::BuildBrowserAuthorizationUrl(const std::string& codeChallenge,
+                                                             const std::string& state,
+                                                             const std::string& redirectUri) const
+{
+    std::string baseUrl = config_.desktopAuthUrl;
+    if (baseUrl.empty())
+    {
+        if (!config_.accountApiBaseUrl.empty())
+            baseUrl = config_.accountApiBaseUrl + "/auth/desktop";
+        else if (!config_.supabaseUrl.empty())
+            baseUrl = config_.supabaseUrl + "/auth/v1/authorize";
+        else
+            return {};
+    }
+
+    std::string url = baseUrl;
+    url += (url.find('?') == std::string::npos) ? "?" : "&";
+    url += "code_challenge=" + UrlEncode(codeChallenge);
+    url += "&code_challenge_method=S256";
+    url += "&state=" + UrlEncode(state);
+    url += "&redirect_uri=" + UrlEncode(redirectUri);
+    return url;
+}
+
+bool SupabaseAccountApi::ExchangeAuthCode(const std::string& authCode,
+                                          const std::string& codeVerifier,
+                                          AuthTokenResponse& response,
+                                          std::string& error)
+{
+    ClearAuthTokenResponse(response);
+    error.clear();
+
+    if (!IsConfigured())
+    {
+        error = "Account service is not configured";
+        return false;
+    }
+
+    if (authCode.empty() || authCode.size() > 4096 || codeVerifier.empty() || codeVerifier.size() > 1024)
+    {
+        error = "Invalid authorization code or code verifier";
+        return false;
+    }
+
+    nlohmann::json requestJson = {
+        {"auth_code", authCode},
+        {"code_verifier", codeVerifier}
+    };
+    std::string requestBody = requestJson.dump();
+
+    std::string endpoint = config_.supabaseUrl;
+    if (endpoint.back() == '/') endpoint.pop_back();
+    endpoint += "/auth/v1/token?grant_type=pkce";
+
+    std::wstring headers = L"Content-Type: application/json\r\nAccept: application/json\r\n";
+    headers += L"apikey: " + std::wstring(config_.supabasePublishableKey.begin(), config_.supabasePublishableKey.end()) + L"\r\n";
+
+    std::string responseBody;
+    DWORD statusCode = 0;
+    const bool executed = ExecuteHttpRequest(endpoint, L"POST", headers, requestBody, responseBody, statusCode, error);
+    SecureClear(requestBody);
+
+    if (!executed) return false;
+
+    if (statusCode != 200)
+    {
+        std::string errDetail;
+        try
+        {
+            const auto doc = nlohmann::json::parse(responseBody);
+            if (doc.contains("error_description") && doc["error_description"].is_string())
+                errDetail = doc["error_description"].get<std::string>();
+            else if (doc.contains("msg") && doc["msg"].is_string())
+                errDetail = doc["msg"].get<std::string>();
+            else if (doc.contains("error") && doc["error"].is_string())
+                errDetail = doc["error"].get<std::string>();
+        }
+        catch (...) {}
+        SecureClear(responseBody);
+
+        error = errDetail.empty() ? "Authorization code exchange failed (" + std::to_string(statusCode) + ")" : errDetail;
+        return false;
+    }
+
+    const bool parsed = ParseSupabaseTokenResponse(responseBody, response, error);
+    SecureClear(responseBody);
+    return parsed;
 }
 
 bool SupabaseAccountApi::SignInWithPassword(const std::string& email,

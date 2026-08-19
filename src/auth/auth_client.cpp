@@ -1,6 +1,9 @@
 #include "auth_client.h"
 #include "pkce.h"
 
+#include <windows.h>
+#include <shellapi.h>
+
 #include <utility>
 
 namespace openreverse::auth {
@@ -38,6 +41,68 @@ DesktopAuthClient::DesktopAuthClient(
 DesktopAuthClient::~DesktopAuthClient()
 {
     JoinWorker();
+}
+
+bool DesktopAuthClient::StartBrowserLogin(std::string& error)
+{
+    error.clear();
+    JoinFinishedWorker();
+    if (workerActive_.load())
+    {
+        const auto status = session_.Status();
+        if (status.state == AuthState::WaitingForBrowser)
+        {
+            return true; // Already waiting for browser
+        }
+        error = "Another account operation is already active.";
+        return false;
+    }
+
+    std::string browserUrl;
+    if (!session_.BeginBrowserLogin(browserUrl, error))
+    {
+        return false;
+    }
+
+    browserCancelled_.store(false);
+    workerActive_.store(true);
+    try
+    {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        worker_ = std::thread([this, url = std::move(browserUrl)]() {
+            try
+            {
+                const std::wstring wideUrl(url.begin(), url.end());
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+
+                std::string callbackError;
+                session_.WaitForBrowserCallback(browserCancelled_, callbackError);
+            }
+            catch (...)
+            {
+                session_.FailOperation("Browser authentication failed unexpectedly.");
+            }
+            workerActive_.store(false);
+        });
+    }
+    catch (...)
+    {
+        workerActive_.store(false);
+        std::string cancelErr;
+        session_.CancelBrowserLogin(cancelErr);
+        error = "Could not start browser authentication worker thread.";
+        return false;
+    }
+    return true;
+}
+
+bool DesktopAuthClient::CancelBrowserLogin(std::string& error)
+{
+    error.clear();
+    browserCancelled_.store(true);
+    const bool cancelled = session_.CancelBrowserLogin(error);
+    JoinFinishedWorker();
+    return cancelled;
 }
 
 bool DesktopAuthClient::StartPasswordLogin(std::string email, std::string password, std::string& error)

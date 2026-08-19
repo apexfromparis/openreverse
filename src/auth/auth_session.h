@@ -1,8 +1,10 @@
 #pragma once
 
 #include "account_api.h"
+#include "loopback_callback.h"
 #include "secure_credentials.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -15,6 +17,8 @@ namespace openreverse::auth {
 enum class AuthState {
     SignedOut,
     SigningIn,
+    WaitingForBrowser,
+    CompletingAuthentication,
     SignedIn,
     Refreshing,
     ReauthenticationRequired,
@@ -50,6 +54,10 @@ public:
     AuthSession& operator=(const AuthSession&) = delete;
 
     bool RestoreStoredSession(std::string& error);
+    bool BeginBrowserLogin(std::string& browserUrl, std::string& error);
+    bool WaitForBrowserCallback(const std::atomic_bool& cancelled, std::string& error);
+    bool CancelBrowserLogin(std::string& error);
+    bool CompleteAuthCodeLogin(const std::string& code, const std::string& state, std::string& error);
     bool SignInWithPassword(const std::string& email,
                             const std::string& password,
                             std::string& error);
@@ -76,6 +84,9 @@ private:
     int64_t accessTokenExpiresAtUnix_ = 0;
     AccountSnapshot snapshot_;
     bool accountSyncFailed_ = false;
+    std::unique_ptr<LoopbackCallbackServer> loopbackServer_;
+    std::string pendingVerifier_;
+    std::string pendingState_;
 };
 
 } // namespace openreverse::auth
