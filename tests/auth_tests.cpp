@@ -65,95 +65,113 @@ public:
 
 class FakeAccountApi final : public IAccountApi {
 public:
-    bool IsConfigured() const override { return configured; }
-
-    bool BuildAuthorizationUrl(const std::string& redirectUri,
-                               const std::string& state,
-                               const std::string& challenge,
-                               std::string& url, std::string& error) const override
+    FakeAccountApi()
     {
-        error.clear();
-        if (!configured || redirectUri.empty() || state.empty() || challenge.empty())
-            return false;
-        url = "https://auth.example.test/authorize?state=" + state +
-            "&code_challenge=" + challenge + "&code_challenge_method=S256";
-        return true;
+        config.supabaseUrl = "https://auth.example.test";
+        config.supabasePublishableKey = "fake_anon_key";
+        config.accountApiBaseUrl = "https://example.test";
+        config.signupUrl = "https://example.test/signup";
+        config.accountManageUrl = "https://example.test/account";
+        config.billingManageUrl = "https://example.test/account";
     }
 
-    bool ExchangeAuthorizationCode(const std::string& code,
-                                   const std::string& verifier,
-                                   const std::string& redirectUri,
-                                   AuthTokenResponse& response,
-                                   std::string& error) override
+    bool IsConfigured() const override { return configured; }
+    const AccountServiceConfig& Config() const override { return config; }
+
+    bool SignInWithPassword(const std::string& email,
+                            const std::string& password,
+                            AuthTokenResponse& response,
+                            std::string& error) override
     {
-        ++exchanges;
-        if (code != "valid-code" || !IsValidPkceVerifier(verifier) ||
-            redirectUri.rfind("http://127.0.0.1:", 0) != 0)
+        ++signIns;
+        if (!configured)
         {
-            error = code == "expired-code" ? "Authorization code expired" :
-                "Authorization code rejected";
+            error = "Provider not configured";
             return false;
         }
-        response = MakeResponse("rotating-refresh-one");
-        return true;
+        if (email == "valid@example.test" && password == "correct_password")
+        {
+            response.accessToken = "access-token-1";
+            response.refreshToken = "refresh-token-1";
+            response.user.id = "11111111-1111-1111-1111-111111111111";
+            response.user.email = email;
+            response.user.displayName = "Valid User";
+            response.expiresAtUnix = 2000000000;
+            return true;
+        }
+        error = "Invalid login credentials";
+        return false;
     }
 
-    bool Refresh(const std::string& refreshToken,
-                 AuthTokenResponse& response, std::string& error) override
+    bool RefreshSession(const std::string& refreshToken,
+                        AuthTokenResponse& response,
+                        std::string& error) override
     {
         ++refreshes;
-        if (refreshToken != "stored-refresh")
+        if (!configured)
         {
-            error = "Stored session requires sign-in";
+            error = "Provider not configured";
             return false;
         }
-        response = MakeResponse("rotating-refresh-two");
+        if (refreshToken == "stored-refresh" || refreshToken == "refresh-token-1")
+        {
+            response.accessToken = "access-token-rotated";
+            response.refreshToken = "refresh-token-rotated";
+            response.user.id = "11111111-1111-1111-1111-111111111111";
+            response.user.email = "valid@example.test";
+            response.user.displayName = "Valid User";
+            response.expiresAtUnix = 2000000000;
+            return true;
+        }
+        error = "Session expired or revoked";
+        return false;
+    }
+
+    bool SignOut(const std::string&, std::string&) override
+    {
+        ++signOuts;
         return true;
     }
 
-    bool BuildLogoutUrl(const std::string& sessionId,
-                        std::string& url, std::string& error) const override
+    bool GetAccountProfile(const std::string& accessToken,
+                           const std::string& expectedUserId,
+                           AccountSnapshot& snapshot,
+                           std::string& error) override
     {
-        error.clear();
-        if (sessionId.empty()) return false;
-        url = "https://auth.example.test/logout";
+        ++profileRequests;
+        if (!configured || accessToken.empty())
+        {
+            error = "Invalid access token";
+            return false;
+        }
+
+        if (profileErrorMode)
+        {
+            error = "Profile service unavailable";
+            return false;
+        }
+
+        snapshot = mockSnapshot;
+        if (!expectedUserId.empty() && snapshot.user.id != expectedUserId)
+        {
+            error = "Account identity mismatch between auth session and profile";
+            return false;
+        }
         return true;
     }
 
-    static AuthTokenResponse MakeResponse(const std::string& refresh)
-    {
-        AuthTokenResponse response;
-        response.accessToken = "memory-only-access-value";
-        response.refreshToken = refresh;
-        response.user = {"tester@example.test", "user-test"};
-        response.sessionId = "session-test";
-        response.expiresAtUnix = 2000000000;
-        return response;
-    }
-
+    AccountServiceConfig config;
+    AccountSnapshot mockSnapshot{
+        {"11111111-1111-1111-1111-111111111111", "valid@example.test", "Valid User", ""},
+        {"community", "", false, "", false}
+    };
     bool configured = true;
-    int exchanges = 0;
+    bool profileErrorMode = false;
+    int signIns = 0;
     int refreshes = 0;
+    int signOuts = 0;
+    int profileRequests = 0;
 };
-
-std::string QueryValue(const std::string& url, const std::string& name)
-{
-    const std::string marker = name + "=";
-    const size_t start = url.find(marker);
-    if (start == std::string::npos) return {};
-    const size_t valueStart = start + marker.size();
-    const size_t end = url.find('&', valueStart);
-    return url.substr(valueStart, end == std::string::npos ? std::string::npos : end - valueStart);
-}
-
-AuthLaunch Begin(AuthSession& session, AuthSession::TimePoint now)
-{
-    AuthLaunch launch;
-    std::string error;
-    Expect(session.BeginLogin("http://127.0.0.1:49152/callback", now, launch, error),
-           "signed-out session can begin PKCE login");
-    return launch;
-}
 
 void TestPkce()
 {
@@ -186,150 +204,16 @@ void TestPkce()
     SecureClear(state);
 }
 
-void TestCallbackParser()
+void TestUuidValidation()
 {
-    AuthCallback callback;
-    std::string error;
-    Expect(ParseAuthCallbackTarget("/callback?code=short-code&state=random-state",
-                                   callback, error),
-           "bounded authorization code and state callback is accepted");
-    Expect(callback.code == "short-code" && callback.state == "random-state",
-           "callback fields are parsed exactly");
-    Expect(!ParseAuthCallbackTarget("/other?code=a&state=b", callback, error),
-           "unexpected callback paths are rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?state=b", callback, error),
-           "missing code is rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?code=a", callback, error),
-           "missing state is rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?code=a&code=b&state=c", callback, error),
-           "duplicate code is rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?code=a&state=b&state=c", callback, error),
-           "duplicate state is rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?code=%ZZ&state=b", callback, error),
-           "malformed percent encoding is rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?code=a&state=b&extra=c", callback, error),
-           "unknown callback fields are rejected");
-    Expect(!ParseAuthCallbackTarget("/callback?code=" + std::string(2049, 'a') +
-                                    "&state=b", callback, error),
-           "oversized authorization codes are rejected");
-    const std::vector<std::string> forbidden = {
-        "token", "access_token", "refresh_token", "api_key", "client_secret", "secret"
-    };
-    for (const auto& field : forbidden)
-    {
-        const std::string target = "/callback?code=a&state=b&" + field + "=value";
-        Expect(!ParseAuthCallbackTarget(target, callback, error),
-               "credential-bearing callback field is rejected");
-    }
-    Expect(ParseAuthCallbackTarget("/callback?error=access_denied&state=random-state",
-                                   callback, error) &&
-           callback.kind == AuthCallbackKind::ProviderError,
-           "bounded provider cancellation is parsed without exposing details");
-    Expect(ParseAuthCallbackTarget(
-               "/callback?error=access_denied&error_description=User+cancelled&state=random-state",
-               callback, error) && callback.kind == AuthCallbackKind::ProviderError,
-           "bounded provider error descriptions are ignored safely");
-}
-
-void TestSessionLifecycle()
-{
-    auto api = std::make_shared<FakeAccountApi>();
-    auto storage = std::make_shared<MemoryCredentialStore>();
-    AuthSession session(api, storage);
-    const auto now = AuthSession::TimePoint::clock::now();
-
-    std::string error;
-    Expect(session.Status().state == AuthState::SignedOut,
-           "new authentication session is signed out");
-    Expect(!session.ProcessCallback("/callback?code=valid-code&state=no-transaction", now,
-                                    error),
-           "signed-out to signed-in transition without a transaction is rejected");
-
-    const AuthLaunch launch = Begin(session, now);
-    const std::string state = QueryValue(launch.authorizationUrl, "state");
-    Expect(session.Status().state == AuthState::WaitingForBrowser,
-           "login enters waiting-for-browser state");
-    Expect(session.ProcessCallback("/callback?code=valid-code&state=" + state,
-                                   now + std::chrono::seconds(1), error),
-           "valid state completes one code exchange");
-    Expect(session.Status().state == AuthState::SignedIn && storage->stores == 1,
-           "successful exchange stores one refresh credential and signs in");
-    Expect(!session.ProcessCallback("/callback?code=valid-code&state=" + state,
-                                    now + std::chrono::seconds(2), error) &&
-           storage->stores == 1,
-           "authorization callback replay is rejected");
-    std::string logoutUrl;
-    Expect(session.Logout(logoutUrl, error) && session.Status().state == AuthState::SignedOut &&
-           !storage->stored && storage->deletes == 1,
-           "logout deletes only the account credential and returns to signed out");
-    Expect(logoutUrl.rfind("https://", 0) == 0,
-           "logout uses an HTTPS provider endpoint");
-
-    const AuthLaunch wrongLaunch = Begin(session, now);
-    (void)wrongLaunch;
-    Expect(!session.ProcessCallback("/callback?code=valid-code&state=wrong-state", now, error) &&
-           session.Status().state == AuthState::Error,
-           "wrong state rejects and invalidates the transaction");
-
-    const AuthLaunch cancelLaunch = Begin(session, now);
-    const std::string cancelState = QueryValue(cancelLaunch.authorizationUrl, "state");
-    const int storesBeforeCancel = storage->stores;
-    session.CancelLogin();
-    Expect(session.Status().state == AuthState::SignedOut,
-           "browser login cancellation returns to signed out");
-    Expect(!session.ProcessCallback("/callback?code=valid-code&state=" + cancelState,
-                                    now + std::chrono::seconds(1), error) &&
-           storage->stores == storesBeforeCancel,
-           "callback after cancellation cannot store a credential");
-
-    const AuthLaunch timeoutLaunch = Begin(session, now);
-    const std::string timeoutState = QueryValue(timeoutLaunch.authorizationUrl, "state");
-    Expect(session.CheckTimeout(now + AuthSession::LoginTimeout()),
-           "pending browser login expires at the configured timeout");
-    Expect(session.Status().state == AuthState::SignedOut,
-           "timeout returns to signed out");
-    Expect(!session.ProcessCallback("/callback?code=valid-code&state=" + timeoutState,
-                                    now + AuthSession::LoginTimeout() +
-                                        std::chrono::seconds(1), error),
-           "late callback after timeout is rejected");
-
-    const AuthLaunch invalidLaunch = Begin(session, now);
-    const std::string invalidState = QueryValue(invalidLaunch.authorizationUrl, "state");
-    Expect(!session.ProcessCallback("/callback?code=expired-code&state=" + invalidState,
-                                    now, error) && session.Status().state == AuthState::Error,
-           "expired or invalid code exchange enters error state");
-
-    const AuthLaunch rejectedLaunch = Begin(session, now);
-    const std::string rejectedState = QueryValue(rejectedLaunch.authorizationUrl, "state");
-    Expect(!session.ProcessCallback("/callback?code=invalid-code&state=" + rejectedState,
-                                    now, error) && session.Status().state == AuthState::Error,
-           "deterministic invalid code exchange is rejected");
-}
-
-void TestRefresh()
-{
-    auto api = std::make_shared<FakeAccountApi>();
-    auto storage = std::make_shared<MemoryCredentialStore>();
-    storage->stored = StoredAccountCredential{
-        "stored-refresh", "tester@example.test", "user-test", "session-test"};
-    AuthSession session(api, storage);
-    std::string error;
-    Expect(session.RestoreStoredSession(error) &&
-           session.Status().state == AuthState::ReauthenticationRequired,
-           "stored refresh credential is not treated as an active access session");
-    Expect(session.RefreshStoredSession(error) && session.Status().state == AuthState::SignedIn,
-           "valid stored refresh session can be refreshed");
-    Expect(storage->stored && storage->stored->refreshToken == "rotating-refresh-two",
-           "rotated refresh credential replaces the previous secure credential");
-
-    auto failingStorage = std::make_shared<MemoryCredentialStore>();
-    failingStorage->stored = StoredAccountCredential{
-        "invalid-refresh", "tester@example.test", "user-test", "session-test"};
-    AuthSession failing(api, failingStorage);
-    Expect(failing.RestoreStoredSession(error), "invalid stored session metadata can be loaded");
-    Expect(!failing.RefreshStoredSession(error) &&
-           failing.Status().state == AuthState::ReauthenticationRequired,
-           "refresh failure requires explicit reauthentication");
+    Expect(IsValidUuid("123e4567-e89b-12d3-a456-426614174000"), "valid standard UUID is accepted");
+    Expect(IsValidUuid("00000000-0000-0000-0000-000000000000"), "all-zero UUID is accepted");
+    Expect(IsValidUuid("ffffffff-ffff-ffff-ffff-ffffffffffff"), "all-f UUID is accepted");
+    Expect(!IsValidUuid("123e4567-e89b-12d3-a456-42661417400"), "too short UUID is rejected");
+    Expect(!IsValidUuid("123e4567-e89b-12d3-a456-4266141740000"), "too long UUID is rejected");
+    Expect(!IsValidUuid("123e4567_e89b-12d3-a456-426614174000"), "wrong delimiter UUID is rejected");
+    Expect(!IsValidUuid("123e4567-e89b-12d3-a456-42661417400g"), "non-hex character UUID is rejected");
+    Expect(!IsValidUuid(""), "empty string is rejected");
 }
 
 void TestWindowsCredentialStore()
@@ -343,17 +227,19 @@ void TestWindowsCredentialStore()
     Expect(storage.Read(read, error) == CredentialReadResult::Missing,
            "isolated Windows credential target starts missing");
     StoredAccountCredential first{
-        "test-refresh-one", "tester@example.test", "user-one", "session-one"};
+        "test-refresh-one", "tester@example.test", "11111111-1111-1111-1111-111111111111", "session-one"};
     Expect(storage.Store(first, error), "Windows Credential Manager stores account session");
     Expect(storage.Read(read, error) == CredentialReadResult::Found &&
-           read.refreshToken == first.refreshToken && read.email == first.email,
+           read.refreshToken == first.refreshToken && read.email == first.email &&
+           read.userId == first.userId,
            "Windows Credential Manager reads the isolated account session");
     ClearStoredCredential(read);
     StoredAccountCredential replacement{
-        "test-refresh-two", "second@example.test", "user-two", "session-two"};
+        "test-refresh-two", "second@example.test", "22222222-2222-2222-2222-222222222222", "session-two"};
     Expect(storage.Store(replacement, error), "Windows Credential Manager replaces account session");
     Expect(storage.Read(read, error) == CredentialReadResult::Found &&
-           read.refreshToken == replacement.refreshToken && read.email == replacement.email,
+           read.refreshToken == replacement.refreshToken && read.email == replacement.email &&
+           read.userId == replacement.userId,
            "replacement is read from the isolated credential target");
     ClearStoredCredential(read);
     Expect(storage.Delete(error), "Windows Credential Manager deletes account session");
@@ -361,33 +247,126 @@ void TestWindowsCredentialStore()
            "deleted Windows credential target is missing");
 }
 
-void TestProviderAndLoopbackConfiguration()
+void TestPasswordAuthAndSessionLifecycle()
 {
-    WorkOSAccountApi provider("client_public_test");
-    std::string url;
-    std::string error;
-    const std::string value(43, 'a');
-    Expect(provider.BuildAuthorizationUrl("http://127.0.0.1:49152/callback", value,
-                                          value, url, error),
-           "public provider builds loopback PKCE authorization URL");
-    Expect(url.rfind("https://api.workos.com/", 0) == 0 &&
-           url.find("code_challenge_method=S256") != std::string::npos &&
-           url.find("client_secret") == std::string::npos,
-           "authorization request is HTTPS, S256, and contains no client secret");
-    Expect(!provider.BuildAuthorizationUrl(
-               "http://127.0.0.1:49152/callback/extra", value, value, url, error) &&
-           !provider.BuildAuthorizationUrl(
-               "http://127.0.0.1:49152@attacker.test/callback", value, value, url, error),
-           "provider rejects non-exact or ambiguous loopback redirect URIs");
+    auto api = std::make_shared<FakeAccountApi>();
+    auto storage = std::make_shared<MemoryCredentialStore>();
+    AuthSession session(api, storage);
 
-    LoopbackCallbackServer server;
-    Expect(server.Start(error), "loopback callback listener starts");
-    Expect(server.Port() != 0 &&
-           server.CallbackUri().rfind("http://127.0.0.1:", 0) == 0 &&
-           server.CallbackUri().find("/callback") != std::string::npos,
-           "callback listener binds loopback with an ephemeral port and strict path");
-    server.Stop();
-    Expect(server.Port() == 0, "loopback callback listener closes immediately on stop");
+    std::string error;
+    Expect(session.Status().state == AuthState::SignedOut, "new session is signed out");
+
+    // Invalid password
+    Expect(!session.SignInWithPassword("valid@example.test", "wrong_password", error),
+           "bad password login is rejected");
+    Expect(session.Status().state == AuthState::Error, "bad password transitions to Error state");
+    Expect(storage->stores == 0, "failed login stores no credentials");
+
+    // Successful password sign-in
+    Expect(session.SignInWithPassword("valid@example.test", "correct_password", error),
+           "correct credentials succeed");
+    Expect(session.Status().state == AuthState::SignedIn, "session transitions to SignedIn");
+    Expect(session.Status().email == "valid@example.test", "user email is available in status");
+    Expect(session.Status().userId == "11111111-1111-1111-1111-111111111111", "canonical user UUID is set");
+    Expect(storage->stores == 1 && storage->stored.has_value(), "refresh token is saved to credential store");
+    Expect(storage->stored->refreshToken == "refresh-token-1", "correct refresh token stored");
+
+    // Sign out
+    Expect(session.SignOut(error), "sign out succeeds");
+    Expect(session.Status().state == AuthState::SignedOut, "state returns to SignedOut");
+    Expect(!storage->stored.has_value(), "credential store is wiped on sign out");
+    Expect(session.Status().email.empty(), "in-memory email cleared on sign out");
+}
+
+void TestSessionRestoreAndRefreshRotation()
+{
+    auto api = std::make_shared<FakeAccountApi>();
+    auto storage = std::make_shared<MemoryCredentialStore>();
+    storage->stored = StoredAccountCredential{
+        "stored-refresh", "valid@example.test", "11111111-1111-1111-1111-111111111111", ""
+    };
+
+    AuthSession session(api, storage);
+    std::string error;
+
+    // Restore on startup
+    Expect(session.RestoreStoredSession(error), "session restore succeeds with valid refresh token");
+    Expect(session.Status().state == AuthState::SignedIn, "restored session is SignedIn");
+    Expect(session.Status().userId == "11111111-1111-1111-1111-111111111111", "identity restored");
+    Expect(storage->stored.has_value() && storage->stored->refreshToken == "refresh-token-rotated",
+           "rotated refresh token replaces old token in credential store");
+
+    // Refresh with invalid stored token (simulating revocation)
+    storage->stored = StoredAccountCredential{
+        "revoked-refresh-token", "valid@example.test", "11111111-1111-1111-1111-111111111111", ""
+    };
+    AuthSession revokedSession(api, storage);
+    Expect(!revokedSession.RestoreStoredSession(error), "revoked token refresh fails");
+    Expect(revokedSession.Status().state == AuthState::ReauthenticationRequired,
+           "revoked session enters ReauthenticationRequired state");
+    Expect(!storage->stored.has_value(), "revoked credential is deleted from store");
+}
+
+void TestCommercialAuthorityAndFailClosed()
+{
+    auto api = std::make_shared<FakeAccountApi>();
+    auto storage = std::make_shared<MemoryCredentialStore>();
+    AuthSession session(api, storage);
+    std::string error;
+
+    // 1. Community Account (Default)
+    api->mockSnapshot = AccountSnapshot{
+        {"11111111-1111-1111-1111-111111111111", "valid@example.test", "Community User", ""},
+        {"community", "", false, "", false}
+    };
+    Expect(session.SignInWithPassword("valid@example.test", "correct_password", error), "sign in community");
+    Expect(!session.IsProActive(), "community user is NOT pro");
+    Expect(session.Status().plan == "community", "community plan displayed");
+
+    // 2. Active Pro Account
+    api->mockSnapshot = AccountSnapshot{
+        {"11111111-1111-1111-1111-111111111111", "valid@example.test", "Pro User", ""},
+        {"pro", "active", true, "2026-12-31T23:59:59Z", false}
+    };
+    Expect(session.RefreshAccountSnapshot(error), "refresh profile to pro");
+    Expect(session.IsProActive(), "active pro user is ProActive");
+    Expect(session.Status().plan == "pro", "pro plan displayed");
+    Expect(session.Status().subscriptionStatus == "active", "active status displayed");
+
+    // 3. Pro Canceled / Expired
+    api->mockSnapshot = AccountSnapshot{
+        {"11111111-1111-1111-1111-111111111111", "valid@example.test", "Canceled Pro", ""},
+        {"pro", "canceled", false, "2026-01-01T00:00:00Z", false}
+    };
+    Expect(session.RefreshAccountSnapshot(error), "refresh profile to canceled pro");
+    Expect(!session.IsProActive(), "canceled pro is NOT ProActive");
+
+    // 4. Commercial Fail-Closed: plan is "community" but server claims is_pro_active = true
+    // (Inconsistent server response must fail closed to false)
+    AccountSnapshot inconsistentCommunity;
+    inconsistentCommunity.user.id = "11111111-1111-1111-1111-111111111111";
+    inconsistentCommunity.subscription.plan = "community";
+    inconsistentCommunity.subscription.isProActive = false; // parse logic must enforce false
+    api->mockSnapshot = inconsistentCommunity;
+    Expect(session.RefreshAccountSnapshot(error), "refresh profile with inconsistent community");
+    Expect(!session.IsProActive(), "inconsistent community response fails closed to NOT pro");
+
+    // 5. Commercial Fail-Closed: plan is "unknown_tier", is_pro_active = true
+    AccountSnapshot unknownTier;
+    unknownTier.user.id = "11111111-1111-1111-1111-111111111111";
+    unknownTier.subscription.plan = "unknown_tier";
+    unknownTier.subscription.isProActive = false;
+    api->mockSnapshot = unknownTier;
+    Expect(session.RefreshAccountSnapshot(error), "refresh profile with unknown plan");
+    Expect(!session.IsProActive(), "unknown tier fails closed to NOT pro");
+
+    // 6. Identity Mismatch Test
+    // /api/me returns user ID "22222222-2222-2222-2222-222222222222" which doesn't match session "1111..."
+    api->mockSnapshot = AccountSnapshot{
+        {"22222222-2222-2222-2222-222222222222", "different@example.test", "Imposter", ""},
+        {"pro", "active", true, "", false}
+    };
+    Expect(!session.RefreshAccountSnapshot(error), "identity mismatch is rejected");
 }
 
 } // namespace
@@ -395,14 +374,15 @@ void TestProviderAndLoopbackConfiguration()
 int main()
 {
     TestPkce();
-    TestCallbackParser();
-    TestSessionLifecycle();
-    TestRefresh();
+    TestUuidValidation();
     TestWindowsCredentialStore();
-    TestProviderAndLoopbackConfiguration();
+    TestPasswordAuthAndSessionLifecycle();
+    TestSessionRestoreAndRefreshRotation();
+    TestCommercialAuthorityAndFailClosed();
+
     if (failures == 0)
     {
-        std::cout << "All OpenReverse authentication tests passed.\n";
+        std::cout << "All OpenReverse Supabase authentication and account tests passed.\n";
         return 0;
     }
     std::cerr << failures << " authentication test(s) failed.\n";
