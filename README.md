@@ -40,8 +40,7 @@ modules, and optional AI context visible together.
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
-- Optional native account foundation using Authorization Code + PKCE S256,
-  loopback-only callbacks, and separate Windows account credential storage
+- Optional native account foundation using Supabase Auth (email/password sign-in and session restore), authoritative `/api/me` profile synchronization, and separate Windows Credential Manager storage
 - Versioned Windows x64 native extension API with bounded manifests, read-only
   analysis queries, controlled commands/navigation/panels, and extension-owned
   `.orev` state
@@ -158,8 +157,8 @@ The [architecture](docs/ARCHITECTURE.md) and
 ownership, scheduling, and analysis boundaries.
 
 Account authentication is optional and never gates Community analysis. Its
-native PKCE flow, loopback callback, secure storage, and current provider-
-configuration blocker are documented in
+Supabase authentication flow, secure storage, and authoritative account
+synchronization are documented in
 [Desktop authentication](docs/AUTHENTICATION.md).
 
 AI is optional. Selected context may include target names, disassembly,
