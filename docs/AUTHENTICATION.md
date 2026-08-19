@@ -1,129 +1,65 @@
-# Desktop authentication
+# Desktop authentication & account integration
 
-Last updated: 2026-08-18
+Last updated: 2026-08-19
 
-## Status and selected flow
+## Status and architecture
 
-The secure native-client foundation is implemented and covered by offline
-regression tests. Production use still requires a legitimate WorkOS AuthKit
-public client, its allowed loopback redirect configuration, and a live
-end-to-end provider test.
-
-OpenReverse uses WorkOS AuthKit as a native public client with OAuth 2.0
-Authorization Code and PKCE S256. The callback is an ephemeral IPv4 loopback
-listener:
+OpenReverse integrates with Supabase Authentication and the authoritative website account endpoint (`GET /api/me`).
 
 ```text
-http://127.0.0.1:<ephemeral-port>/callback
+SUPABASE AUTH (Email/Password & Sessions)
+        ↓
+auth.users.id (Canonical UUID)
+        ↓
+Authoritative GET /api/me (HTTPS Bearer Authentication)
+        ↓
+Safe account snapshot + Entitlement verification (is_pro_active)
 ```
 
-This choice follows WorkOS's current native-application guidance:
-
-- [Authorization URL and native-app redirects](https://workos.com/docs/reference/authkit/authentication/get-authorization-url)
-- [Public-client PKCE support](https://workos.com/docs/sdks/node)
-- [Authentication and refresh requests](https://workos.com/docs/reference/authkit/authentication)
-- [Session logout](https://workos.com/docs/reference/authkit/logout)
-
-The desktop contains only a public client ID. It does not contain a WorkOS API
-key or client secret.
+The desktop contains only client-safe public configuration (Supabase project URL and publishable/anon key). It does not contain database secrets, service role keys, or Stripe secrets.
 
 ## Components and lifecycle
 
-`src/auth` keeps the account boundary separate from analysis and AI:
+`src/auth` keeps the account boundary separate from binary analysis and local AI:
 
-- `pkce.*` generates a 256-bit random state and a cryptographically random PKCE
-  verifier with Windows CNG, then calculates the RFC 7636 S256 challenge.
-- `loopback_callback.*` binds only `127.0.0.1`, requests an ephemeral port,
-  accepts one bounded HTTP/1.1 request, requires the active Host header and
-  exact `/callback` path, and stops after a terminal result, timeout, or cancel.
-- `auth_callback.*` accepts only a bounded authorization code plus exact state,
-  or a bounded provider error. Duplicate, malformed, unknown, and
-  credential-shaped fields are rejected.
-- `auth_session.*` owns the explicit state machine and the single pending login
-  transaction. It invalidates state and destroys the verifier on success,
-  rejection, provider failure, cancellation, or the five-minute timeout.
-- `account_api.*` is the provider boundary. The WorkOS implementation performs
-  only HTTPS requests and never adds a confidential client secret.
-- `secure_credentials.*` stores the refresh credential and bounded account
-  metadata in Windows Credential Manager under `OpenReverse.Account.Session`.
-  The short-lived access token remains in process memory.
-- `auth_client.*` waits for the browser and performs exchanges or refreshes on
-  owned worker threads so the Dear ImGui loop remains responsive.
+- `account_api.*` defines the canonical account models (`AccountUser`, `SubscriptionState`, `AccountSnapshot`, `AccountServiceConfig`) and implements `SupabaseAccountApi` for direct HTTPS authentication and profile synchronization (`/api/me`).
+- `auth_session.*` manages the explicit session state machine (`SignedOut`, `SigningIn`, `SignedIn`, `Refreshing`, `ReauthenticationRequired`, `Error`, `SigningOut`).
+- `secure_credentials.*` securely persists the refresh token in Windows Credential Manager under `OpenReverse.Account.Session`. The short-lived access token remains in process memory.
+- `auth_client.*` performs password authentication, session restore, token rotation, and profile refresh on worker threads to keep Dear ImGui responsive.
+- `pkce.*` and `loopback_callback.*` provide cryptographic PKCE generation and loopback callback infrastructure for future OAuth provider extensions.
 
-At startup, a stored refresh credential is not treated as proof of a live
-session. The account UI enters `ReauthenticationRequired` and requires refresh
-or a new browser sign-in. A rotated refresh credential atomically replaces the
-previous Credential Manager value after a successful provider response.
+At startup, stored refresh credentials trigger a non-blocking session refresh and `/api/me` profile query. Rotated refresh tokens atomically replace previous credentials in Windows Credential Manager.
 
-## Threat model and invariants
+## Canonical identity & commercial authority
 
-The browser callback carries only a short-lived, single-use authorization code
-and state. It never carries an access token, refresh token, API key, license,
-session credential, or provider secret. Those values are also prohibited from
-command-line arguments, `WM_COPYDATA`, custom URI queries, `.orev` projects,
-logs, console output, public configuration, and UI text.
+Identity is strictly canonicalized by Supabase Auth's `auth.users.id` (UUID). Email is not identity.
 
-The listener rejects non-loopback peers, arbitrary callback paths, wrong Host
-headers, headers over 16 KiB, request targets over 8 KiB, and callbacks with:
-
-- missing or duplicate `code` or `state`;
-- malformed percent encoding or unknown fields;
-- oversized values;
-- `token`, `access_token`, `refresh_token`, `api_key`, `client_secret`,
-  `secret`, or `authorization` fields.
-
-State is compared against the only active pending transaction. A mismatch
-invalidates that transaction without logging either value. The pending state
-and verifier are not persisted. Replays and late callbacks therefore have no
-transaction to complete.
-
-The old `openreverse://` token callback, command-line callback forwarding, and
-generic `WM_COPYDATA` URI transport are not part of this design and must not be
-reintroduced as fallbacks.
+The desktop is an untrusted client:
+- Pro commercial entitlement (`is_pro_active`) is trusted only when verified by the authoritative HTTPS `GET /api/me` endpoint.
+- If `/api/me` returns an inconsistent or malformed response (e.g. `plan = "community"` with `is_pro_active = true`), the client fails closed (`isProActive = false`).
+- Community features remain 100% functional and offline regardless of authentication or subscription state.
 
 ## Account and AI credentials
 
-OpenReverse account credentials and user-supplied AI provider credentials are
-independent:
+OpenReverse account credentials and user-supplied BYOK AI provider credentials are completely isolated:
 
 ```text
-OpenReverse.Account.Session   account refresh/session data
-OpenReverse/AI/...            user BYOK provider data
+OpenReverse.Account.Session   account refresh token & session identity
+OpenReverse/AI/...            user BYOK AI provider keys
 ```
 
-Signing out deletes only the account credential and clears the in-memory
-account access token. It does not delete OpenAI-compatible BYOK keys, projects,
-analysis data, or extension state. When a provider session ID is available,
-the desktop also opens the official HTTPS provider logout endpoint.
+Signing out deletes only the account credential and clears the in-memory access token. It does not delete user BYOK keys, `.orev` projects, analysis databases, or extension state.
 
-## Configuration
+## Configuration & environment variables
 
-Development builds read the public WorkOS client identifier from:
+Optional environment overrides for development and self-hosted environments:
 
 ```powershell
-$env:OPENREVERSE_WORKOS_CLIENT_ID = "client_your_public_client_id"
+$env:OPENREVERSE_SUPABASE_URL = "https://your-project.supabase.co"
+$env:OPENREVERSE_SUPABASE_ANON_KEY = "your-client-publishable-key"
+$env:OPENREVERSE_ACCOUNT_API_URL = "https://openreverse.dev"
 ```
-
-The corresponding WorkOS application must be configured as a native/public
-client and allow the documented `http://127.0.0.1` loopback redirect behavior.
-Do not add an API key, client secret, or other private provider credential to
-the executable, repository, installer, environment examples, or frontend.
-
-With no client ID, **Settings > Account** remains safely signed out and explains
-that provider configuration is missing. This does not disable any Community
-feature.
 
 ## Signed-out Community behavior
 
-There is no account wall. Signed-out users can continue to open PE files and
-dumps, attach where Windows permits, disassemble, inspect CFG/Xrefs/strings/
-globals/structures/offsets/signatures, save and load `.orev`, use Version
-Intelligence, load Community extensions, use the CLI, and configure local or
-BYOK AI providers.
-
-## Deferred work
-
-Provider configuration and live login verification remain required before
-production use. Billing, subscriptions, entitlements, licenses, hosted AI, Pro
-distribution, and commercial backend services are not implemented here.
-Authentication remains separate from any future entitlement boundary.
+There is no account wall for Community features. Signed-out users can open PE files and memory dumps, disassemble, inspect CFG, cross-references, strings, globals, structures, offsets, signatures, save and load `.orev` projects, use Version Intelligence, load Community extensions, use the CLI, and configure local or BYOK AI providers.

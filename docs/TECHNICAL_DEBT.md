@@ -79,7 +79,7 @@ Last updated: 2026-08-18
   redistributable corpus run is still required before public beta.
 - Installer compilation is automated; install/launch/uninstall behavior still
   requires a manual clean-VM pass.
-- The optional WorkOS flow still needs legitimate provider configuration and a
-  live end-to-end verification. Community analysis remains usable signed out.
+- The optional Supabase Auth flow uses client-safe public configuration and
+  verifies profile state via `GET /api/me`. Community analysis remains usable signed out.
 - Authenticode signing, signed update manifests, rollback, and WinGet metadata
   remain pending a legitimate release process. No signing is simulated.

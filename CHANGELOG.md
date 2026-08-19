@@ -19,11 +19,11 @@ reconstructed as release notes.
   coverage, and a static JSON corpus-validation tool.
 - Removed the misleading legacy executable-launch analysis command and added
   execution-sentinel coverage for normal, Unicode, and corpus static opens.
-- Added an optional native account foundation with WorkOS public-client PKCE
-  S256, an ephemeral loopback callback, explicit auth states, replay/timeout/
-  cancellation protection, Windows account credential storage, minimal account
-  settings, and offline security regression tests. Production provider
-  configuration and live verification remain pending.
+- Added an optional native account foundation integrated with Supabase Auth
+  and authoritative `GET /api/me` profile synchronization, supporting native
+  email/password sign-in, session restore with refresh-token rotation,
+  isolated Windows Credential Manager storage, explicit auth state machine,
+  Settings > Account UI, and commercial fail-closed verification.
 - Added a versioned Windows x64 native extension ABI, bounded manifests,
   controlled read-only analysis queries, commands, navigation, host-rendered
   panels, lifecycle diagnostics, extension-owned project state, compatibility

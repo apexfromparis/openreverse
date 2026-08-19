@@ -179,17 +179,16 @@ sandbox boundary. Out-of-process isolation remains research.
 
 ## Optional account authentication
 
-`src/auth` implements a separate native public-client account boundary. WorkOS
-AuthKit Authorization Code + PKCE S256 uses an ephemeral `127.0.0.1` callback;
-the pending verifier and random state live only for one bounded transaction.
-The callback parser accepts a code and state, never final credentials.
+`src/auth` implements a separate native public-client account boundary. Supabase
+Auth Email/Password authentication and session refresh communicate over HTTPS with
+the central account service and sync profile state via `GET /api/me`.
 
 `AuthSession` owns the account state machine, `IAccountApi` isolates provider
-exchange/refresh/logout behavior, and `DesktopAuthClient` owns asynchronous
-callback and network work. A short-lived access token stays in memory. A
-refresh credential and bounded account metadata use Windows Credential Manager
-under an account-specific target. AI BYOK storage remains a different
-namespace, and account logout does not mutate projects or AI keys. See
+sign-in/refresh/logout/profile behavior, and `DesktopAuthClient` owns asynchronous
+network worker threads. A short-lived access token stays in memory. A refresh
+credential and bounded account metadata use Windows Credential Manager under an
+account-specific target (`OpenReverse.Account.Session`). AI BYOK storage remains a
+different namespace, and account logout does not mutate projects or AI keys. See
 [Desktop authentication](AUTHENTICATION.md).
 
 Authentication is not an entitlement boundary and does not gate Community
