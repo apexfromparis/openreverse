@@ -196,12 +196,14 @@ bool AuthSession::RefreshAccountSnapshot(std::string& error)
     if (fetched)
     {
         snapshot_ = updated;
+        accountSyncFailed_ = false;
         message_ = "Account profile up to date.";
         return true;
     }
     else
     {
-        message_ = "Failed to synchronize profile: " + error;
+        accountSyncFailed_ = true;
+        message_ = "Signed in — account status unavailable.";
         return false;
     }
 }
@@ -217,10 +219,14 @@ bool AuthSession::SignOut(std::string& error)
         token = accessToken_;
     }
 
-    if (api_ && !token.empty())
+    bool remoteRevoked = true;
+    if (api_ && !token.empty() && api_->IsConfigured())
     {
-        std::string ignored;
-        api_->SignOut(token, ignored);
+        std::string remoteError;
+        if (!api_->SignOut(token, remoteError))
+        {
+            remoteRevoked = false;
+        }
     }
     SecureClear(token);
 
@@ -233,7 +239,15 @@ bool AuthSession::SignOut(std::string& error)
     std::lock_guard<std::mutex> lock(mutex_);
     ClearActiveSessionLocked();
     state_ = AuthState::SignedOut;
-    message_ = "Signed out.";
+    if (!remoteRevoked)
+    {
+        message_ = "Signed out locally. Remote session revocation could not be confirmed.";
+        error = message_;
+    }
+    else
+    {
+        message_ = "Signed out.";
+    }
     return true;
 }
 
@@ -260,6 +274,7 @@ AuthStatus AuthSession::Status() const
     status.message = message_;
     status.accessTokenExpiresAtUnix = accessTokenExpiresAtUnix_;
     status.providerConfigured = api_ ? api_->IsConfigured() : false;
+    status.accountSyncFailed = accountSyncFailed_;
     return status;
 }
 
@@ -295,6 +310,7 @@ void AuthSession::ClearActiveSessionLocked()
     SecureClear(accessToken_);
     accessTokenExpiresAtUnix_ = 0;
     ClearAccountSnapshot(snapshot_);
+    accountSyncFailed_ = false;
 }
 
 bool AuthSession::ApplyTokenResponseLocked(AuthTokenResponse& response, std::string& error)
@@ -335,6 +351,7 @@ bool AuthSession::ApplyTokenResponseLocked(AuthTokenResponse& response, std::str
     snapshot_.subscription.isProActive = false;
 
     // Query /api/me for authoritative profile and subscription
+    bool profileSynced = false;
     if (api_)
     {
         AccountSnapshot profileSnapshot;
@@ -342,11 +359,20 @@ bool AuthSession::ApplyTokenResponseLocked(AuthTokenResponse& response, std::str
         if (api_->GetAccountProfile(accessToken_, response.user.id, profileSnapshot, profileError))
         {
             snapshot_ = profileSnapshot;
+            profileSynced = true;
         }
     }
 
     state_ = AuthState::SignedIn;
-    message_ = "Signed in.";
+    accountSyncFailed_ = !profileSynced;
+    if (profileSynced)
+    {
+        message_ = "Signed in.";
+    }
+    else
+    {
+        message_ = "Signed in — account status unavailable.";
+    }
     ClearAuthTokenResponse(response);
     return true;
 }

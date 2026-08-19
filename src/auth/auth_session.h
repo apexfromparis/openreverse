@@ -35,6 +35,7 @@ struct AuthStatus {
     std::string message;
     int64_t accessTokenExpiresAtUnix = 0;
     bool providerConfigured = false;
+    bool accountSyncFailed = false;
 };
 
 class AuthSession {
@@ -74,6 +75,7 @@ private:
     std::string accessToken_;
     int64_t accessTokenExpiresAtUnix_ = 0;
     AccountSnapshot snapshot_;
+    bool accountSyncFailed_ = false;
 };
 
 } // namespace openreverse::auth

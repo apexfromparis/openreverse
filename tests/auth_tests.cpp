@@ -68,7 +68,7 @@ public:
     FakeAccountApi()
     {
         config.supabaseUrl = "https://auth.example.test";
-        config.supabasePublishableKey = "fake_anon_key";
+        config.supabasePublishableKey = "real_anon_key_for_testing";
         config.accountApiBaseUrl = "https://example.test";
         config.signupUrl = "https://example.test/signup";
         config.accountManageUrl = "https://example.test/account";
@@ -127,9 +127,14 @@ public:
         return false;
     }
 
-    bool SignOut(const std::string&, std::string&) override
+    bool SignOut(const std::string&, std::string& error) override
     {
         ++signOuts;
+        if (!signOutSuccess)
+        {
+            error = "Remote logout connection failed";
+            return false;
+        }
         return true;
     }
 
@@ -147,7 +152,7 @@ public:
 
         if (profileErrorMode)
         {
-            error = "Profile service unavailable";
+            error = "Account endpoint temporarily unavailable";
             return false;
         }
 
@@ -167,6 +172,7 @@ public:
     };
     bool configured = true;
     bool profileErrorMode = false;
+    bool signOutSuccess = true;
     int signIns = 0;
     int refreshes = 0;
     int signOuts = 0;
@@ -214,6 +220,27 @@ void TestUuidValidation()
     Expect(!IsValidUuid("123e4567_e89b-12d3-a456-426614174000"), "wrong delimiter UUID is rejected");
     Expect(!IsValidUuid("123e4567-e89b-12d3-a456-42661417400g"), "non-hex character UUID is rejected");
     Expect(!IsValidUuid(""), "empty string is rejected");
+}
+
+void TestConfigurationValidation()
+{
+    AccountServiceConfig emptyConfig;
+    SupabaseAccountApi emptyApi(emptyConfig);
+    Expect(!emptyApi.IsConfigured(), "empty configuration is not configured");
+
+    AccountServiceConfig placeholderConfig;
+    placeholderConfig.supabaseUrl = "https://your-project.supabase.co";
+    placeholderConfig.supabasePublishableKey = "client_publishable_placeholder";
+    placeholderConfig.accountApiBaseUrl = "https://example.com";
+    SupabaseAccountApi placeholderApi(placeholderConfig);
+    Expect(!placeholderApi.IsConfigured(), "placeholder configuration is rejected");
+
+    AccountServiceConfig validConfig;
+    validConfig.supabaseUrl = "https://xyz123.supabase.co";
+    validConfig.supabasePublishableKey = "sb_publishable_key_xyz123";
+    validConfig.accountApiBaseUrl = "https://openreverse.dev";
+    SupabaseAccountApi validApi(validConfig);
+    Expect(validApi.IsConfigured(), "legitimate HTTPS configuration is accepted");
 }
 
 void TestWindowsCredentialStore()
@@ -307,6 +334,38 @@ void TestSessionRestoreAndRefreshRotation()
     Expect(!storage->stored.has_value(), "revoked credential is deleted from store");
 }
 
+void TestAccountSyncFailureAndLogoutWarning()
+{
+    auto api = std::make_shared<FakeAccountApi>();
+    auto storage = std::make_shared<MemoryCredentialStore>();
+    AuthSession session(api, storage);
+    std::string error;
+
+    // Simulate /api/me outage during sign in
+    api->profileErrorMode = true;
+    Expect(session.SignInWithPassword("valid@example.test", "correct_password", error),
+           "sign in succeeds even when /api/me is down");
+    Expect(session.Status().state == AuthState::SignedIn, "state is SignedIn");
+    Expect(session.Status().accountSyncFailed, "accountSyncFailed is true");
+    Expect(!session.IsProActive(), "Pro fails closed when /api/me is unavailable");
+    Expect(session.Status().message == "Signed in — account status unavailable.",
+           "clear message indicating account status unavailable");
+
+    // Recover /api/me
+    api->profileErrorMode = false;
+    Expect(session.RefreshAccountSnapshot(error), "profile refresh succeeds");
+    Expect(!session.Status().accountSyncFailed, "accountSyncFailed cleared");
+    Expect(session.Status().message == "Account profile up to date.", "updated status message");
+
+    // Remote logout failure
+    api->signOutSuccess = false;
+    Expect(session.SignOut(error), "local logout succeeds even if remote logout fails");
+    Expect(session.Status().state == AuthState::SignedOut, "session is SignedOut");
+    Expect(!storage->stored.has_value(), "local credentials deleted on logout");
+    Expect(session.Status().message.find("Remote session revocation could not be confirmed") != std::string::npos,
+           "safe warning message recorded on remote logout failure");
+}
+
 void TestCommercialAuthorityAndFailClosed()
 {
     auto api = std::make_shared<FakeAccountApi>();
@@ -342,11 +401,10 @@ void TestCommercialAuthorityAndFailClosed()
     Expect(!session.IsProActive(), "canceled pro is NOT ProActive");
 
     // 4. Commercial Fail-Closed: plan is "community" but server claims is_pro_active = true
-    // (Inconsistent server response must fail closed to false)
     AccountSnapshot inconsistentCommunity;
     inconsistentCommunity.user.id = "11111111-1111-1111-1111-111111111111";
     inconsistentCommunity.subscription.plan = "community";
-    inconsistentCommunity.subscription.isProActive = false; // parse logic must enforce false
+    inconsistentCommunity.subscription.isProActive = false;
     api->mockSnapshot = inconsistentCommunity;
     Expect(session.RefreshAccountSnapshot(error), "refresh profile with inconsistent community");
     Expect(!session.IsProActive(), "inconsistent community response fails closed to NOT pro");
@@ -361,7 +419,6 @@ void TestCommercialAuthorityAndFailClosed()
     Expect(!session.IsProActive(), "unknown tier fails closed to NOT pro");
 
     // 6. Identity Mismatch Test
-    // /api/me returns user ID "22222222-2222-2222-2222-222222222222" which doesn't match session "1111..."
     api->mockSnapshot = AccountSnapshot{
         {"22222222-2222-2222-2222-222222222222", "different@example.test", "Imposter", ""},
         {"pro", "active", true, "", false}
@@ -375,9 +432,11 @@ int main()
 {
     TestPkce();
     TestUuidValidation();
+    TestConfigurationValidation();
     TestWindowsCredentialStore();
     TestPasswordAuthAndSessionLifecycle();
     TestSessionRestoreAndRefreshRotation();
+    TestAccountSyncFailureAndLogoutWarning();
     TestCommercialAuthorityAndFailClosed();
 
     if (failures == 0)

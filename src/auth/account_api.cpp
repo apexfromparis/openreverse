@@ -22,12 +22,6 @@ namespace openreverse::auth {
 namespace {
 
 constexpr size_t kMaximumResponseBytes = 1024 * 1024;
-constexpr char kDefaultSupabaseUrl[] = "https://auth.openreverse.dev";
-constexpr char kDefaultSupabaseKey[] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.client_publishable_placeholder";
-constexpr char kDefaultAccountApiBaseUrl[] = "https://openreverse.dev";
-constexpr char kDefaultSignupUrl[] = "https://openreverse.dev/signup";
-constexpr char kDefaultAccountManageUrl[] = "https://openreverse.dev/account";
-constexpr char kDefaultBillingManageUrl[] = "https://openreverse.dev/account";
 
 bool IsSafeIdentifier(const std::string& value, size_t maximum)
 {
@@ -406,28 +400,59 @@ SupabaseAccountApi SupabaseAccountApi::FromEnvironment()
 {
     AccountServiceConfig config;
     config.supabaseUrl = GetEnvVar("OPENREVERSE_SUPABASE_URL");
-    if (config.supabaseUrl.empty()) config.supabaseUrl = kDefaultSupabaseUrl;
 
     config.supabasePublishableKey = GetEnvVar("OPENREVERSE_SUPABASE_ANON_KEY");
     if (config.supabasePublishableKey.empty())
         config.supabasePublishableKey = GetEnvVar("OPENREVERSE_SUPABASE_PUBLISHABLE_KEY");
-    if (config.supabasePublishableKey.empty()) config.supabasePublishableKey = kDefaultSupabaseKey;
 
     config.accountApiBaseUrl = GetEnvVar("OPENREVERSE_ACCOUNT_API_URL");
     if (config.accountApiBaseUrl.empty())
         config.accountApiBaseUrl = GetEnvVar("OPENREVERSE_WEBSITE_URL");
-    if (config.accountApiBaseUrl.empty()) config.accountApiBaseUrl = kDefaultAccountApiBaseUrl;
 
-    config.signupUrl = config.accountApiBaseUrl + "/signup";
-    config.accountManageUrl = config.accountApiBaseUrl + "/account";
-    config.billingManageUrl = config.accountApiBaseUrl + "/account";
+    if (!config.accountApiBaseUrl.empty())
+    {
+        config.signupUrl = config.accountApiBaseUrl + "/signup";
+        config.accountManageUrl = config.accountApiBaseUrl + "/account";
+        config.billingManageUrl = config.accountApiBaseUrl + "/account";
+    }
     return SupabaseAccountApi(std::move(config));
 }
 
 bool SupabaseAccountApi::IsConfigured() const
 {
-    return !config_.supabaseUrl.empty() && !config_.supabasePublishableKey.empty() &&
-           !config_.accountApiBaseUrl.empty();
+    if (config_.supabaseUrl.empty() || config_.supabasePublishableKey.empty() ||
+        config_.accountApiBaseUrl.empty())
+    {
+        return false;
+    }
+
+    const auto hasPlaceholder = [](const std::string& str) {
+        std::string lower = str;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return lower.find("placeholder") != std::string::npos ||
+               lower.find("your-project") != std::string::npos ||
+               lower.find("example.com") != std::string::npos ||
+               lower.find("example.test") != std::string::npos ||
+               lower.find("change_me") != std::string::npos ||
+               lower.find("auth.openreverse.dev") != std::string::npos;
+    };
+
+    if (hasPlaceholder(config_.supabaseUrl) ||
+        hasPlaceholder(config_.supabasePublishableKey) ||
+        hasPlaceholder(config_.accountApiBaseUrl))
+    {
+        return false;
+    }
+
+    ParsedUrl parsedSupabase;
+    std::string error;
+    if (!ParseHttpsUrl(config_.supabaseUrl, parsedSupabase, error)) return false;
+
+    ParsedUrl parsedApi;
+    if (!ParseHttpsUrl(config_.accountApiBaseUrl, parsedApi, error)) return false;
+
+    return true;
 }
 
 bool SupabaseAccountApi::SignInWithPassword(const std::string& email,
@@ -562,8 +587,13 @@ bool SupabaseAccountApi::SignOut(const std::string& accessToken,
 
     std::string responseBody;
     DWORD statusCode = 0;
-    ExecuteHttpRequest(endpoint, L"POST", headers, "{}", responseBody, statusCode, error);
+    const bool executed = ExecuteHttpRequest(endpoint, L"POST", headers, "{}", responseBody, statusCode, error);
     SecureClear(responseBody);
+    if (!executed || (statusCode != 200 && statusCode != 204))
+    {
+        error = "Remote logout request failed (status " + std::to_string(statusCode) + ")";
+        return false;
+    }
     return true;
 }
 
