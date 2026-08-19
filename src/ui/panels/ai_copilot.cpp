@@ -12,17 +12,14 @@ void AICopilotPanel::OpenSettings()
     settingsOpen_ = true;
 }
 
-void AICopilotPanel::RenderSettings(Application& app)
+void AICopilotPanel::RenderSettingsInline(Application& app)
 {
-    if (!settingsOpen_)
-        return;
-
-    ImGui::SetNextWindowSize(ImVec2(520.0f, 430.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Settings > AI", &settingsOpen_))
-    {
-        ImGui::End();
-        return;
-    }
+    workspace_ui::CardBegin("##AICopilotConfigCard", ImVec2(0.0f, 320.0f));
+    workspace_ui::TextHeading("AI Copilot Configuration (BYOK)", 2);
+    workspace_ui::TextMuted("Connect your local (Ollama / LM Studio) or cloud (OpenRouter / OpenAI) model.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
 
     workspace_ui::SectionLabel("Provider presets");
     if (ImGui::Button("Ollama / Qwen Coder"))
@@ -46,7 +43,7 @@ void AICopilotPanel::RenderSettings(Application& app)
         strncpy_s(model_, "qwen/qwen-2.5-coder-32b-instruct", _TRUNCATE);
     }
 
-    workspace_ui::SectionLabel("Connection");
+    workspace_ui::SectionLabel("Connection Settings");
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("Provider", provider_, sizeof(provider_));
     ImGui::SetNextItemWidth(-1.0f);
@@ -56,21 +53,38 @@ void AICopilotPanel::RenderSettings(Application& app)
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("API key", apiKey_, sizeof(apiKey_), ImGuiInputTextFlags_Password);
 
-    if (ImGui::Button("Apply"))
+    ImGui::Spacing();
+    if (workspace_ui::PrimaryButton("Apply Configuration", ImVec2(160.0f, 32.0f)))
         app.aiService.Configure(provider_, baseUrl_, model_);
     ImGui::SameLine();
-    if (ImGui::Button("Save key securely"))
+    if (workspace_ui::SecondaryButton("Save Key to Windows Vault", ImVec2(200.0f, 32.0f)))
     {
         app.aiService.Configure(provider_, baseUrl_, model_);
         if (app.aiService.SaveApiKey(apiKey_))
             apiKey_[0] = '\0';
     }
     ImGui::SameLine();
-    if (ImGui::Button("Forget key"))
+    if (workspace_ui::SecondaryButton("Forget Key", ImVec2(110.0f, 32.0f)))
         app.aiService.ClearApiKey();
 
     ImGui::Spacing();
-    ImGui::TextDisabled("%s", app.aiService.Status().c_str());
+    ImGui::TextDisabled("Status: %s", app.aiService.Status().c_str());
+    workspace_ui::CardEnd();
+}
+
+void AICopilotPanel::RenderSettings(Application& app)
+{
+    if (!settingsOpen_)
+        return;
+
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 430.0f), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Settings > AI", &settingsOpen_))
+    {
+        ImGui::End();
+        return;
+    }
+
+    RenderSettingsInline(app);
     ImGui::End();
 }
 

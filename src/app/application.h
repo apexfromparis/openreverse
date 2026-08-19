@@ -48,6 +48,15 @@ enum class AnalysisTargetKind {
     LiveProcess
 };
 
+enum class AppNavView {
+    Home,
+    Workspace,
+    Projects,
+    VersionIntelligence,
+    Extensions,
+    Settings
+};
+
 class Application {
 public:
     Application();
@@ -99,6 +108,8 @@ public:
     void RestoreProjectUiAfterAnalysis();
     void NotifyExtensionsSessionChanged();
     void NavigateToAddress(uint64_t address);
+    void SetNavView(AppNavView view) { activeNavView_ = view; }
+    AppNavView CurrentNavView() const { return activeNavView_; }
 
     std::string      loadedFilePath;
     std::vector<uint8_t> offlineFileBuffer;
@@ -132,6 +143,13 @@ private:
     panels::VersionIntelligencePanel versionIntelligencePanel;
     auth::DesktopAuthClient accountAuth_;
 
+    AppNavView       activeNavView_ = AppNavView::Home;
+    bool             showProfileDropdown_ = false;
+    bool             showFirstLaunchModal_ = false;
+    bool             showQuickOpenModal_ = false;
+    char             quickOpenFilter_[128] = "";
+    int              settingsTab_ = 0;
+
     bool             showGotoModal_ = false;
     char             gotoAddressBuf_[32] = "0";
     bool             layoutInitialized_ = false;
@@ -160,6 +178,16 @@ private:
     char             dumpImageBaseBuf_[32] = "0x140000000";
     char             dumpModuleSizeBuf_[32] = "0";
     bool             openingProjectTarget_ = false;
+
+    void RenderAppShell();
+    void RenderSidebar(float width, float height);
+    void RenderTopBar(float height);
+    void RenderHomeScreen();
+    void RenderProjectsScreen();
+    void RenderSettingsScreen();
+    void RenderProfileDropdown();
+    void RenderFirstLaunchModal();
+    void RenderQuickOpenModal();
 
     void RenderMenuBar();
     void RenderBrandBar();

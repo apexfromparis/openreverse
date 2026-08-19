@@ -3,6 +3,7 @@
 #include "utils/logger.h"
 #include "utils/helpers.h"
 #include "ui/panels/analysis_panel.h"
+#include "ui/workspace_ui.h"
 #include "analysis/disassembler.h"
 
 #include <windows.h>
@@ -155,38 +156,32 @@ Application::~Application()
 
 void Application::Shutdown()
 {
-    if (shutdown_)
-        return;
+    if (shutdown_) return;
     shutdown_ = true;
-    analysisScheduler.Shutdown();
-    DetachFromProcess();
-    if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
+    analysisScheduler.CancelAllAndWait();
     extensionManager.Shutdown();
+    DetachFromProcess();
 }
 
 bool Application::AttachToProcess(DWORD pid)
 {
     DetachFromProcess();
-    if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
-    analysisSession.ClearProject();
-
-    processHandle = processAccess.OpenProcess(pid);
-    if (!processHandle)
+    HANDLE handle = processAccess.OpenProcess(pid);
+    if (!handle)
     {
-        const DWORD error = GetLastError();
-        const std::string message = ProcessOpenFailureMessage(error);
-        Logger::Get().Log(LogLevel::Error, "%s", message.c_str());
+        Logger::Get().Log(LogLevel::Error, "Failed to open process PID %d", pid);
         return false;
     }
 
+    processHandle = handle;
     attachedPID = pid;
+    is64Bit = processAccess.IsProcess64Bit(handle);
     isAttached = true;
     targetKind = AnalysisTargetKind::LiveProcess;
-    is64Bit = processAccess.IsProcess64Bit(processHandle);
-    memoryReader.SetOfflineBuffer(nullptr, 0);
 
-    auto processes = processAccess.ListProcesses();
-    for (auto& p : processes)
+    const auto procs = processAccess.ListProcesses();
+    attachedProcessName = "Process_" + std::to_string(pid);
+    for (const auto& p : procs)
     {
         if (p.pid == pid)
         {
@@ -196,7 +191,6 @@ bool Application::AttachToProcess(DWORD pid)
     }
 
     disassembler.Init(is64Bit);
-
     memoryReader.RefreshRegions(processHandle);
     moduleCatalog.RefreshModules(processHandle);
 
@@ -204,7 +198,7 @@ bool Application::AttachToProcess(DWORD pid)
         attachedProcessName.c_str(), pid, is64Bit ? "x64" : "x86");
 
     extensionManager.NotifySessionChanged(targetGeneration, true);
-
+    activeNavView_ = AppNavView::Workspace;
     return true;
 }
 
@@ -277,31 +271,30 @@ void Application::PublishModuleAnalysis(ModuleAnalysisResult result)
         static_cast<long long>(result.codeDuration.count()),
         static_cast<long long>(result.cfgDuration.count()),
         static_cast<long long>(result.stringDuration.count()));
-    if (result.codeBudgetReached || result.instructionBudgetReached ||
-        result.cfgInstructionBudgetReached || result.functionLimitReached ||
-        result.stringBudgetReached || result.timeBudgetReached)
-        Logger::Get().Log(LogLevel::Warning, "Module analysis stopped at a configured limit");
-    RestoreProjectUiAfterAnalysis();
-    NotifyExtensionsSessionChanged();
 }
 
 bool Application::AnalyzeCurrentModuleSynchronously()
 {
-    if (!isAttached || !processHandle) return false;
     const ModuleInfo* module = moduleCatalog.FindModuleByAddress(currentAddress);
     if (!module && !moduleCatalog.GetModules().empty())
         module = &moduleCatalog.GetModules().front();
-    if (!module)
-    {
-        Logger::Get().Log(LogLevel::Warning, "No module found to analyze.");
-        return false;
-    }
+    if (!module) return false;
+
     ModuleAnalysisPipeline pipeline;
-    auto result = pipeline.AnalyzeLive(processHandle, *module, is64Bit);
+    ModuleAnalysisResult result;
+    if (targetKind == AnalysisTargetKind::LiveProcess)
+    {
+        if (!processHandle) return false;
+        result = pipeline.AnalyzeLive(processHandle, *module, is64Bit);
+    }
+    else
+    {
+        if (offlineImageBuffer.empty() || !offlinePEInfo.valid) return false;
+        result = pipeline.AnalyzeMappedImage(offlineImageBuffer, offlineFileBuffer.size(), *module, offlinePEInfo);
+    }
     if (!result.success)
     {
-        if (!result.cancelled)
-            Logger::Get().Log(LogLevel::Error, "Module analysis failed: %s", result.error.c_str());
+        Logger::Get().Log(LogLevel::Error, "Synchronous analysis failed: %s", result.error.c_str());
         return false;
     }
     PublishModuleAnalysis(std::move(result));
@@ -311,30 +304,23 @@ bool Application::AnalyzeCurrentModuleSynchronously()
 void Application::ShowOpenFileDialog()
 {
     std::string path;
-    if (SelectFilePath(
-        L"PE Executable & Driver Files (*.sys;*.exe;*.dll)\0*.sys;*.exe;*.dll\0"
-        L"Windows Driver (.sys)\0*.sys\0All Files (*.*)\0*.*\0",
-        L"Open Windows Kernel Driver (.sys) or Executable (.exe/.dll)", false, path))
+    if (SelectFilePath(L"Supported PE binaries (*.sys;*.exe;*.dll)\0*.sys;*.exe;*.dll\0All Files (*.*)\0*.*\0",
+                       L"Open PE binary or driver file", false, path))
+    {
         OpenBinaryFile(path);
+    }
 }
 
 void Application::ShowOpenDumpDialog()
 {
     std::string path;
-    if (SelectFilePath(L"Memory dumps (*.dmp;*.mdmp;*.bin)\0*.dmp;*.mdmp;*.bin\0"
-                       L"All Files (*.*)\0*.*\0",
-                       L"Open a mapped image, raw snapshot, or Windows minidump", false, path))
+    if (SelectFilePath(L"Supported memory dumps (*.dmp;*.mdmp;*.bin)\0*.dmp;*.mdmp;*.bin\0All Files (*.*)\0*.*\0",
+                       L"Open a mapped PE image, raw memory snapshot, or minidump", false, path))
     {
-        DumpLoader loader;
-        const auto detected = loader.Load(path);
-        if (detected.success)
-        {
-            OpenDumpFile(path);
-            return;
-        }
-
         pendingDumpPath_ = path;
-        pendingDumpModules_ = detected.availableModules;
+        DumpLoader loader;
+        DumpLoadResult probe = loader.Load(path, {});
+        pendingDumpModules_ = probe.availableModules;
         pendingDumpModuleIndex_ = 0;
         dumpImportError_.clear();
         if (pendingDumpModules_.empty())
@@ -424,9 +410,7 @@ bool Application::OpenProjectFile(const std::string& filePath)
         if (!ShowProjectTargetDialog(targetPath)) return false;
     }
 
-    project.target.path = targetPath;
-    if (analysisSession.HasProject()) extensionManager.NotifyProjectClosed();
-    analysisSession.SetLoadedProject(std::move(project), filePath, restoreTargetBoundState);
+    analysisSession.SetLoadedProject(project, filePath, restoreTargetBoundState);
     openingProjectTarget_ = true;
     bool opened = false;
     const ProjectTarget& target = analysisSession.Project().target;
@@ -459,6 +443,7 @@ bool Application::OpenProjectFile(const std::string& filePath)
     extensionManager.NotifyProjectOpened();
     Logger::Get().Log(LogLevel::Info, "Opened OpenReverse project: %s%s", filePath.c_str(),
         restoreTargetBoundState ? "" : " (changed target; annotations not restored)");
+    activeNavView_ = AppNavView::Workspace;
     return true;
 }
 
@@ -481,22 +466,15 @@ bool Application::SaveProjectFile(bool saveAs)
         return false;
     }
 
+    std::string error;
     ProjectTarget target;
     target.kind = ProjectKindFromTarget(targetKind);
     target.path = loadedFilePath;
     target.architecture = is64Bit ? "x64" : "x86";
     target.imageBase = analysis->module.baseAddress;
-    target.moduleSize = analysis->module.size;
-    if (target.kind == ProjectTargetKind::MinidumpModule)
-        target.selectedModuleBase = analysis->module.baseAddress;
-    std::string error;
-    if (!ProjectStore::ComputeFileSha256(target.path, target.sha256, error))
-    {
-        Logger::Get().Log(LogLevel::Error, "Project save failed: %s", error.c_str());
-        MessageBoxA(nullptr, error.c_str(), "Save OpenReverse project", MB_OK | MB_ICONERROR);
-        return false;
-    }
-    target.module = analysis->identity;
+    target.moduleSize = static_cast<uint32_t>(std::min<uint64_t>(
+        analysis->module.size, (std::numeric_limits<uint32_t>::max)()));
+    target.sha256 = analysis->identity.sha256;
     target.module.name = analysis->module.name;
     target.module.sha256 = target.sha256;
     target.module.imageBase = analysis->module.baseAddress;
@@ -598,21 +576,13 @@ bool Application::OpenBinaryFile(const std::string& filePath)
             const auto raw = offlineFileBuffer;
             const ModuleInfo module{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage};
             Application* application = this;
-            offlineAnalysisJobId = analysisScheduler.Submit("Offline PE analysis",
+            offlineAnalysisJobId = analysisScheduler.Submit("Offline binary analysis",
                 [application, generation, mapped, raw, module, info](
                     const CancellationToken& cancellation,
                     const AnalysisScheduler::ProgressCallback& progress) mutable {
-                    ModuleAnalysisOptions options;
-                    options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
-                    options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
                     ModuleAnalysisPipeline pipeline;
                     auto result = pipeline.AnalyzeMappedImage(
-                        mapped, raw.size(), module, info, options, &cancellation, progress);
-                    std::string identityError;
-                    ModuleIdentity identity;
-                    if (result.success && ComputeModuleIdentity(raw, info, module.name,
-                                                                 identity, identityError))
-                        result.identity = std::move(identity);
+                        mapped, raw.size(), module, info, {}, &cancellation, progress);
                     return [application, generation, result = std::move(result)]() mutable {
                         if (application->targetGeneration != generation) return;
                         application->offlineAnalysisJobId = 0;
@@ -625,59 +595,37 @@ bool Application::OpenBinaryFile(const std::string& filePath)
                         }
                         application->analysisPanel.ApplyModuleAnalysis(
                             *application, std::move(result));
+                        application->RestoreProjectUiAfterAnalysis();
                     };
                 });
-            Logger::Get().Log(LogLevel::Info, "Offline analysis queued: %s",
+            Logger::Get().Log(LogLevel::Info, "Offline binary analysis queued: %s",
                 attachedProcessName.c_str());
+            activeNavView_ = AppNavView::Workspace;
             return true;
         }
 
-        std::cout << "[*] Running deterministic mapped-image analysis..." << std::endl;
-        ModuleInfo module{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage};
-        ModuleAnalysisOptions options;
-        options.maxCodeBytes = 16ULL * 1024ULL * 1024ULL;
-        options.maxStringBytes = 64ULL * 1024ULL * 1024ULL;
         ModuleAnalysisPipeline pipeline;
-        auto result = pipeline.AnalyzeMappedImage(
-            offlineImageBuffer, offlineFileBuffer.size(), module, info, options);
-        if (!result.success)
+        auto analysis = pipeline.AnalyzeMappedImage(
+            offlineImageBuffer, offlineFileBuffer.size(),
+            ModuleInfo{attachedProcessName, loadedFilePath, info.imageBase, info.sizeOfImage}, info);
+        if (!analysis.success)
         {
-            const std::string error = result.error.empty() ? "Offline analysis was cancelled" : result.error;
+            const std::string error = analysis.error.empty() ? "Analysis was cancelled" : analysis.error;
             Logger::Get().Log(LogLevel::Error, "Offline analysis failed: %s", error.c_str());
-            std::cout << "\033[1;31m[-] " << error << "\033[0m" << std::endl;
             DetachFromProcess();
             return false;
         }
-
-        std::string identityError;
-        ModuleIdentity fileIdentity;
-        if (ComputeModuleIdentity(offlineFileBuffer, info, attachedProcessName,
-                                  fileIdentity, identityError))
-            result.identity = std::move(fileIdentity);
-        else
-            Logger::Get().Log(LogLevel::Warning, "%s", identityError.c_str());
-
-        PublishModuleAnalysis(std::move(result));
-        Logger::Get().Log(LogLevel::Info,
-            "Loaded offline PE: %s (%s, %zu bytes, %zu sections)",
-            attachedProcessName.c_str(), is64Bit ? "x64" : "x86",
-            offlineFileBuffer.size(), info.sections.size());
-        std::cout << "[+] Analysis completed successfully!" << std::endl;
+        PublishModuleAnalysis(std::move(analysis));
+        RestoreProjectUiAfterAnalysis();
+        Logger::Get().Log(LogLevel::Info, "Opened offline target: %s (%s, %zu bytes)",
+            attachedProcessName.c_str(), is64Bit ? "x64" : "x86", offlineFileBuffer.size());
+        activeNavView_ = AppNavView::Workspace;
         return true;
     }
     catch (const std::exception& exception)
     {
         DetachFromProcess();
-        Logger::Get().Log(LogLevel::Error, "Offline analysis exception: %s", exception.what());
-        std::cout << "\033[1;31m[-] Offline analysis failed: " << exception.what()
-                  << "\033[0m" << std::endl;
-        return false;
-    }
-    catch (...)
-    {
-        DetachFromProcess();
-        Logger::Get().Log(LogLevel::Error, "Offline analysis failed with an unknown error");
-        std::cout << "\033[1;31m[-] Offline analysis failed with an unknown error\033[0m" << std::endl;
+        Logger::Get().Log(LogLevel::Error, "Failed to open offline file: %s", exception.what());
         return false;
     }
 }
@@ -687,14 +635,10 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
     try
     {
         DumpLoader loader;
-        auto dump = loader.Load(filePath, options);
+        DumpLoadResult dump = loader.Load(filePath, options);
         if (!dump.success)
         {
             Logger::Get().Log(LogLevel::Error, "Dump import failed: %s", dump.error.c_str());
-            if (!dump.availableModules.empty())
-                Logger::Get().Log(LogLevel::Info,
-                    "The minidump contains %zu modules; select one by base address",
-                    dump.availableModules.size());
             return false;
         }
 
@@ -755,6 +699,7 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
                 });
             Logger::Get().Log(LogLevel::Info, "Static dump analysis queued: %s",
                 attachedProcessName.c_str());
+            activeNavView_ = AppNavView::Workspace;
             return true;
         }
 
@@ -771,6 +716,7 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
         PublishModuleAnalysis(std::move(analysis));
         Logger::Get().Log(LogLevel::Info, "Loaded static dump: %s (%s, %zu bytes)",
             attachedProcessName.c_str(), is64Bit ? "x64" : "x86", offlineImageBuffer.size());
+        activeNavView_ = AppNavView::Workspace;
         return true;
     }
     catch (const std::exception& exception)
@@ -791,6 +737,8 @@ void Application::NavigateToAddress(uint64_t address)
 void Application::Render()
 {
     analysisScheduler.DrainCompletions();
+
+    // Global Shortcuts
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O) && !ImGui::GetIO().WantTextInput)
     {
         if (ImGui::GetIO().KeyShift) ShowOpenProjectDialog();
@@ -798,51 +746,958 @@ void Application::Render()
     }
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S) && !ImGui::GetIO().WantTextInput)
         SaveProjectFile(ImGui::GetIO().KeyShift);
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P) && !ImGui::GetIO().WantTextInput)
+        showQuickOpenModal_ = true;
+
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_1))
-        SwitchToDevMode(false);
+        activeNavView_ = AppNavView::Home;
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_2))
-        SwitchToDevMode(true);
+        activeNavView_ = AppNavView::Workspace;
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_3))
+        activeNavView_ = AppNavView::Projects;
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_4))
+        activeNavView_ = AppNavView::VersionIntelligence;
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_5))
+        activeNavView_ = AppNavView::Extensions;
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_6))
+        activeNavView_ = AppNavView::Settings;
+
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_G) && ImGui::GetIO().KeyCtrl)
         showGotoModal_ = true;
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_I) && ImGui::GetIO().KeyCtrl)
     {
+        activeNavView_ = AppNavView::Workspace;
         showAnalysisPanel_ = true;
         ImGui::SetWindowFocus("Analysis / Functions & CFG");
     }
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_X) && !ImGui::GetIO().WantCaptureKeyboard)
     {
+        activeNavView_ = AppNavView::Workspace;
         analysisPanel.OpenXrefsForAddress(currentAddress);
         ImGui::SetWindowFocus("XREFS");
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F5))
         processListPanel.ForceRefresh();
 
-    RenderDockspace();
-    RenderDumpImportDialog();
+    RenderAppShell();
+}
 
-    processListPanel.Render(*this);
-    hexEditorPanel.Render(*this);
-    disasmViewPanel.Render(*this);
-    analysisPanel.RenderXRefsPanel(*this);
-    modulesPanel.Render(*this);
-    offsetsPanel.Render(*this);
-    aiCopilotPanel.Render(*this);
-    if (isDevMode || showMemoryMap_) memoryMapPanel.Render(*this);
-    if (isDevMode || showAnalysisPanel_) analysisPanel.Render(*this);
-    if (isDevMode)
-        openReverseEditorPanel.Render(*this, showOpenReverseEditor);
-    if (isDevMode || showScanner_) scannerPanel.Render(*this);
-    if (isDevMode || showStrings_) stringsPanel.Render(*this);
-    if (isDevMode || showDataInspector_) dataInspectorPanel.Render(*this);
-    if (isDevMode || showPEViewer_) peViewerPanel.Render(*this);
-    if (isDevMode || showBookmarks_) bookmarksPanel.Render(*this);
-    if (isDevMode || showConsole_) consolePanel.Render(*this);
-    if (showVersionIntelligence_) versionIntelligencePanel.Render(*this, &showVersionIntelligence_);
-    RenderExtensionPanels();
-    if (showExtensions_) RenderExtensionsWindow();
-    if (showAccount_) RenderAccountWindow();
+void Application::RenderAppShell()
+{
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
 
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+
+    ImGuiWindowFlags rootFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoScrollbar;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+
+    ImGui::Begin("##OpenReverse_ShellRoot", nullptr, rootFlags);
+    ImGui::PopStyleVar(3);
+
+    const float topBarHeight = 44.0f;
+    const float statusBarHeight = 24.0f;
+    const float sidebarWidth = 210.0f;
+    const float contentHeight = (std::max)(100.0f, viewport->WorkSize.y - topBarHeight - statusBarHeight);
+    const float contentWidth = (std::max)(200.0f, viewport->WorkSize.x - sidebarWidth);
+
+    // 1. Top Bar
+    RenderTopBar(topBarHeight);
+
+    // 2. Sidebar + Content Split
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+
+    RenderSidebar(sidebarWidth, contentHeight);
+
+    ImGui::SameLine();
+
+    // Main Content Area
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(14.0f/255.0f, 15.0f/255.0f, 19.0f/255.0f, 1.0f));
+    ImGui::BeginChild("##MainContentArea", ImVec2(contentWidth, contentHeight), false,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    if (activeNavView_ == AppNavView::Home)
+    {
+        RenderHomeScreen();
+    }
+    else if (activeNavView_ == AppNavView::Projects)
+    {
+        RenderProjectsScreen();
+    }
+    else if (activeNavView_ == AppNavView::VersionIntelligence)
+    {
+        bool showVi = true;
+        versionIntelligencePanel.Render(*this, &showVi);
+    }
+    else if (activeNavView_ == AppNavView::Extensions)
+    {
+        RenderExtensionsWindow();
+    }
+    else if (activeNavView_ == AppNavView::Settings)
+    {
+        RenderSettingsScreen();
+    }
+    else if (activeNavView_ == AppNavView::Workspace)
+    {
+        if (!isAttached && targetKind == AnalysisTargetKind::None)
+        {
+            ImGui::Spacing();
+            ImGui::Spacing();
+            ImGui::Indent(40.0f);
+            workspace_ui::CardBegin("##WorkspaceEmptyCard", ImVec2(ImGui::GetContentRegionAvail().x - 40.0f, 290.0f));
+            workspace_ui::TextHeading("No Target Loaded in Workspace", 1);
+            workspace_ui::TextMuted("Open an executable, driver, memory dump, or attach to a live process to begin reverse engineering.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            if (workspace_ui::PrimaryButton("Open Binary File... (Ctrl+O)", ImVec2(200.0f, 36.0f)))
+                ShowOpenFileDialog();
+            ImGui::SameLine();
+            if (workspace_ui::SecondaryButton("Open .orev Project...", ImVec2(180.0f, 36.0f)))
+                ShowOpenProjectDialog();
+            ImGui::SameLine();
+            if (workspace_ui::SecondaryButton("Import Dump...", ImVec2(150.0f, 36.0f)))
+                ShowOpenDumpDialog();
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+            workspace_ui::SectionLabel("Live Process Inspection (Optional)");
+            if (workspace_ui::SecondaryButton("Explore Running Processes...", ImVec2(220.0f, 32.0f)))
+            {
+                processListPanel.ForceRefresh();
+            }
+            workspace_ui::CardEnd();
+            ImGui::Unindent(40.0f);
+        }
+        else
+        {
+            RenderDockspace();
+
+            processListPanel.Render(*this);
+            hexEditorPanel.Render(*this);
+            disasmViewPanel.Render(*this);
+            analysisPanel.RenderXRefsPanel(*this);
+            modulesPanel.Render(*this);
+            offsetsPanel.Render(*this);
+            aiCopilotPanel.Render(*this);
+            if (isDevMode || showMemoryMap_) memoryMapPanel.Render(*this);
+            if (isDevMode || showAnalysisPanel_) analysisPanel.Render(*this);
+            if (isDevMode)
+                openReverseEditorPanel.Render(*this, showOpenReverseEditor);
+            if (isDevMode || showScanner_) scannerPanel.Render(*this);
+            if (isDevMode || showStrings_) stringsPanel.Render(*this);
+            if (isDevMode || showDataInspector_) dataInspectorPanel.Render(*this);
+            if (isDevMode || showPEViewer_) peViewerPanel.Render(*this);
+            if (isDevMode || showBookmarks_) bookmarksPanel.Render(*this);
+            if (isDevMode || showConsole_) consolePanel.Render(*this);
+        }
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+
+    // 3. Status Bar
     RenderStatusBar();
+
+    // 4. Overlays & Modals
+    RenderProfileDropdown();
+    RenderFirstLaunchModal();
+    RenderQuickOpenModal();
+    RenderDumpImportDialog();
+    RenderExtensionPanels();
+
+    ImGui::End();
+
+    // Subtle window border
+    const HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
+    const float rounding = hwnd && IsZoomed(hwnd) ? 0.0f : 6.0f;
+    ImGui::GetForegroundDrawList(viewport)->AddRect(
+        ImVec2(viewport->Pos.x + 0.5f, viewport->Pos.y + 0.5f),
+        ImVec2(viewport->Pos.x + viewport->Size.x - 0.5f, viewport->Pos.y + viewport->Size.y - 0.5f),
+        IM_COL32(42, 46, 58, 255), rounding, 0, 1.0f);
+}
+
+void Application::RenderTopBar(float height)
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(19.0f/255.0f, 21.0f/255.0f, 27.0f/255.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(38.0f/255.0f, 42.0f/255.0f, 54.0f/255.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 6.0f));
+
+    ImGui::BeginChild("##ShellTopBar", ImVec2(0.0f, height), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImU32 white = IM_COL32(245, 247, 252, 255);
+    const ImU32 blue = IM_COL32(78, 117, 255, 255);
+
+    // 1. Logo & Brand
+    const ImVec2 c(origin.x + 10.0f, origin.y + 16.0f);
+    draw->PathArcTo(c, 7.5f, 0.72f, 5.56f, 24);
+    draw->PathStroke(white, 0, 2.0f);
+    draw->AddLine(ImVec2(c.x + 2.0f, c.y - 5.0f), ImVec2(c.x + 9.0f, c.y - 5.0f), white, 2.0f);
+    draw->AddLine(ImVec2(c.x + 9.0f, c.y - 5.0f), ImVec2(c.x + 9.0f, c.y + 1.0f), white, 2.0f);
+    draw->AddLine(ImVec2(c.x + 9.0f, c.y + 1.0f), ImVec2(c.x + 1.0f, c.y + 1.0f), white, 2.0f);
+    draw->AddLine(ImVec2(c.x + 5.0f, c.y + 1.0f), ImVec2(c.x + 10.0f, c.y + 7.0f), white, 2.0f);
+    draw->AddTriangleFilled(ImVec2(c.x - 1.0f, c.y + 1.0f), ImVec2(c.x + 3.0f, c.y - 2.5f), ImVec2(c.x + 3.0f, c.y + 4.5f), white);
+
+    const ImVec2 brandPos(origin.x + 28.0f, origin.y + 8.0f);
+    draw->AddText(brandPos, white, "OPEN");
+    const float openWidth = ImGui::CalcTextSize("OPEN").x;
+    draw->AddText(ImVec2(brandPos.x + openWidth, brandPos.y), blue, "REVERSE");
+
+    // 2. View Breadcrumb Indicator
+    const float breadcrumbX = brandPos.x + openWidth + ImGui::CalcTextSize("REVERSE").x + 18.0f;
+    draw->AddLine(ImVec2(breadcrumbX, origin.y + 8.0f), ImVec2(breadcrumbX, origin.y + 24.0f), IM_COL32(50, 55, 70, 255), 1.0f);
+
+    std::string viewTitle;
+    if (activeNavView_ == AppNavView::Home) viewTitle = "Home";
+    else if (activeNavView_ == AppNavView::Workspace)
+    {
+        if (isAttached)
+        {
+            const auto* analysis = CurrentAnalysis();
+            const size_t fnCount = analysis ? analysis->functions.size() : 0;
+            char buf[256];
+            snprintf(buf, sizeof(buf), "Workspace  /  %s (%s) • Base 0x%llX • %zu Functions",
+                attachedProcessName.c_str(), is64Bit ? "x64" : "x86",
+                static_cast<unsigned long long>(offlinePEInfo.imageBase != 0 ? offlinePEInfo.imageBase : currentAddress),
+                fnCount);
+            viewTitle = buf;
+        }
+        else viewTitle = "Workspace  /  No target loaded";
+    }
+    else if (activeNavView_ == AppNavView::Projects) viewTitle = "Projects  /  Workspace Persistence";
+    else if (activeNavView_ == AppNavView::VersionIntelligence) viewTitle = "Version Intelligence  /  Binary Comparison & Migration";
+    else if (activeNavView_ == AppNavView::Extensions) viewTitle = "Extensions  /  Native C Plugins";
+    else if (activeNavView_ == AppNavView::Settings) viewTitle = "Settings  /  Preferences & Account";
+
+    draw->AddText(ImVec2(breadcrumbX + 14.0f, origin.y + 8.0f), IM_COL32(165, 172, 188, 255), viewTitle.c_str());
+
+    // 3. Quick Search Pill
+    const float winWidth = ImGui::GetWindowWidth();
+    const float searchWidth = 260.0f;
+    const float searchX = (winWidth - searchWidth) * 0.5f;
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + searchX, origin.y + 4.0f));
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(27.0f/255.0f, 30.0f/255.0f, 38.0f/255.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(35.0f/255.0f, 40.0f/255.0f, 52.0f/255.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(45.0f/255.0f, 52.0f/255.0f, 68.0f/255.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.65f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+
+    if (ImGui::Button("Search commands, symbols... (Ctrl+P)", ImVec2(searchWidth, 24.0f)))
+    {
+        showQuickOpenModal_ = true;
+    }
+
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(4);
+
+    // 4. Right: Plan badge + Profile button + Window Controls
+    const HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
+    const float controlWidth = 32.0f;
+    const float controlsStart = winWidth - controlWidth * 3.0f - 8.0f;
+    const float controlsTop = origin.y + 4.0f;
+
+    auto windowButton = [&](const char* id, int kind) {
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + controlsStart + kind * controlWidth, controlsTop));
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton(id, ImVec2(controlWidth, height - 10.0f));
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered)
+            draw->AddRectFilled(p, ImVec2(p.x + controlWidth, p.y + height - 10.0f),
+                kind == 2 ? IM_COL32(188, 42, 55, 255) : IM_COL32(35, 40, 52, 255), 4.0f);
+
+        const ImU32 icon = IM_COL32(205, 215, 222, 255);
+        const ImVec2 center(p.x + controlWidth * 0.5f, p.y + (height - 10.0f) * 0.5f);
+        if (kind == 0)
+            draw->AddLine(ImVec2(center.x - 4.5f, center.y + 3.0f),
+                ImVec2(center.x + 4.5f, center.y + 3.0f), icon, 1.0f);
+        else if (kind == 1)
+            draw->AddRect(ImVec2(center.x - 4.0f, center.y - 4.0f),
+                ImVec2(center.x + 4.0f, center.y + 4.0f), icon, 0.0f, 0, 1.0f);
+        else
+        {
+            draw->AddLine(ImVec2(center.x - 3.5f, center.y - 3.5f),
+                ImVec2(center.x + 3.5f, center.y + 3.5f), icon, 1.1f);
+            draw->AddLine(ImVec2(center.x + 3.5f, center.y - 3.5f),
+                ImVec2(center.x - 3.5f, center.y + 3.5f), icon, 1.1f);
+        }
+        return pressed;
+    };
+
+    if (windowButton("##MinWin", 0) && hwnd)
+        PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+    if (windowButton("##MaxWin", 1) && hwnd)
+        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+    if (windowButton("##CloseWin", 2) && hwnd)
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+
+    // Profile Button
+    const auth::AuthStatus authStatus = accountAuth_.Status();
+    const float profileButtonWidth = authStatus.state == auth::AuthState::SignedIn ? 140.0f : 90.0f;
+    const float profileX = controlsStart - profileButtonWidth - 12.0f;
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + profileX, origin.y + 5.0f));
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(27.0f/255.0f, 30.0f/255.0f, 38.0f/255.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(38.0f/255.0f, 44.0f/255.0f, 56.0f/255.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
+
+    if (authStatus.state == auth::AuthState::SignedIn)
+    {
+        std::string name = !authStatus.displayName.empty() ? authStatus.displayName : authStatus.email;
+        if (name.size() > 12) name = name.substr(0, 10) + "..";
+        std::string label = " " + name + " v";
+        if (ImGui::Button(label.c_str(), ImVec2(profileButtonWidth, 24.0f)))
+        {
+            showProfileDropdown_ = !showProfileDropdown_;
+        }
+    }
+    else
+    {
+        if (ImGui::Button("Sign In", ImVec2(profileButtonWidth, 24.0f)))
+        {
+            showProfileDropdown_ = !showProfileDropdown_;
+        }
+    }
+
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+}
+
+void Application::RenderSidebar(float width, float height)
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(17.0f/255.0f, 19.0f/255.0f, 24.0f/255.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(35.0f/255.0f, 38.0f/255.0f, 48.0f/255.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 12.0f));
+
+    ImGui::BeginChild("##ShellSidebar", ImVec2(width, height), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    ImGui::Spacing();
+
+    // 1. Navigation items
+    if (workspace_ui::NavItem("##nav_home", "Home", "⌂", activeNavView_ == AppNavView::Home, width - 20.0f))
+        activeNavView_ = AppNavView::Home;
+
+    if (workspace_ui::NavItem("##nav_ws", "Workspace", "⚡", activeNavView_ == AppNavView::Workspace, width - 20.0f))
+        activeNavView_ = AppNavView::Workspace;
+
+    if (workspace_ui::NavItem("##nav_proj", "Projects", "📁", activeNavView_ == AppNavView::Projects, width - 20.0f))
+        activeNavView_ = AppNavView::Projects;
+
+    if (workspace_ui::NavItem("##nav_vi", "Version Intel", "🔄", activeNavView_ == AppNavView::VersionIntelligence, width - 20.0f))
+        activeNavView_ = AppNavView::VersionIntelligence;
+
+    if (workspace_ui::NavItem("##nav_ext", "Extensions", "🔌", activeNavView_ == AppNavView::Extensions, width - 20.0f))
+        activeNavView_ = AppNavView::Extensions;
+
+    if (workspace_ui::NavItem("##nav_set", "Settings", "⚙", activeNavView_ == AppNavView::Settings, width - 20.0f))
+        activeNavView_ = AppNavView::Settings;
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // 2. Quick Action
+    if (workspace_ui::SecondaryButton("+ Open Binary", ImVec2(width - 20.0f, 30.0f)))
+    {
+        ShowOpenFileDialog();
+    }
+
+    // 3. Bottom Status Card
+    const float bottomCardHeight = 72.0f;
+    ImGui::SetCursorPos(ImVec2(10.0f, height - bottomCardHeight - 12.0f));
+
+    workspace_ui::CardBegin("##SidebarStatusCard", ImVec2(width - 20.0f, bottomCardHeight));
+    if (isAttached)
+    {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        draw->AddCircleFilled(ImVec2(p.x + 5.0f, p.y + 6.0f), 3.5f, IM_COL32(16, 185, 129, 255));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 14.0f);
+        ImGui::TextColored(ImVec4(0.1f, 0.85f, 0.5f, 1.0f), "Target Active");
+        std::string name = attachedProcessName;
+        if (name.size() > 18) name = name.substr(0, 16) + "..";
+        ImGui::TextUnformatted(name.c_str());
+        ImGui::TextDisabled("%s", is64Bit ? "x64 PE" : "x86 PE");
+    }
+    else
+    {
+        ImGui::TextDisabled("Standby");
+        ImGui::TextUnformatted("OpenReverse Community");
+        ImGui::TextDisabled("v%s", kVersion);
+    }
+    workspace_ui::CardEnd();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+}
+
+void Application::RenderHomeScreen()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32.0f, 24.0f));
+    ImGui::BeginChild("##HomeScreenScrollable", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_None);
+
+    // Hero Section
+    workspace_ui::TextHeading("Welcome to OpenReverse", 1);
+    workspace_ui::TextMuted("Modern, deterministic reverse engineering, graphical control-flow graphs, and binary version intelligence.");
+    ImGui::Spacing();
+
+    workspace_ui::Badge("100% OFFLINE STATIC SAFETY", IM_COL32(30, 48, 40, 255), IM_COL32(52, 211, 153, 255));
+    ImGui::SameLine();
+    workspace_ui::Badge("COMMUNITY RELEASE", IM_COL32(35, 42, 60, 255), IM_COL32(129, 140, 248, 255));
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    // 4 Primary Action Cards
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float cardWidth = (availWidth - 24.0f) * 0.5f;
+    const float cardHeight = 118.0f;
+
+    // Row 1
+    workspace_ui::CardBegin("##CardOpenBinary", ImVec2(cardWidth, cardHeight));
+    workspace_ui::TextHeading("Open Binary File", 2);
+    workspace_ui::TextMuted("Analyze PE32/PE32+ executables, DLLs, system drivers (.sys), or memory dumps.");
+    ImGui::Spacing();
+    if (workspace_ui::PrimaryButton("Select Binary... (Ctrl+O)", ImVec2(180.0f, 28.0f)))
+        ShowOpenFileDialog();
+    workspace_ui::CardEnd();
+
+    ImGui::SameLine(0, 24.0f);
+
+    workspace_ui::CardBegin("##CardOpenProject", ImVec2(cardWidth, cardHeight));
+    workspace_ui::TextHeading("Open .orev Project", 2);
+    workspace_ui::TextMuted("Load a saved workspace project with persisted offsets, bookmarks, and decisions.");
+    ImGui::Spacing();
+    if (workspace_ui::SecondaryButton("Open Project... (Ctrl+Shift+O)", ImVec2(200.0f, 28.0f)))
+        ShowOpenProjectDialog();
+    workspace_ui::CardEnd();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    // Row 2
+    workspace_ui::CardBegin("##CardVersionIntel", ImVec2(cardWidth, cardHeight));
+    workspace_ui::TextHeading("Version Intelligence", 2);
+    workspace_ui::TextMuted("Compare two builds of a binary, match functions across mutations, and migrate offsets.");
+    ImGui::Spacing();
+    if (workspace_ui::SecondaryButton("Open Binary Diff...", ImVec2(180.0f, 28.0f)))
+        activeNavView_ = AppNavView::VersionIntelligence;
+    workspace_ui::CardEnd();
+
+    ImGui::SameLine(0, 24.0f);
+
+    workspace_ui::CardBegin("##CardExtensions", ImVec2(cardWidth, cardHeight));
+    workspace_ui::TextHeading("Native Extension SDK", 2);
+    workspace_ui::TextMuted("Extend analysis and UI with high-performance in-process Windows x64 C plugins.");
+    ImGui::Spacing();
+    if (workspace_ui::SecondaryButton("Browse Extensions...", ImVec2(180.0f, 28.0f)))
+        activeNavView_ = AppNavView::Extensions;
+    workspace_ui::CardEnd();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    // Bottom Two-Column Split
+    const float splitWidth = (availWidth - 24.0f) * 0.5f;
+
+    // Left Column: Active Session / Recent Target
+    ImGui::BeginGroup();
+    workspace_ui::TextHeading("Session Status", 2);
+    ImGui::Spacing();
+    workspace_ui::CardBegin("##HomeSessionCard", ImVec2(splitWidth, 200.0f));
+    if (isAttached)
+    {
+        const auto* analysis = CurrentAnalysis();
+        ImGui::TextColored(ImVec4(0.1f, 0.85f, 0.5f, 1.0f), "Target Loaded: %s", attachedProcessName.c_str());
+        ImGui::Spacing();
+        ImGui::TextDisabled("Path: %s", loadedFilePath.c_str());
+        ImGui::TextDisabled("Architecture: %s", is64Bit ? "x64 (64-bit)" : "x86 (32-bit)");
+        if (analysis)
+        {
+            ImGui::TextDisabled("Functions: %zu | Strings: %zu | Xrefs: %zu",
+                analysis->functions.size(), analysis->strings.size(), analysis->xrefs.size());
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (workspace_ui::PrimaryButton("Go to Workspace (Ctrl+2)", ImVec2(180.0f, 32.0f)))
+            activeNavView_ = AppNavView::Workspace;
+    }
+    else
+    {
+        ImGui::TextDisabled("No active target loaded.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Click 'Open Binary File' above or use the Command Palette (Ctrl+P) to select a PE executable or driver.");
+    }
+    workspace_ui::CardEnd();
+    ImGui::EndGroup();
+
+    ImGui::SameLine(0, 24.0f);
+
+    // Right Column: Key Features Reference
+    ImGui::BeginGroup();
+    workspace_ui::TextHeading("Platform Highlights", 2);
+    ImGui::Spacing();
+    workspace_ui::CardBegin("##HomeHighlightsCard", ImVec2(splitWidth, 200.0f));
+    ImGui::BulletText("Layered Graphical CFG with typed edge classification (fallthrough, branch, call, ret).");
+    ImGui::BulletText("Version Intelligence multi-stage function matching and offset migration.");
+    ImGui::BulletText("BYOK AI Copilot: Connect your local/OpenAI model with secure Credential Manager storage.");
+    ImGui::BulletText("100% Offline Guarantee: Community analysis operates entirely on your local machine.");
+    workspace_ui::CardEnd();
+    ImGui::EndGroup();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void Application::RenderProjectsScreen()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32.0f, 24.0f));
+    ImGui::BeginChild("##ProjectsScreenScrollable", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_None);
+
+    workspace_ui::TextHeading("Project Workspace Persistence", 1);
+    workspace_ui::TextMuted("Manage .orev workspace files containing target signatures, bookmarks, and accepted migrations.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (analysisSession.HasProject())
+    {
+        const OpenReverseProject& proj = analysisSession.Project();
+        workspace_ui::CardBegin("##ProjectDetailCard", ImVec2(0.0f, 280.0f));
+        workspace_ui::TextHeading("Active Project", 2);
+        ImGui::TextDisabled("File: %s", analysisSession.ProjectPath().c_str());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::Text("Target Module: %s", proj.target.module.name.c_str());
+        ImGui::TextDisabled("SHA-256: %s", proj.target.sha256.c_str());
+        ImGui::Text("Saved Offsets: %zu", proj.analysis.offsets.size());
+        ImGui::Text("Bookmarks: %zu", proj.user.bookmarks.size());
+        ImGui::Text("Accepted Version Intelligence Decisions: %zu", proj.user.migrations.size());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (workspace_ui::PrimaryButton("Save Project (Ctrl+S)", ImVec2(160.0f, 32.0f)))
+            SaveProjectFile(false);
+        ImGui::SameLine();
+        if (workspace_ui::SecondaryButton("Save Project As...", ImVec2(150.0f, 32.0f)))
+            SaveProjectFile(true);
+        ImGui::SameLine();
+        if (workspace_ui::SecondaryButton("Open Another Project...", ImVec2(180.0f, 32.0f)))
+            ShowOpenProjectDialog();
+
+        workspace_ui::CardEnd();
+    }
+    else
+    {
+        workspace_ui::CardBegin("##NoProjectCard", ImVec2(0.0f, 200.0f));
+        workspace_ui::TextHeading("No Active Project", 2);
+        workspace_ui::TextMuted("You are currently analyzing a target without an associated .orev project file.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (isAttached && targetKind != AnalysisTargetKind::LiveProcess)
+        {
+            if (workspace_ui::PrimaryButton("Save Current Target as .orev Project...", ImVec2(280.0f, 34.0f)))
+                SaveProjectFile(true);
+            ImGui::SameLine();
+        }
+        if (workspace_ui::SecondaryButton("Open Existing .orev Project...", ImVec2(220.0f, 34.0f)))
+            ShowOpenProjectDialog();
+        workspace_ui::CardEnd();
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void Application::RenderSettingsScreen()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32.0f, 24.0f));
+    ImGui::BeginChild("##SettingsScreenScrollable", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_None);
+
+    workspace_ui::TextHeading("Settings & Configuration", 1);
+    workspace_ui::TextMuted("Manage your account, AI Copilot connection, and desktop preferences.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Tab buttons
+    if (ImGui::Button("Account & Subscription", ImVec2(180.0f, 30.0f))) settingsTab_ = 0;
+    ImGui::SameLine();
+    if (ImGui::Button("AI Copilot (BYOK)", ImVec2(160.0f, 30.0f))) settingsTab_ = 1;
+    ImGui::SameLine();
+    if (ImGui::Button("General & Diagnostics", ImVec2(170.0f, 30.0f))) settingsTab_ = 2;
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (settingsTab_ == 0)
+    {
+        // Account Tab
+        const auth::AuthStatus status = accountAuth_.Status();
+        const auth::AccountServiceConfig& config = accountAuth_.Config();
+
+        workspace_ui::CardBegin("##SettingsAccountCard", ImVec2(0.0f, 280.0f));
+        workspace_ui::TextHeading("OpenReverse Account", 2);
+        ImGui::Spacing();
+
+        if (status.state == auth::AuthState::SignedIn)
+        {
+            ImGui::Text("User: %s", status.displayName.c_str());
+            ImGui::TextDisabled("Email: %s", status.email.c_str());
+            ImGui::TextDisabled("ID: %s", status.userId.c_str());
+            ImGui::Spacing();
+
+            if (status.isProActive)
+            {
+                workspace_ui::Badge("PLAN: OPENREVERSE PRO", IM_COL32(30, 48, 80, 255), IM_COL32(129, 140, 248, 255));
+                if (!status.currentPeriodEnd.empty())
+                    ImGui::TextDisabled("Renews: %s", status.currentPeriodEnd.c_str());
+            }
+            else
+            {
+                workspace_ui::Badge("PLAN: COMMUNITY", IM_COL32(35, 40, 52, 255), IM_COL32(160, 168, 185, 255));
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if (workspace_ui::SecondaryButton("Manage Account (Web)", ImVec2(180.0f, 32.0f)))
+            {
+                const std::string url = config.accountManageUrl.empty() ? "https://openreverse.dev/account" : config.accountManageUrl;
+                const std::wstring wideUrl(url.begin(), url.end());
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            ImGui::SameLine();
+            if (workspace_ui::SecondaryButton("Sync Profile", ImVec2(130.0f, 32.0f)))
+            {
+                std::string err;
+                accountAuth_.StartProfileRefresh(err);
+            }
+            ImGui::SameLine();
+            if (workspace_ui::SecondaryButton("Sign Out", ImVec2(110.0f, 32.0f)))
+            {
+                std::string err;
+                accountAuth_.SignOut(err);
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Not signed in.");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Connect your OpenReverse account to sync Pro entitlements and settings.");
+            ImGui::Spacing();
+            if (workspace_ui::PrimaryButton("Sign in via Browser", ImVec2(180.0f, 34.0f)))
+            {
+                const std::string url = config.signupUrl.empty() ? "https://openreverse.dev/signup" : config.signupUrl;
+                const std::wstring wideUrl(url.begin(), url.end());
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+        }
+        workspace_ui::CardEnd();
+    }
+    else if (settingsTab_ == 1)
+    {
+        // AI Copilot Tab
+        aiCopilotPanel.RenderSettingsInline(*this);
+    }
+    else
+    {
+        // General Tab
+        workspace_ui::CardBegin("##SettingsGeneralCard", ImVec2(0.0f, 260.0f));
+        workspace_ui::TextHeading("Environment & Diagnostics", 2);
+        ImGui::Spacing();
+        ImGui::Text("OpenReverse Desktop Version: %s", kVersion);
+        ImGui::TextDisabled("Architecture: Windows x64 Native");
+        ImGui::TextDisabled("Extension Directory: %s", extensions::ExtensionManager::DefaultExtensionRoot().string().c_str());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Checkbox("Developer Code Editor Layout (Ctrl+1 / Ctrl+2)", &isDevMode))
+        {
+            SwitchToDevMode(isDevMode);
+        }
+        if (workspace_ui::SecondaryButton("Reset Workspace Docking Layout", ImVec2(240.0f, 30.0f)))
+        {
+            ResetLayout();
+        }
+        workspace_ui::CardEnd();
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+}
+
+void Application::RenderProfileDropdown()
+{
+    if (!showProfileDropdown_) return;
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float cardWidth = 280.0f;
+    const float cardX = viewport->WorkPos.x + viewport->WorkSize.x - cardWidth - 16.0f;
+    const float cardY = viewport->WorkPos.y + 48.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(cardX, cardY));
+    ImGui::SetNextWindowSize(ImVec2(cardWidth, 0.0f));
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
+
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(22.0f/255.0f, 24.0f/255.0f, 31.0f/255.0f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(45.0f/255.0f, 50.0f/255.0f, 65.0f/255.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
+
+    if (ImGui::Begin("##ProfileDropdownWindow", &showProfileDropdown_, flags))
+    {
+        const auth::AuthStatus status = accountAuth_.Status();
+        const auth::AccountServiceConfig& config = accountAuth_.Config();
+
+        if (status.state == auth::AuthState::SignedIn)
+        {
+            workspace_ui::TextHeading(!status.displayName.empty() ? status.displayName.c_str() : "Account", 2);
+            if (!status.email.empty()) ImGui::TextDisabled("%s", status.email.c_str());
+            ImGui::Spacing();
+
+            if (status.isProActive)
+                workspace_ui::Badge("OPENREVERSE PRO", IM_COL32(30, 48, 80, 255), IM_COL32(129, 140, 248, 255));
+            else
+                workspace_ui::Badge("COMMUNITY", IM_COL32(35, 40, 52, 255), IM_COL32(160, 168, 185, 255));
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if (ImGui::MenuItem("Manage Account (Web)"))
+            {
+                const std::string url = config.accountManageUrl.empty() ? "https://openreverse.dev/account" : config.accountManageUrl;
+                const std::wstring wideUrl(url.begin(), url.end());
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                showProfileDropdown_ = false;
+            }
+            if (ImGui::MenuItem("Settings & Copilot"))
+            {
+                activeNavView_ = AppNavView::Settings;
+                showProfileDropdown_ = false;
+            }
+            if (ImGui::MenuItem("Documentation"))
+            {
+                const std::wstring wideUrl = L"https://openreverse.dev/docs";
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                showProfileDropdown_ = false;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Sign Out"))
+            {
+                std::string err;
+                accountAuth_.SignOut(err);
+                showProfileDropdown_ = false;
+            }
+        }
+        else
+        {
+            workspace_ui::TextHeading("OpenReverse Account", 2);
+            workspace_ui::TextMuted("Sign in to synchronize your profile and subscriptions.");
+            ImGui::Spacing();
+
+            if (workspace_ui::PrimaryButton("Sign In via Browser", ImVec2(-1.0f, 32.0f)))
+            {
+                const std::string url = config.signupUrl.empty() ? "https://openreverse.dev/signup" : config.signupUrl;
+                const std::wstring wideUrl(url.begin(), url.end());
+                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                showProfileDropdown_ = false;
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextDisabled("Community features & local AI remain 100%% offline.");
+        }
+    }
+    ImGui::End();
+
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+}
+
+void Application::RenderFirstLaunchModal()
+{
+    if (!showFirstLaunchModal_) return;
+
+    ImGui::OpenPopup("Welcome to OpenReverse");
+    ImGui::SetNextWindowSize(ImVec2(680.0f, 420.0f), ImGuiCond_Always);
+
+    if (ImGui::BeginPopupModal("Welcome to OpenReverse", &showFirstLaunchModal_,
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+    {
+        const float halfWidth = (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f;
+
+        // Left Column
+        ImGui::BeginChild("##FirstLaunchLeft", ImVec2(halfWidth, 0.0f), false);
+        workspace_ui::TextHeading("Welcome to OpenReverse", 1);
+        workspace_ui::TextMuted("The deterministic reverse engineering and version intelligence desktop platform.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::BulletText("Deterministic offline PE & dump analysis");
+        ImGui::BulletText("Interactive graphical CFG & typed Xrefs");
+        ImGui::BulletText("Version Intelligence build comparison");
+        ImGui::BulletText("Versioned native C ABI extension SDK");
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        const auth::AccountServiceConfig& config = accountAuth_.Config();
+        if (workspace_ui::PrimaryButton("Sign In to OpenReverse", ImVec2(-1.0f, 36.0f)))
+        {
+            const std::string url = config.signupUrl.empty() ? "https://openreverse.dev/signup" : config.signupUrl;
+            const std::wstring wideUrl(url.begin(), url.end());
+            ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            showFirstLaunchModal_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::Spacing();
+        if (workspace_ui::SecondaryButton("Continue without an account", ImVec2(-1.0f, 32.0f)))
+        {
+            showFirstLaunchModal_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndChild();
+
+        ImGui::SameLine(0, 20.0f);
+
+        // Right Column: Feature Preview Card
+        ImGui::BeginChild("##FirstLaunchRight", ImVec2(halfWidth, 0.0f), false);
+        workspace_ui::CardBegin("##PreviewVisualCard", ImVec2(0.0f, 330.0f));
+        workspace_ui::TextHeading("Engine Overview", 2);
+        ImGui::Spacing();
+        ImGui::TextDisabled("• Capstone x86/x64 Disassembly");
+        ImGui::TextDisabled("• Recursive Control-Flow Reconstruction");
+        ImGui::TextDisabled("• Inferred Globals & Structure Provenance");
+        ImGui::TextDisabled("• Persistent .orev Workspace Projects");
+        ImGui::TextDisabled("• 100%% Offline Static Non-Executing Engine");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "OpenReverse Community Beta");
+        workspace_ui::CardEnd();
+        ImGui::EndChild();
+
+        ImGui::EndPopup();
+    }
+}
+
+void Application::RenderQuickOpenModal()
+{
+    if (!showQuickOpenModal_) return;
+
+    ImGui::OpenPopup("Command Palette");
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 300.0f), ImGuiCond_Always);
+
+    if (ImGui::BeginPopupModal("Command Palette", &showQuickOpenModal_,
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+    {
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::InputTextWithHint("##QuickFilter", "Type a command, address, or view name...",
+                                quickOpenFilter_, sizeof(quickOpenFilter_));
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        std::string filter = quickOpenFilter_;
+        std::transform(filter.begin(), filter.end(), filter.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        auto actionRow = [&](const char* title, const char* category, auto callback) {
+            std::string lowerTitle = title;
+            std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (filter.empty() || lowerTitle.find(filter) != std::string::npos)
+            {
+                if (ImGui::Selectable(title, false, ImGuiSelectableFlags_None, ImVec2(0, 24.0f)))
+                {
+                    callback();
+                    showQuickOpenModal_ = false;
+                    quickOpenFilter_[0] = '\0';
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine(ImGui::GetWindowWidth() - 100.0f);
+                ImGui::TextDisabled("%s", category);
+            }
+        };
+
+        actionRow("Open Binary File (Ctrl+O)", "File", [this]() { ShowOpenFileDialog(); });
+        actionRow("Open .orev Project (Ctrl+Shift+O)", "File", [this]() { ShowOpenProjectDialog(); });
+        actionRow("Import Memory Dump", "File", [this]() { ShowOpenDumpDialog(); });
+        actionRow("Switch to Home Screen (Ctrl+1)", "View", [this]() { activeNavView_ = AppNavView::Home; });
+        actionRow("Switch to Workspace (Ctrl+2)", "View", [this]() { activeNavView_ = AppNavView::Workspace; });
+        actionRow("Switch to Projects (Ctrl+3)", "View", [this]() { activeNavView_ = AppNavView::Projects; });
+        actionRow("Switch to Version Intelligence (Ctrl+4)", "View", [this]() { activeNavView_ = AppNavView::VersionIntelligence; });
+        actionRow("Switch to Extensions (Ctrl+5)", "View", [this]() { activeNavView_ = AppNavView::Extensions; });
+        actionRow("Switch to Settings (Ctrl+6)", "View", [this]() { activeNavView_ = AppNavView::Settings; });
+
+        if (isAttached)
+        {
+            actionRow("Go to Address (Ctrl+G)", "Navigation", [this]() { showGotoModal_ = true; });
+            actionRow("Show Functions & CFG (Ctrl+I)", "Analysis", [this]() {
+                activeNavView_ = AppNavView::Workspace;
+                showAnalysisPanel_ = true;
+            });
+            actionRow("Show Xrefs for Current Address (Ctrl+X)", "Analysis", [this]() {
+                activeNavView_ = AppNavView::Workspace;
+                analysisPanel.OpenXrefsForAddress(currentAddress);
+            });
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        if (ImGui::Button("Close (Esc)", ImVec2(80.0f, 0.0f)))
+        {
+            showQuickOpenModal_ = false;
+            quickOpenFilter_[0] = '\0';
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
 }
 
 void Application::RenderExtensionPanels()
@@ -868,21 +1723,36 @@ void Application::RenderExtensionPanels()
 
 void Application::RenderExtensionsWindow()
 {
-    if (!ImGui::Begin("Extensions", &showExtensions_))
-    {
-        ImGui::End();
-        return;
-    }
-    ImGui::Text("Extension API v%u", OPENREVERSE_EXTENSION_API_VERSION);
-    ImGui::TextDisabled("Native extensions run in-process and must be trusted.");
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32.0f, 24.0f));
+    ImGui::BeginChild("##ExtensionsScreenScrollable", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_None);
+
+    workspace_ui::TextHeading("Extension Host & SDK", 1);
+    workspace_ui::TextMuted("In-process versioned Windows x64 C ABI native extensions.");
+    ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Spacing();
+
     const auto loaded = extensionManager.LoadedExtensions();
-    ImGui::Text("Loaded extensions: %zu", loaded.size());
+    workspace_ui::CardBegin("##LoadedExtensionsCard", ImVec2(0.0f, 180.0f));
+    workspace_ui::TextHeading("Loaded Plugins", 2);
+    ImGui::TextDisabled("Loaded: %zu active extension(s)", loaded.size());
+    ImGui::Spacing();
     for (const auto& extension : loaded)
+    {
         ImGui::BulletText("%s %u.%u.%u (%s)", extension.name.c_str(), extension.version.major,
             extension.version.minor, extension.version.patch, extension.id.c_str());
-    ImGui::Separator();
-    ImGui::TextUnformatted("Load diagnostics");
+    }
+    if (loaded.empty())
+    {
+        ImGui::TextDisabled("No external plugins loaded. Put native extension DLLs in the extensions directory.");
+    }
+    workspace_ui::CardEnd();
+
+    ImGui::Spacing();
+
+    workspace_ui::CardBegin("##ExtensionDiagCard", ImVec2(0.0f, 240.0f));
+    workspace_ui::TextHeading("Discovery & Load Diagnostics", 2);
+    ImGui::Spacing();
     if (ImGui::BeginTable("ExtensionDiagnostics", 3,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
     {
@@ -903,184 +1773,16 @@ void Application::RenderExtensionsWindow()
         }
         ImGui::EndTable();
     }
-    ImGui::End();
+    workspace_ui::CardEnd();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
 }
 
 void Application::RenderAccountWindow()
 {
-    ImGui::SetNextWindowSize(ImVec2(480.0f, 320.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Settings > Account", &showAccount_))
-    {
-        ImGui::End();
-        return;
-    }
-
-    const auth::AuthStatus status = accountAuth_.Status();
-    const auth::AccountServiceConfig& config = accountAuth_.Config();
-
-    ImGui::TextUnformatted("OpenReverse Account");
-    ImGui::Separator();
-
-    if (!accountUiMessage_.empty())
-    {
-        ImGui::TextColored(ImVec4(0.94f, 0.45f, 0.30f, 1.0f), "%s", accountUiMessage_.c_str());
-        ImGui::Spacing();
-    }
-
-    if (status.state == auth::AuthState::SignedIn)
-    {
-        if (!status.displayName.empty())
-            ImGui::TextUnformatted(status.displayName.c_str());
-        if (!status.email.empty())
-            ImGui::TextDisabled("%s", status.email.c_str());
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        if (status.accountSyncFailed)
-        {
-            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Signed in — account status unavailable.");
-            if (ImGui::Button("Retry"))
-            {
-                std::string error;
-                if (!accountAuth_.StartProfileRefresh(error)) accountUiMessage_ = error;
-                else accountUiMessage_.clear();
-            }
-            ImGui::SameLine();
-        }
-        else if (status.isProActive)
-        {
-            ImGui::Text("Plan: OpenReverse Pro");
-            if (!status.subscriptionStatus.empty())
-                ImGui::Text("Status: %s", status.subscriptionStatus.c_str());
-
-            if (!status.currentPeriodEnd.empty())
-            {
-                if (status.cancelAtPeriodEnd)
-                    ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Pro remains active until %s.", status.currentPeriodEnd.c_str());
-                else
-                    ImGui::Text("Renews: %s", status.currentPeriodEnd.c_str());
-            }
-
-            ImGui::Spacing();
-            if (ImGui::Button("Manage Billing"))
-            {
-                const std::string url = config.billingManageUrl.empty() ? "https://openreverse.dev/account" : config.billingManageUrl;
-                const std::wstring wideUrl(url.begin(), url.end());
-                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            }
-            ImGui::SameLine();
-        }
-        else
-        {
-            ImGui::Text("Plan: Community");
-            ImGui::Spacing();
-        }
-
-        if (ImGui::Button("Manage Account"))
-        {
-            const std::string url = config.accountManageUrl.empty() ? "https://openreverse.dev/account" : config.accountManageUrl;
-            const std::wstring wideUrl(url.begin(), url.end());
-            ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        }
-        ImGui::SameLine();
-
-        if (!status.accountSyncFailed)
-        {
-            if (ImGui::Button("Refresh"))
-            {
-                std::string error;
-                if (!accountAuth_.StartProfileRefresh(error)) accountUiMessage_ = error;
-                else accountUiMessage_.clear();
-            }
-            ImGui::SameLine();
-        }
-
-        if (ImGui::Button("Sign Out"))
-        {
-            std::string error;
-            if (!accountAuth_.SignOut(error)) accountUiMessage_ = error;
-            else accountUiMessage_.clear();
-        }
-    }
-    else
-    {
-        if (!status.providerConfigured)
-        {
-            ImGui::TextDisabled("Account service is not configured.");
-            ImGui::Spacing();
-            ImGui::TextWrapped("Community analysis, projects, extensions, CLI and local/BYOK AI remain fully available without an account.");
-        }
-        else
-        {
-            ImGui::TextWrapped("Sign in with the same account used on openreverse.dev.");
-            ImGui::Spacing();
-
-            ImGui::TextUnformatted("Email");
-            ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputText("##AccountEmail", accountEmailBuf_, sizeof(accountEmailBuf_));
-
-            ImGui::TextUnformatted("Password");
-            ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputText("##AccountPassword", accountPasswordBuf_, sizeof(accountPasswordBuf_), ImGuiInputTextFlags_Password);
-
-            ImGui::Spacing();
-
-            const bool busy = status.state == auth::AuthState::SigningIn ||
-                              status.state == auth::AuthState::Refreshing ||
-                              status.state == auth::AuthState::SigningOut;
-
-            if (busy) ImGui::BeginDisabled();
-
-            if (ImGui::Button("Sign In", ImVec2(120.0f, 0.0f)))
-            {
-                std::string email = accountEmailBuf_;
-                std::string password = accountPasswordBuf_;
-                SecureZeroMemory(accountPasswordBuf_, sizeof(accountPasswordBuf_));
-                accountPasswordBuf_[0] = '\0';
-
-                std::string error;
-                if (!accountAuth_.StartPasswordLogin(std::move(email), std::move(password), error))
-                    accountUiMessage_ = error;
-                else
-                    accountUiMessage_.clear();
-            }
-
-            ImGui::SameLine();
-
-            if (ImGui::Button("Create Account"))
-            {
-                const std::string url = config.signupUrl.empty() ? "https://openreverse.dev/signup" : config.signupUrl;
-                const std::wstring wideUrl(url.begin(), url.end());
-                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            }
-
-            if (busy)
-            {
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", auth::AuthSession::StateName(status.state));
-            }
-
-            if (status.state == auth::AuthState::ReauthenticationRequired || status.state == auth::AuthState::Error)
-            {
-                ImGui::Spacing();
-                ImGui::TextDisabled("%s", status.message.c_str());
-                if (ImGui::Button("Retry Stored Session"))
-                {
-                    std::string error;
-                    if (!accountAuth_.StartRefresh(error)) accountUiMessage_ = error;
-                    else accountUiMessage_.clear();
-                }
-            }
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextWrapped("Community analysis, projects, extensions, CLI and BYOK AI remain available without an account.");
-    ImGui::End();
+    settingsTab_ = 0;
+    activeNavView_ = AppNavView::Settings;
 }
 
 void Application::NotifyExtensionsSessionChanged()
@@ -1099,121 +1801,102 @@ void Application::RenderDumpImportDialog()
 
     if (!ImGui::BeginPopupModal("Configure static dump import", &showDumpImportModal_,
                                 ImGuiWindowFlags_AlwaysAutoResize))
+    {
         return;
+    }
 
-    ImGui::TextWrapped("OpenReverse could not identify this file as a complete mapped PE image. "
-                       "The file will only be read as static data and will never be executed.");
-    ImGui::Separator();
+    ImGui::Text("File: %s", pendingDumpPath_.c_str());
+    ImGui::Spacing();
+
+    if (!dumpImportError_.empty())
+    {
+        ImGui::TextColored(ImVec4(0.94f, 0.28f, 0.28f, 1.0f), "%s", dumpImportError_.c_str());
+        ImGui::Spacing();
+    }
+
     if (!pendingDumpModules_.empty())
     {
-        ImGui::TextUnformatted("Select a captured minidump module:");
-        const auto moduleLabel = [](const DumpModuleMetadata& module) {
-            std::ostringstream stream;
-            stream << module.name << " @ 0x" << std::hex << std::uppercase << module.imageBase
-                   << " (" << std::dec << module.imageSize << " bytes)";
-            return stream.str();
-        };
-        const std::string preview = moduleLabel(pendingDumpModules_[pendingDumpModuleIndex_]);
-        if (ImGui::BeginCombo("Module", preview.c_str()))
+        ImGui::TextUnformatted("Select minidump module:");
+        for (size_t index = 0; index < pendingDumpModules_.size(); ++index)
         {
-            for (int index = 0; index < static_cast<int>(pendingDumpModules_.size()); ++index)
-            {
-                const std::string label = moduleLabel(pendingDumpModules_[index]);
-                if (ImGui::Selectable(label.c_str(), index == pendingDumpModuleIndex_))
-                    pendingDumpModuleIndex_ = index;
-            }
-            ImGui::EndCombo();
+            const auto& mod = pendingDumpModules_[index];
+            char label[256];
+            snprintf(label, sizeof(label), "%s (0x%llX, %u bytes)",
+                     mod.name.c_str(),
+                     static_cast<unsigned long long>(mod.imageBase),
+                     mod.imageSize);
+            if (ImGui::RadioButton(label, pendingDumpModuleIndex_ == static_cast<int>(index)))
+                pendingDumpModuleIndex_ = static_cast<int>(index);
         }
     }
     else
     {
-        ImGui::TextUnformatted("Raw snapshots require explicit metadata:");
-        ImGui::Combo("Architecture", &dumpArchitectureIndex_, "x86\0x64\0");
-        ImGui::InputText("Image base", dumpImageBaseBuf_, sizeof(dumpImageBaseBuf_));
-        ImGui::InputText("Module size", dumpModuleSizeBuf_, sizeof(dumpModuleSizeBuf_));
-        ImGui::TextDisabled("Values may be decimal or 0x-prefixed. Module size cannot exceed the file size.");
-    }
-    if (!dumpImportError_.empty())
-        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.38f, 1.0f), "%s", dumpImportError_.c_str());
+        ImGui::TextUnformatted("Architecture:");
+        ImGui::RadioButton("x86", &dumpArchitectureIndex_, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("x64", &dumpArchitectureIndex_, 1);
 
-    if (ImGui::Button("Analyze statically"))
+        ImGui::TextUnformatted("Image Base (hex):");
+        ImGui::InputText("##dumpBase", dumpImageBaseBuf_, sizeof(dumpImageBaseBuf_));
+
+        ImGui::TextUnformatted("Module Size (bytes/hex):");
+        ImGui::InputText("##dumpSize", dumpModuleSizeBuf_, sizeof(dumpModuleSizeBuf_));
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Import Dump", ImVec2(120.0f, 0.0f)))
     {
         DumpImportOptions options;
         if (!pendingDumpModules_.empty())
         {
+            const auto& chosen = pendingDumpModules_[static_cast<size_t>(pendingDumpModuleIndex_)];
             options.representation = DumpRepresentation::Minidump;
-            options.minidumpModuleBase = pendingDumpModules_[pendingDumpModuleIndex_].imageBase;
+            options.minidumpModuleBase = chosen.imageBase;
+            options.imageBase = chosen.imageBase;
+            options.moduleSize = chosen.imageSize;
         }
         else
         {
             options.representation = DumpRepresentation::RawSnapshot;
-            options.architecture = dumpArchitectureIndex_ == 0
-                ? DumpArchitecture::X86 : DumpArchitecture::X64;
+            options.architecture = dumpArchitectureIndex_ == 1
+                ? DumpArchitecture::X64 : DumpArchitecture::X86;
             try
             {
-                size_t baseParsed = 0;
-                size_t sizeParsed = 0;
-                options.imageBase = std::stoull(dumpImageBaseBuf_, &baseParsed, 0);
-                options.moduleSize = std::stoull(dumpModuleSizeBuf_, &sizeParsed, 0);
-                if (baseParsed != std::strlen(dumpImageBaseBuf_) ||
-                    sizeParsed != std::strlen(dumpModuleSizeBuf_) ||
-                    options.imageBase == 0 || options.moduleSize == 0)
-                    throw std::invalid_argument("metadata");
+                options.imageBase = std::stoull(dumpImageBaseBuf_, nullptr, 0);
+                options.moduleSize = std::stoull(dumpModuleSizeBuf_, nullptr, 0);
             }
             catch (...)
             {
-                dumpImportError_ = "Enter a non-zero image base and module size.";
-                ImGui::EndPopup();
+                dumpImportError_ = "Invalid base address or module size format.";
                 return;
             }
         }
         if (OpenDumpFile(pendingDumpPath_, options))
         {
             showDumpImportModal_ = false;
-            pendingDumpPath_.clear();
-            pendingDumpModules_.clear();
             ImGui::CloseCurrentPopup();
         }
         else
-            dumpImportError_ = "Import failed. Check the metadata and the Console for the exact reason.";
+        {
+            dumpImportError_ = "Failed to parse dump module at specified bounds.";
+        }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel"))
+    if (ImGui::Button("Cancel", ImVec2(80.0f, 0.0f)))
     {
         showDumpImportModal_ = false;
-        pendingDumpPath_.clear();
-        pendingDumpModules_.clear();
         ImGui::CloseCurrentPopup();
     }
+
     ImGui::EndPopup();
 }
 
 void Application::RenderDockspace()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - 22.0f));
-    ImGui::SetNextWindowViewport(viewport->ID);
-
-    ImGuiWindowFlags dockFlags =
-        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus |
-        ImGuiWindowFlags_NoBackground;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-
-    ImGui::Begin("OpenReverse_Dockspace", nullptr, dockFlags);
-    ImGui::PopStyleVar(3);
-
-    RenderBrandBar();
-    RenderMenuBar();
-    RenderToolbar();
-
     ImGuiID dockspace_id = ImGui::GetID("OpenReverse_DockspaceID");
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
@@ -1221,12 +1904,12 @@ void Application::RenderDockspace()
     {
         ImGui::DockBuilderRemoveNode(dockspace_id);
         ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-        ImVec2 workSize(viewport->WorkSize.x, viewport->WorkSize.y - 22.0f);
+        ImVec2 workSize(viewport->WorkSize.x - 210.0f, viewport->WorkSize.y - 68.0f);
         ImGui::DockBuilderSetNodeSize(dockspace_id, workSize);
 
         ImGuiID main = dockspace_id;
-        ImGuiID left  = ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,  0.17f, nullptr, &main);
-        ImGuiID right = ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.27f, nullptr, &main);
+        ImGuiID left  = ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,  0.18f, nullptr, &main);
+        ImGuiID right = ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.28f, nullptr, &main);
 
         if (isDevMode)
         {
@@ -1289,373 +1972,18 @@ void Application::RenderDockspace()
         ImGui::DockBuilderFinish(dockspace_id);
         layoutInitialized_ = true;
     }
-
-    ImGui::End();
-
-    const HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
-    const float rounding = hwnd && IsZoomed(hwnd) ? 0.0f : 7.0f;
-    ImGui::GetForegroundDrawList(viewport)->AddRect(
-        ImVec2(viewport->Pos.x + 0.5f, viewport->Pos.y + 0.5f),
-        ImVec2(viewport->Pos.x + viewport->Size.x - 0.5f,
-            viewport->Pos.y + viewport->Size.y - 0.5f),
-        IM_COL32(31, 93, 128, 255), rounding, 0, 1.0f);
 }
 
 void Application::RenderBrandBar()
 {
-    constexpr float barHeight = 31.0f;
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.012f, 0.027f, 0.040f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.06f, 0.23f, 0.34f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 4.0f));
-    ImGui::BeginChild("##OpenReverseBrandBar", ImVec2(0.0f, barHeight), true,
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImU32 white = IM_COL32(242, 247, 252, 255);
-    const ImU32 blue = IM_COL32(0, 132, 255, 255);
-
-    const ImVec2 c(origin.x + 11.0f, origin.y + 11.0f);
-    draw->PathArcTo(c, 8.5f, 0.72f, 5.56f, 24);
-    draw->PathStroke(white, 0, 2.0f);
-    draw->AddLine(ImVec2(c.x + 2.0f, c.y - 5.5f), ImVec2(c.x + 10.0f, c.y - 5.5f), white, 2.0f);
-    draw->AddLine(ImVec2(c.x + 10.0f, c.y - 5.5f), ImVec2(c.x + 10.0f, c.y + 1.0f), white, 2.0f);
-    draw->AddLine(ImVec2(c.x + 10.0f, c.y + 1.0f), ImVec2(c.x + 1.0f, c.y + 1.0f), white, 2.0f);
-    draw->AddLine(ImVec2(c.x + 6.0f, c.y + 1.0f), ImVec2(c.x + 11.0f, c.y + 7.0f), white, 2.0f);
-    draw->AddTriangleFilled(ImVec2(c.x - 1.0f, c.y + 1.0f), ImVec2(c.x + 3.5f, c.y - 2.5f), ImVec2(c.x + 3.5f, c.y + 4.5f), white);
-
-    const ImVec2 brandPos(origin.x + 31.0f, origin.y + 3.0f);
-    draw->AddText(brandPos, white, "OPEN");
-    const float openWidth = ImGui::CalcTextSize("OPEN").x;
-    draw->AddText(ImVec2(brandPos.x + openWidth, brandPos.y), blue, "REVERSE");
-
-    const HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
-    const float controlWidth = 35.0f;
-    const float controlsStart = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - controlWidth * 3.0f - 1.0f;
-    const float controlsTop = ImGui::GetWindowPos().y + 1.0f;
-    auto windowButton = [&](const char* id, int kind) {
-        ImGui::SetCursorScreenPos(ImVec2(controlsStart + kind * controlWidth, controlsTop));
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const bool pressed = ImGui::InvisibleButton(id, ImVec2(controlWidth, barHeight - 2.0f));
-        const bool hovered = ImGui::IsItemHovered();
-        if (hovered)
-            draw->AddRectFilled(p, ImVec2(p.x + controlWidth, p.y + barHeight - 2.0f),
-                kind == 2 ? IM_COL32(188, 42, 55, 255) : IM_COL32(20, 53, 72, 255));
-
-        const ImU32 icon = IM_COL32(205, 215, 222, 255);
-        const ImVec2 center(p.x + controlWidth * 0.5f, p.y + (barHeight - 2.0f) * 0.5f);
-        if (kind == 0)
-            draw->AddLine(ImVec2(center.x - 5.0f, center.y + 3.0f),
-                ImVec2(center.x + 5.0f, center.y + 3.0f), icon, 1.0f);
-        else if (kind == 1)
-            draw->AddRect(ImVec2(center.x - 4.5f, center.y - 4.5f),
-                ImVec2(center.x + 4.5f, center.y + 4.5f), icon, 0.0f, 0, 1.0f);
-        else
-        {
-            draw->AddLine(ImVec2(center.x - 4.0f, center.y - 4.0f),
-                ImVec2(center.x + 4.0f, center.y + 4.0f), icon, 1.1f);
-            draw->AddLine(ImVec2(center.x + 4.0f, center.y - 4.0f),
-                ImVec2(center.x - 4.0f, center.y + 4.0f), icon, 1.1f);
-        }
-        return pressed;
-    };
-
-    if (windowButton("##MinimizeWindow", 0) && hwnd)
-        PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
-    if (windowButton("##MaximizeWindow", 1) && hwnd)
-        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
-    if (windowButton("##CloseWindow", 2) && hwnd)
-        PostMessageW(hwnd, WM_CLOSE, 0, 0);
-
-    ImGui::EndChild();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(2);
 }
 
 void Application::RenderToolbar()
 {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.020f, 0.039f, 0.052f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.06f, 0.18f, 0.25f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 4.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 0.0f));
-    ImGui::BeginChild("##MainToolbar", ImVec2(0.0f, 35.0f), true,
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-
-    auto toolButton = [&](const char* id, const char* label, int icon, bool enabled = true) {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        if (!enabled) ImGui::BeginDisabled();
-        const bool clicked = ImGui::InvisibleButton(id, ImVec2(28.0f, 25.0f));
-        const bool hovered = ImGui::IsItemHovered();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        if (hovered && enabled)
-            dl->AddRectFilled(p, ImVec2(p.x + 28.0f, p.y + 25.0f), IM_COL32(12, 59, 91, 255), 3.0f);
-        const ImU32 col = !enabled ? IM_COL32(66, 78, 86, 255) :
-            (hovered ? IM_COL32(20, 157, 255, 255) : IM_COL32(165, 181, 192, 255));
-        const ImVec2 m(p.x + 14.0f, p.y + 12.5f);
-        if (icon == 0) { dl->AddRect(ImVec2(m.x-6,m.y-5), ImVec2(m.x+6,m.y+5), col, 1.5f); dl->AddLine(ImVec2(m.x-3,m.y-7),ImVec2(m.x+5,m.y-7),col,1.5f); }
-        if (icon == 1) { dl->AddRect(ImVec2(m.x-6,m.y-5), ImVec2(m.x+6,m.y+6), col, 1.0f, 0, 1.5f); dl->AddLine(ImVec2(m.x-3,m.y+2),ImVec2(m.x+3,m.y+2),col,1.5f); }
-        if (icon == 2) { dl->AddTriangle(ImVec2(m.x-4,m.y-7),ImVec2(m.x-4,m.y+7),ImVec2(m.x+7,m.y),col,1.5f); }
-        if (icon == 3) { dl->AddCircle(m,6.0f,col,16,1.5f); dl->AddCircleFilled(m,2.0f,col); }
-        if (icon == 4) { dl->AddLine(ImVec2(m.x-7,m.y),ImVec2(m.x+7,m.y),col,1.5f); dl->AddLine(ImVec2(m.x,m.y-7),ImVec2(m.x,m.y+7),col,1.5f); }
-        if (icon == 5) { dl->AddCircle(m,6.0f,col,16,1.5f); dl->AddLine(ImVec2(m.x+4,m.y+4),ImVec2(m.x+8,m.y+8),col,1.5f); }
-        if (icon == 6) { dl->AddCircle(m,5.0f,col,16,1.3f); dl->AddCircle(m,1.8f,col,12,1.2f); for (int i=0;i<8;++i) { const float a=0.7854f*i; dl->AddLine(ImVec2(m.x+6.0f*cosf(a),m.y+6.0f*sinf(a)),ImVec2(m.x+8.0f*cosf(a),m.y+8.0f*sinf(a)),col,1.2f); } }
-        if (icon == 7) { dl->AddRectFilled(ImVec2(m.x-5,m.y-5),ImVec2(m.x+5,m.y+5),col,1.0f); }
-        if (icon == 8) { dl->AddCircle(ImVec2(m.x-3,m.y),4.5f,col,14,1.3f); dl->AddCircle(ImVec2(m.x+3,m.y),4.5f,col,14,1.3f); }
-        if (icon == 9) { dl->AddLine(ImVec2(m.x-5,m.y+5),ImVec2(m.x,m.y-5),col,1.2f); dl->AddLine(ImVec2(m.x,m.y-5),ImVec2(m.x+6,m.y+4),col,1.2f); dl->AddCircleFilled(ImVec2(m.x-5,m.y+5),2.0f,col); dl->AddCircleFilled(ImVec2(m.x,m.y-5),2.0f,col); dl->AddCircleFilled(ImVec2(m.x+6,m.y+4),2.0f,col); }
-        if (icon == 10) { dl->AddRect(ImVec2(m.x-7,m.y-5),ImVec2(m.x+7,m.y+5),col,1.0f,0,1.3f); for (int i=-3;i<=3;i+=3) dl->AddLine(ImVec2(m.x+i,m.y-5),ImVec2(m.x+i,m.y+5),col,1.0f); }
-        if (icon == 11) { dl->AddLine(ImVec2(m.x-7,m.y-3),ImVec2(m.x-7,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x-7,m.y-7),ImVec2(m.x-3,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y-3),ImVec2(m.x+7,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y-7),ImVec2(m.x+3,m.y-7),col,1.2f); dl->AddLine(ImVec2(m.x-7,m.y+3),ImVec2(m.x-7,m.y+7),col,1.2f); dl->AddLine(ImVec2(m.x-7,m.y+7),ImVec2(m.x-3,m.y+7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y+3),ImVec2(m.x+7,m.y+7),col,1.2f); dl->AddLine(ImVec2(m.x+7,m.y+7),ImVec2(m.x+3,m.y+7),col,1.2f); dl->AddCircleFilled(m,1.8f,col); }
-        if (icon == 12) { for (int i=-4;i<=4;i+=4) { dl->AddCircleFilled(ImVec2(m.x-6,m.y+i),1.0f,col); dl->AddLine(ImVec2(m.x-3,m.y+i),ImVec2(m.x+7,m.y+i),col,1.2f); } }
-        if (icon == 13) { dl->AddRect(ImVec2(m.x-6,m.y-6),ImVec2(m.x+6,m.y+6),col,1.0f,0,1.2f); dl->AddLine(ImVec2(m.x,m.y-6),ImVec2(m.x,m.y+6),col,1.0f); dl->AddLine(ImVec2(m.x-6,m.y),ImVec2(m.x+6,m.y),col,1.0f); }
-        if (icon == 14) { dl->AddRect(ImVec2(m.x-6,m.y-7),ImVec2(m.x+5,m.y+7),col,1.0f,0,1.2f); dl->AddLine(ImVec2(m.x-3,m.y-2),ImVec2(m.x+2,m.y-2),col,1.0f); dl->AddLine(ImVec2(m.x-3,m.y+2),ImVec2(m.x+2,m.y+2),col,1.0f); }
-        if (icon == 15) { const ImVec2 points[5] = {ImVec2(m.x-5,m.y-7),ImVec2(m.x+5,m.y-7),ImVec2(m.x+5,m.y+7),ImVec2(m.x,m.y+3),ImVec2(m.x-5,m.y+7)}; dl->AddPolyline(points,5,col,ImDrawFlags_Closed,1.3f); }
-        if (icon == 16) { dl->AddLine(ImVec2(m.x,m.y-8),ImVec2(m.x,m.y+8),col,1.2f); dl->AddLine(ImVec2(m.x-8,m.y),ImVec2(m.x+8,m.y),col,1.2f); dl->AddLine(ImVec2(m.x-5,m.y-5),ImVec2(m.x+5,m.y+5),col,1.0f); dl->AddLine(ImVec2(m.x+5,m.y-5),ImVec2(m.x-5,m.y+5),col,1.0f); dl->AddCircleFilled(m,2.0f,col); }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", label);
-        if (!enabled) ImGui::EndDisabled();
-        ImGui::SameLine();
-        return clicked && enabled;
-    };
-
-    auto toolbarDivider = [&]() {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + 3.0f, p.y + 4.0f),
-            ImVec2(p.x + 3.0f, p.y + 21.0f), IM_COL32(35, 58, 72, 255), 1.0f);
-        ImGui::Dummy(ImVec2(7.0f, 25.0f));
-        ImGui::SameLine();
-    };
-
-    if (toolButton("##open", "Open binary", 0)) ShowOpenFileDialog();
-    if (toolButton("##attach", "Attach to a process", 1)) ImGui::SetWindowFocus("PROCESSES");
-    if (toolButton("##analyze", "Analyze active module", 2, processHandle != nullptr))
-        analysisPanel.StartAnalyzeCurrentModule(*this);
-    if (toolButton("##refresh", "Refresh current target", 5, isAttached))
-    {
-        processListPanel.ForceRefresh();
-        if (processHandle) moduleCatalog.RefreshModules(processHandle);
-        NavigateToAddress(currentAddress);
-    }
-    toolbarDivider();
-    if (toolButton("##detach", "Detach from process", 7, isAttached)) DetachFromProcess();
-    if (toolButton("##goto", "Go to address", 4, isAttached)) showGotoModal_ = true;
-    if (toolButton("##xrefs", "Cross-references for selection", 8, isAttached))
-    {
-        analysisPanel.OpenXrefsForAddress(currentAddress);
-        ImGui::SetWindowFocus("XREFS");
-    }
-    if (toolButton("##functions", "Functions and control-flow graph", 9, isAttached))
-    {
-        showAnalysisPanel_ = true;
-        ImGui::SetWindowFocus("Analysis / Functions & CFG");
-    }
-    toolbarDivider();
-    if (toolButton("##memorymap", "Memory map", 10, isAttached)) showMemoryMap_ = true;
-    if (toolButton("##scanner", "Pattern scanner", 11, isAttached)) showScanner_ = true;
-    if (toolButton("##strings", "Strings", 12, isAttached)) showStrings_ = true;
-    if (toolButton("##inspector", "Data inspector", 13, isAttached)) showDataInspector_ = true;
-    if (toolButton("##peheader", "PE header", 14, isAttached)) showPEViewer_ = true;
-    if (toolButton("##bookmarks", "Bookmarks", 15, isAttached)) showBookmarks_ = true;
-    if (toolButton("##assistant", "AI assistant", 16)) ImGui::SetWindowFocus("AI ASSISTANT");
-
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 192.0f, 4.0f));
-    ImGui::SetNextItemWidth(145.0f);
-    const char* workspace = isDevMode ? "Editor workspace" : "Workspace";
-    if (ImGui::BeginCombo("##Workspace", workspace))
-    {
-        if (ImGui::Selectable("Reverse workspace", !isDevMode)) SwitchToDevMode(false);
-        if (ImGui::Selectable("Editor workspace", isDevMode)) SwitchToDevMode(true);
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (toolButton("##settings", "AI settings", 6))
-        aiCopilotPanel.OpenSettings();
-
-    ImGui::EndChild();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(2);
 }
 
 void Application::RenderMenuBar()
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.016f, 0.031f, 0.042f, 1.0f));
-    ImGui::BeginChild("##ApplicationMenu", ImVec2(0.0f, 25.0f), false,
-        ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    if (!ImGui::BeginMenuBar())
-    {
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-        return;
-    }
-
-    if (ImGui::BeginMenu("File"))
-    {
-        if (ImGui::MenuItem("Open Project (.orev)...", "Ctrl+Shift+O"))
-            ShowOpenProjectDialog();
-        if (ImGui::MenuItem("Open Binary / Driver File (.sys, .exe, .dll)...", "Ctrl+O"))
-        {
-            ShowOpenFileDialog();
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Open Windows File Manager to analyze any PE file or kernel driver (.sys) offline");
-        if (ImGui::MenuItem("Open Dump (.dmp, .mdmp, .bin)..."))
-            ShowOpenDumpDialog();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Static analysis only; mapped PE images and Windows minidumps are never executed");
-        ImGui::Separator();
-        if (ImGui::MenuItem("Save Project", "Ctrl+S", false,
-                            isAttached && targetKind != AnalysisTargetKind::LiveProcess))
-            SaveProjectFile(false);
-        if (ImGui::MenuItem("Save Project As...", "Ctrl+Shift+S", false,
-                            isAttached && targetKind != AnalysisTargetKind::LiveProcess))
-            SaveProjectFile(true);
-        ImGui::Separator();
-        if (ImGui::MenuItem("Exit", "Alt+F4"))
-            PostQuitMessage(0);
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("View"))
-    {
-        if (ImGui::MenuItem("Reverse workspace", "Ctrl+1", !isDevMode)) SwitchToDevMode(false);
-        if (ImGui::MenuItem("Editor workspace", "Ctrl+2", isDevMode)) SwitchToDevMode(true);
-        ImGui::Separator();
-        ImGui::MenuItem("Functions and CFG", nullptr, &showAnalysisPanel_);
-        ImGui::MenuItem("Memory Map", nullptr, &showMemoryMap_);
-        ImGui::MenuItem("PE Header", nullptr, &showPEViewer_);
-        ImGui::MenuItem("Data Inspector", nullptr, &showDataInspector_);
-        ImGui::MenuItem("Bookmarks", nullptr, &showBookmarks_);
-        ImGui::MenuItem("Console", nullptr, &showConsole_);
-        ImGui::MenuItem("Version Intelligence", nullptr, &showVersionIntelligence_);
-        const auto extensionPanels = extensionManager.Panels();
-        if (!extensionPanels.empty() && ImGui::BeginMenu("Extension panels"))
-        {
-            for (const auto& panel : extensionPanels)
-            {
-                bool visible = panel.visible;
-                ImGui::PushID(panel.id.c_str());
-                if (ImGui::MenuItem(panel.title.c_str(), nullptr, &visible))
-                    extensionManager.SetPanelVisible(panel.id, visible);
-                ImGui::PopID();
-            }
-            ImGui::EndMenu();
-        }
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Analysis"))
-    {
-        if (ImGui::MenuItem("Analyze active module", nullptr, false, processHandle != nullptr))
-            analysisPanel.StartAnalyzeCurrentModule(*this);
-        if (ImGui::MenuItem("Functions and CFG", "Ctrl+I"))
-            showAnalysisPanel_ = true;
-        if (ImGui::MenuItem("Compare Versions..."))
-            showVersionIntelligence_ = true;
-        if (ImGui::MenuItem("Go to address...", "Ctrl+G", false, isAttached))
-            showGotoModal_ = true;
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Debug"))
-    {
-        if (ImGui::MenuItem("Attach to process...", nullptr, false, !isAttached))
-            ImGui::SetWindowFocus("PROCESSES");
-        if (ImGui::MenuItem("Detach", nullptr, false, isAttached)) DetachFromProcess();
-        if (ImGui::MenuItem("Refresh process list", "F5")) processListPanel.ForceRefresh();
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Tools"))
-    {
-        if (ImGui::MenuItem("Pattern Scanner")) showScanner_ = true;
-        if (ImGui::MenuItem("Strings")) showStrings_ = true;
-        if (ImGui::MenuItem("AI Assistant")) ImGui::SetWindowFocus("AI ASSISTANT");
-        ImGui::Separator();
-        if (ImGui::MenuItem("Extensions...")) showExtensions_ = true;
-        const auto extensionCommands = extensionManager.Commands();
-        if (!extensionCommands.empty() && ImGui::BeginMenu("Extension commands"))
-        {
-            for (const auto& command : extensionCommands)
-            {
-                bool available = false;
-                std::string error;
-                extensionManager.IsCommandAvailable(command.id, available, error);
-                ImGui::PushID(command.id.c_str());
-                if (ImGui::MenuItem(command.displayName.c_str(), nullptr, false, available))
-                {
-                    if (extensionManager.ExecuteCommand(command.id, error) != OPENREVERSE_OK)
-                        Logger::Get().Log(LogLevel::Warning, "Extension command %s: %s",
-                            command.id.c_str(), error.c_str());
-                }
-                ImGui::PopID();
-            }
-            ImGui::EndMenu();
-        }
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Settings"))
-    {
-        if (ImGui::MenuItem("Account...")) showAccount_ = true;
-        if (ImGui::MenuItem("AI...")) aiCopilotPanel.OpenSettings();
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Window"))
-    {
-        if (ImGui::MenuItem("Reset workspace layout")) ResetLayout();
-        ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Help"))
-    {
-        if (ImGui::MenuItem("About OpenReverse"))
-        {
-            ImGui::OpenPopup("About OpenReverse");
-        }
-        ImGui::EndMenu();
-    }
-
-    ImGui::EndMenuBar();
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-
-    if (showGotoModal_)
-    {
-        ImGui::OpenPopup("Goto Address");
-        showGotoModal_ = false;
-    }
-    if (ImGui::BeginPopupModal("Goto Address", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("Enter address (hex):");
-        ImGui::SetNextItemWidth(220.0f);
-        bool enterPressed = ImGui::InputText("##addr", gotoAddressBuf_, sizeof(gotoAddressBuf_),
-            ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue);
-        if (ImGui::Button("OK", ImVec2(80, 0)) || enterPressed)
-        {
-            if (const auto address = helpers::TryParseAddress(gotoAddressBuf_))
-            {
-                NavigateToAddress(*address);
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-
-    if (ImGui::BeginPopupModal("About OpenReverse", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::Text("OpenReverse - Reverse Engineering Workspace");
-        ImGui::Text("Version %s", openreverse::kVersion);
-        ImGui::Separator();
-        ImGui::Text("Read and analyze process memory, decoded control flow, and optional AI context.");
-        if (ImGui::Button("OK", ImVec2(80, 0)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 }
 
 void Application::ShowGotoAddressDialog()
@@ -1696,58 +2024,58 @@ void Application::RestoreProjectUiAfterAnalysis()
 void Application::RenderStatusBar()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - 22.0f));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, 22.0f));
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - 24.0f));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, 24.0f));
 
     ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoDocking |
         ImGuiWindowFlags_NoSavedSettings;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 3.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.045f, 0.065f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 3.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(17.0f/255.0f, 19.0f/255.0f, 24.0f/255.0f, 1.0f));
 
     ImGui::Begin("##StatusBar", nullptr, flags);
 
     if (isAttached)
     {
         ImGui::Text("%s", attachedProcessName.c_str());
-        ImGui::SameLine(0, 7);
-        ImGui::TextDisabled("- %s", is64Bit ? "x64" : "x86");
+        ImGui::SameLine(0, 8);
+        ImGui::TextDisabled("• %s", is64Bit ? "x64" : "x86");
 
         if (attachedPID != 0)
         {
-            ImGui::SameLine(0, 7);
-            ImGui::TextDisabled("- PID %d", attachedPID);
+            ImGui::SameLine(0, 8);
+            ImGui::TextDisabled("• PID %d", attachedPID);
         }
 
-        ImGui::SameLine(0, 7);
+        ImGui::SameLine(0, 8);
         const ModuleInfo* curMod = moduleCatalog.FindModuleByAddress(currentAddress);
         if (curMod)
         {
             std::string offStr = helpers::FormatModuleOffset(curMod->name, curMod->baseAddress, currentAddress, is64Bit);
-            ImGui::TextDisabled("- %s", offStr.c_str());
+            ImGui::TextDisabled("• %s", offStr.c_str());
         }
         else
-            ImGui::TextDisabled("- %s", helpers::FormatAddress(currentAddress, is64Bit).c_str());
+            ImGui::TextDisabled("• %s", helpers::FormatAddress(currentAddress, is64Bit).c_str());
     }
     else
     {
-        ImGui::TextDisabled("No target attached");
+        ImGui::TextDisabled("Standby — No target attached");
     }
 
     if (analysisSession.HasProject())
     {
-        ImGui::SameLine(0, 7);
+        ImGui::SameLine(0, 8);
         const std::string projectName = analysisSession.ProjectPath().empty()
             ? "Unsaved project" : std::filesystem::path(analysisSession.ProjectPath()).filename().string();
-        ImGui::TextColored(ImVec4(0.25f, 0.67f, 0.96f, 1.0f), "- %s%s",
+        ImGui::TextColored(ImVec4(0.35f, 0.65f, 1.0f, 1.0f), "• %s%s",
                            projectName.c_str(), analysisSession.IsDirty() ? " *" : "");
     }
 
     const AnalysisJobSnapshot offlineJob = offlineAnalysisJobId != 0
         ? analysisScheduler.GetJob(offlineAnalysisJobId) : AnalysisJobSnapshot{};
-    std::string state = isAttached ? "Analysis ready" : "Idle";
+    std::string state = isAttached ? "Ready" : "Idle";
     if (offlineAnalysisJobId != 0 &&
         (offlineJob.state == AnalysisJobState::Queued || offlineJob.state == AnalysisJobState::Running))
     {
@@ -1755,8 +2083,8 @@ void Application::RenderStatusBar()
     }
     const float stateWidth = ImGui::CalcTextSize(state.c_str()).x;
     ImGui::SameLine(ImGui::GetWindowWidth() - stateWidth - 14.0f);
-    ImGui::TextColored(isAttached ? ImVec4(0.20f, 0.66f, 0.96f, 1.0f)
-                                  : ImVec4(0.42f, 0.47f, 0.51f, 1.0f), "%s", state.c_str());
+    ImGui::TextColored(isAttached ? ImVec4(0.3f, 0.8f, 1.0f, 1.0f)
+                                  : ImVec4(0.5f, 0.55f, 0.6f, 1.0f), "%s", state.c_str());
 
     ImGui::End();
     ImGui::PopStyleColor();

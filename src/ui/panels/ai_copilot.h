@@ -9,6 +9,7 @@ class AICopilotPanel
 public:
     void Render(Application& app);
     void OpenSettings();
+    void RenderSettingsInline(Application& app);
 
 private:
     void RenderSettings(Application& app);
