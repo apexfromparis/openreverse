@@ -15,6 +15,7 @@
 #include "analysis/module_analysis.h"
 #include "extensions/extension_manager.h"
 #include "auth/auth_client.h"
+#include "app_preferences.h"
 
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
@@ -131,6 +132,7 @@ private:
     panels::AICopilotPanel      aiCopilotPanel;
     panels::VersionIntelligencePanel versionIntelligencePanel;
     auth::DesktopAuthClient accountAuth_;
+    AppPreferences          preferences_;
 
     bool             showGotoModal_ = false;
     char             gotoAddressBuf_[32] = "0";
@@ -152,8 +154,6 @@ private:
     std::string      pendingDumpPath_;
     std::string      dumpImportError_;
     std::string      accountUiMessage_;
-    char             accountEmailBuf_[256] = "";
-    char             accountPasswordBuf_[256] = "";
     std::vector<DumpModuleMetadata> pendingDumpModules_;
     int              pendingDumpModuleIndex_ = 0;
     int              dumpArchitectureIndex_ = 1;
@@ -161,6 +161,7 @@ private:
     char             dumpModuleSizeBuf_[32] = "0";
     bool             openingProjectTarget_ = false;
 
+    void RenderFirstRunScreen();
     void RenderMenuBar();
     void RenderBrandBar();
     void RenderToolbar();

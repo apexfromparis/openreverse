@@ -78,6 +78,7 @@ bool SelectFilePath(const wchar_t* filter, const wchar_t* title, bool save,
 Application::Application()
     : analysisDatabase(analysisSession.Database())
 {
+    preferences_ = AppPreferences::Load();
     extensions::ExtensionHostServices services;
     services.currentTarget = [this](extensions::ExtensionTargetSnapshot& snapshot) {
         const ModuleAnalysisState* analysis = analysisDatabase.FindModuleContaining(currentAddress);
@@ -788,9 +789,120 @@ void Application::NavigateToAddress(uint64_t address)
     disasmViewPanel.SetAddress(address);
 }
 
+void Application::RenderFirstRunScreen()
+{
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(40.0f, 40.0f));
+    if (ImGui::Begin("##FirstRunScreen", nullptr, flags))
+    {
+        const auth::AuthStatus status = accountAuth_.Status();
+        if (status.state == auth::AuthState::SignedIn)
+        {
+            preferences_.onboardingSeen = true;
+            preferences_.Save();
+            ImGui::End();
+            ImGui::PopStyleVar();
+            return;
+        }
+
+        const float availWidth = ImGui::GetContentRegionAvail().x;
+        const float availHeight = ImGui::GetContentRegionAvail().y;
+        const float contentWidth = (std::min)(440.0f, availWidth);
+
+        ImGui::SetCursorPosX((availWidth - contentWidth) * 0.5f);
+        ImGui::SetCursorPosY((std::max)(40.0f, (availHeight - 280.0f) * 0.38f));
+
+        ImGui::BeginGroup();
+
+        ImGui::TextColored(ImVec4(0.35f, 0.65f, 0.95f, 1.0f), "OpenReverse");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextUnformatted("Welcome to OpenReverse");
+        ImGui::Spacing();
+        ImGui::TextDisabled("A reverse-engineering workspace for Windows.");
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        if (!accountUiMessage_.empty())
+        {
+            ImGui::TextColored(ImVec4(0.94f, 0.45f, 0.30f, 1.0f), "%s", accountUiMessage_.c_str());
+            ImGui::Spacing();
+        }
+
+        if (status.state == auth::AuthState::WaitingForBrowser)
+        {
+            ImGui::TextUnformatted("OpenReverse Account");
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Waiting for sign-in...");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Complete authentication in your browser.");
+            ImGui::Spacing();
+            if (ImGui::Button("Cancel", ImVec2(120.0f, 32.0f)))
+            {
+                std::string err;
+                accountAuth_.CancelBrowserLogin(err);
+                accountUiMessage_.clear();
+            }
+        }
+        else if (status.state == auth::AuthState::CompletingAuthentication)
+        {
+            ImGui::TextUnformatted("OpenReverse Account");
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Completing authentication...");
+        }
+        else
+        {
+            if (status.state == auth::AuthState::Error)
+            {
+                ImGui::TextDisabled("%s", status.message.c_str());
+                ImGui::Spacing();
+            }
+
+            if (ImGui::Button("Sign in to OpenReverse", ImVec2(contentWidth, 36.0f)))
+            {
+                std::string error;
+                if (!accountAuth_.StartBrowserLogin(error))
+                    accountUiMessage_ = error;
+                else
+                    accountUiMessage_.clear();
+            }
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+
+            if (ImGui::SmallButton("Continue without an account"))
+            {
+                preferences_.onboardingSeen = true;
+                preferences_.Save();
+            }
+        }
+
+        ImGui::EndGroup();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
 void Application::Render()
 {
     analysisScheduler.DrainCompletions();
+
+    if (!preferences_.onboardingSeen)
+    {
+        RenderFirstRunScreen();
+        return;
+    }
+
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O) && !ImGui::GetIO().WantTextInput)
     {
         if (ImGui::GetIO().KeyShift) ShowOpenProjectDialog();
@@ -920,6 +1032,7 @@ void Application::RenderAccountWindow()
 
     ImGui::TextUnformatted("OpenReverse Account");
     ImGui::Separator();
+    ImGui::Spacing();
 
     if (!accountUiMessage_.empty())
     {
@@ -988,7 +1101,7 @@ void Application::RenderAccountWindow()
 
         if (!status.accountSyncFailed)
         {
-            if (ImGui::Button("Refresh"))
+            if (ImGui::Button("Refresh Account"))
             {
                 std::string error;
                 if (!accountAuth_.StartProfileRefresh(error)) accountUiMessage_ = error;
@@ -1004,76 +1117,54 @@ void Application::RenderAccountWindow()
             else accountUiMessage_.clear();
         }
     }
+    else if (status.state == auth::AuthState::WaitingForBrowser)
+    {
+        ImGui::TextUnformatted("Waiting for sign-in...");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Complete authentication in your browser.");
+        ImGui::Spacing();
+
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 28.0f)))
+        {
+            std::string err;
+            accountAuth_.CancelBrowserLogin(err);
+            accountUiMessage_.clear();
+        }
+    }
+    else if (status.state == auth::AuthState::CompletingAuthentication)
+    {
+        ImGui::TextUnformatted("Completing authentication...");
+    }
     else
     {
-        if (!status.providerConfigured)
+        ImGui::TextDisabled("Not signed in.");
+        ImGui::Spacing();
+
+        if (ImGui::Button("Sign in to OpenReverse", ImVec2(200.0f, 32.0f)))
         {
-            ImGui::TextDisabled("Account service is not configured.");
-            ImGui::Spacing();
-            ImGui::TextWrapped("Community analysis, projects, extensions, CLI and local/BYOK AI remain fully available without an account.");
+            std::string error;
+            if (!accountAuth_.StartBrowserLogin(error))
+                accountUiMessage_ = error;
+            else
+                accountUiMessage_.clear();
         }
-        else
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Your account is managed securely through the OpenReverse website.");
+        ImGui::TextDisabled("Community works without an account.");
+        ImGui::Spacing();
+
+        if (ImGui::Button("Manage account on web"))
         {
-            ImGui::TextWrapped("Sign in with the same account used on openreverse.dev.");
+            const std::string url = config.accountManageUrl.empty() ? "https://openreverse.dev/account" : config.accountManageUrl;
+            const std::wstring wideUrl(url.begin(), url.end());
+            ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+
+        if (status.state == auth::AuthState::Error)
+        {
             ImGui::Spacing();
-
-            ImGui::TextUnformatted("Email");
-            ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputText("##AccountEmail", accountEmailBuf_, sizeof(accountEmailBuf_));
-
-            ImGui::TextUnformatted("Password");
-            ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputText("##AccountPassword", accountPasswordBuf_, sizeof(accountPasswordBuf_), ImGuiInputTextFlags_Password);
-
-            ImGui::Spacing();
-
-            const bool busy = status.state == auth::AuthState::SigningIn ||
-                              status.state == auth::AuthState::Refreshing ||
-                              status.state == auth::AuthState::SigningOut;
-
-            if (busy) ImGui::BeginDisabled();
-
-            if (ImGui::Button("Sign In", ImVec2(120.0f, 0.0f)))
-            {
-                std::string email = accountEmailBuf_;
-                std::string password = accountPasswordBuf_;
-                SecureZeroMemory(accountPasswordBuf_, sizeof(accountPasswordBuf_));
-                accountPasswordBuf_[0] = '\0';
-
-                std::string error;
-                if (!accountAuth_.StartPasswordLogin(std::move(email), std::move(password), error))
-                    accountUiMessage_ = error;
-                else
-                    accountUiMessage_.clear();
-            }
-
-            ImGui::SameLine();
-
-            if (ImGui::Button("Create Account"))
-            {
-                const std::string url = config.signupUrl.empty() ? "https://openreverse.dev/signup" : config.signupUrl;
-                const std::wstring wideUrl(url.begin(), url.end());
-                ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            }
-
-            if (busy)
-            {
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", auth::AuthSession::StateName(status.state));
-            }
-
-            if (status.state == auth::AuthState::ReauthenticationRequired || status.state == auth::AuthState::Error)
-            {
-                ImGui::Spacing();
-                ImGui::TextDisabled("%s", status.message.c_str());
-                if (ImGui::Button("Retry Stored Session"))
-                {
-                    std::string error;
-                    if (!accountAuth_.StartRefresh(error)) accountUiMessage_ = error;
-                    else accountUiMessage_.clear();
-                }
-            }
+            ImGui::TextColored(ImVec4(0.94f, 0.45f, 0.30f, 1.0f), "%s", status.message.c_str());
         }
     }
 
