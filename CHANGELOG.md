@@ -12,7 +12,6 @@ First public beta release of OpenReverse Community.
 - **Graphical Control-Flow Graphs (CFG)**: Layered graphical CFG with typed control flow edges (fallthrough, conditional true/false, unconditional jump, call, ret), interactive zoom, pan, fit, and synchronized address navigation.
 - **Version Intelligence Workspace**: Review-first binary comparison and function matching across builds with sequence/CFG/symbol indexes, structured similarity metrics, deterministic change summaries, and offset/field migrations.
 - **Projects & Extensions**: Unified `.orev` atomic project persistence and versioned C ABI native extension host with standalone Community SDK (`sdk/include/openreverse_extension.h`).
-- **Optional Native Account Integration**: Optional Supabase Auth email/password login and Windows Credential Manager session persistence with authoritative server-side profile synchronization. Community analysis and local/BYOK AI remain 100% functional offline without an account.
 
 ### Analysis
 
@@ -41,12 +40,7 @@ First public beta release of OpenReverse Community.
 - Structured diagnostics for missing dependencies, invalid entry points, or runtime callback failures.
 - Example extension included in `examples/hello_extension`.
 
-### Account
 
-- Optional Supabase Auth integration supporting email/password sign-in and token rotation.
-- Secure refresh token persistence via Windows Credential Manager (`OpenReverse.Account.Session`).
-- Authoritative `/api/me` profile synchronization with fail-closed commercial tier detection.
-- Complete isolation: network errors, unconfigured account services, or server outages never gate or impair Community functionality.
 
 ### Fixes & Hardening
 

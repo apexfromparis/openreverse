@@ -40,7 +40,7 @@ modules, and optional AI context visible together.
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
-- Optional native account foundation using Supabase Auth (email/password sign-in and session restore), authoritative `/api/me` profile synchronization, and separate Windows Credential Manager storage
+
 - Versioned Windows x64 native extension API with bounded manifests, read-only
   analysis queries, controlled commands/navigation/panels, and extension-owned
   `.orev` state
@@ -109,7 +109,7 @@ Outputs are written to `build/windows-x64/bin/Release/`:
 - `OpenReverse.exe`
 - `OpenReverse-2.0.0-Setup.exe`
 - `OpenReverseCoreTests.exe`
-- `OpenReverseAuthTests.exe`
+-
 - `OpenReverseTestFixture.exe`
 - `OpenReverseValidation.exe`
 
@@ -155,11 +155,6 @@ corpus binaries or reports.
 The [architecture](docs/ARCHITECTURE.md) and
 [analysis pipeline](docs/ANALYSIS.md) documents describe target
 ownership, scheduling, and analysis boundaries.
-
-Account authentication is optional and never gates Community analysis. Its
-Supabase authentication flow, secure storage, and authoritative account
-synchronization are documented in
-[Desktop authentication](docs/AUTHENTICATION.md).
 
 AI is optional. Selected context may include target names, disassembly,
 strings, and generated summaries. Remote endpoints must use HTTPS; plaintext

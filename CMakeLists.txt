@@ -129,7 +129,6 @@ set(OPENREVERSE_WORKSPACE_SOURCES
 )
 
 set(OPENREVERSE_SUPPORT_SOURCES
-    src/app/app_preferences.cpp
     src/utils/helpers.cpp
     src/utils/logger.cpp
 )
@@ -158,23 +157,7 @@ target_compile_definitions(OpenReverseCore PUBLIC
 openreverse_enable_dia(OpenReverseCore)
 openreverse_enable_first_party_warnings(OpenReverseCore)
 
-add_library(OpenReverseAuth STATIC
-    src/auth/account_api.cpp
-    src/auth/auth_callback.cpp
-    src/auth/auth_client.cpp
-    src/auth/auth_session.cpp
-    src/auth/loopback_callback.cpp
-    src/auth/pkce.cpp
-    src/auth/secure_credentials.cpp
-)
-target_include_directories(OpenReverseAuth PUBLIC src)
-target_link_libraries(OpenReverseAuth PUBLIC
-    nlohmann_json::nlohmann_json advapi32 bcrypt winhttp ws2_32
-)
-target_compile_definitions(OpenReverseAuth PUBLIC
-    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-)
-openreverse_enable_first_party_warnings(OpenReverseAuth)
+
 
 add_library(OpenReverseExtensions STATIC
     src/extensions/extension_manifest.cpp
@@ -239,7 +222,6 @@ target_include_directories(OpenReverse PRIVATE
 
 target_link_libraries(OpenReverse PRIVATE
     OpenReverseCore
-    OpenReverseAuth
     OpenReverseExtensions
     OpenReverseUI
     dwmapi
@@ -352,12 +334,7 @@ if(BUILD_TESTING)
     openreverse_enable_first_party_warnings(OpenReverseCoreTests)
     add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
 
-    add_executable(OpenReverseAuthTests
-        tests/auth_tests.cpp
-    )
-    target_link_libraries(OpenReverseAuthTests PRIVATE OpenReverseAuth OpenReverseCore)
-    openreverse_enable_first_party_warnings(OpenReverseAuthTests)
-    add_test(NAME OpenReverse.Auth COMMAND OpenReverseAuthTests)
+
 
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
     openreverse_enable_first_party_warnings(OpenReverseTestFixture)
