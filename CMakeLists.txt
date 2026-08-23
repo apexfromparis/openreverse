@@ -357,6 +357,10 @@ if(BUILD_TESTING)
 
 
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
+    set_property(TARGET OpenReverseTestFixture PROPERTY
+        MSVC_RUNTIME_LIBRARY
+        "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    )
     openreverse_enable_first_party_warnings(OpenReverseTestFixture)
     target_compile_options(OpenReverseTestFixture PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/Zi>)
     target_link_options(OpenReverseTestFixture PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/DEBUG:FULL>)
