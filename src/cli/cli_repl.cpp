@@ -111,7 +111,7 @@ void CLIRepl::PrintCLIHelp()
     std::cout << "    --base <va> --size <bytes> --arch <x86|x64>  required for raw snapshots\n";
     std::cout << "    --module <va>                 select a module from a multi-module minidump\n";
     std::cout << "  openreverse run [message..]     run openreverse with a message / prompt\n";
-    std::cout << "  openreverse providers           manage AI providers and credentials [aliases: auth]\n";
+    std::cout << "  openreverse providers           manage optional AI providers and credentials\n";
     std::cout << "  openreverse models              show the currently configured model\n";
     std::cout << "  openreverse stats               show local session configuration\n";
     std::cout << "  openreverse session             manage sessions\n\n";
@@ -1235,7 +1235,8 @@ bool CLIRepl::Run(Application& app)
         {
             HandleReport(app, args);
         }
-        else if (cmd == "ai" || cmd == "ai-connect" || cmd == "ai-setup" || cmd == "connect-ai" || cmd == "ai-login" || cmd == "connect" || cmd == "login")
+        else if (cmd == "ai" || cmd == "ai-connect" || cmd == "ai-setup" ||
+                 cmd == "connect-ai" || cmd == "connect")
         {
             HandleAIConnect(app, args);
         }

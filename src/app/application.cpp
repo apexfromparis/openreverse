@@ -799,10 +799,6 @@ void Application::Render()
     }
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S) && !ImGui::GetIO().WantTextInput)
         SaveProjectFile(ImGui::GetIO().KeyShift);
-    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_1))
-        SwitchToDevMode(false);
-    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_2))
-        SwitchToDevMode(true);
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_G) && ImGui::GetIO().KeyCtrl)
         showGotoModal_ = true;
     if (isAttached && ImGui::IsKeyPressed(ImGuiKey_I) && ImGui::GetIO().KeyCtrl)
@@ -1278,15 +1274,8 @@ void Application::RenderToolbar()
     if (toolButton("##bookmarks", "Bookmarks", 15, isAttached)) showBookmarks_ = true;
     if (toolButton("##assistant", "AI assistant", 16)) ImGui::SetWindowFocus("AI ASSISTANT");
 
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 192.0f, 4.0f));
-    ImGui::SetNextItemWidth(145.0f);
-    const char* workspace = isDevMode ? "Editor workspace" : "Workspace";
-    if (ImGui::BeginCombo("##Workspace", workspace))
-    {
-        if (ImGui::Selectable("Reverse workspace", !isDevMode)) SwitchToDevMode(false);
-        if (ImGui::Selectable("Editor workspace", isDevMode)) SwitchToDevMode(true);
-        ImGui::EndCombo();
-    }
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 143.0f, 9.0f));
+    ImGui::TextDisabled("Workspace");
     ImGui::SameLine();
     if (toolButton("##settings", "AI settings", 6))
         aiCopilotPanel.OpenSettings();
@@ -1339,9 +1328,6 @@ void Application::RenderMenuBar()
 
     if (ImGui::BeginMenu("View"))
     {
-        if (ImGui::MenuItem("Reverse workspace", "Ctrl+1", !isDevMode)) SwitchToDevMode(false);
-        if (ImGui::MenuItem("Editor workspace", "Ctrl+2", isDevMode)) SwitchToDevMode(true);
-        ImGui::Separator();
         ImGui::MenuItem("Functions and CFG", nullptr, &showAnalysisPanel_);
         ImGui::MenuItem("Memory Map", nullptr, &showMemoryMap_);
         ImGui::MenuItem("PE Header", nullptr, &showPEViewer_);
@@ -1418,6 +1404,7 @@ void Application::RenderMenuBar()
 
     if (ImGui::BeginMenu("Settings"))
     {
+        if (ImGui::MenuItem("AI...")) aiCopilotPanel.OpenSettings();
         ImGui::EndMenu();
     }
 
@@ -1492,7 +1479,7 @@ void Application::RestoreProjectUiAfterAnalysis()
 {
     if (!analysisSession.HasProject() || !analysisSession.RestoresTargetBoundState()) return;
     const ProjectUiState& ui = analysisSession.Project().ui;
-    SwitchToDevMode(ui.workspace == "editor");
+    SwitchToDevMode(false);
     const auto isOpen = [&](const char* panel) {
         return std::find(ui.openPanels.begin(), ui.openPanels.end(), panel) != ui.openPanels.end();
     };

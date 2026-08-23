@@ -99,7 +99,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         const std::string& firstArg = cmdArgs[1];
         cliRequested = cliRequested || firstArg == "--cli" || firstArg == "-h" || firstArg == "--help" ||
             firstArg == "help" || firstArg == "-v" || firstArg == "--version" || firstArg == "version" ||
-            firstArg == "models" || firstArg == "model" || firstArg == "providers" || firstArg == "auth" ||
+            firstArg == "models" || firstArg == "model" || firstArg == "providers" ||
             firstArg == "setup" || firstArg == "init" || firstArg == "install-ai" || firstArg == "session" ||
             firstArg == "sessions" || firstArg == "stats" || firstArg == "run" || firstArg == "open" ||
             firstArg == "attach" || firstArg == "dump" || firstArg == "--decompile-exe" ||
@@ -151,7 +151,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                           << "Dynamic provider model discovery is not implemented yet.\n";
                 return 0;
             }
-            else if (arg == "providers" || arg == "auth" || arg == "setup" || arg == "init" || arg == "install-ai")
+            else if (arg == "providers" || arg == "setup" || arg == "init" || arg == "install-ai")
             {
                 openreverse::CLIRepl repl;
                 repl.HandleAIConnect(app, {});

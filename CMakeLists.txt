@@ -229,7 +229,6 @@ target_link_libraries(OpenReverse PRIVATE
     winhttp
     advapi32
     bcrypt
-    ws2_32
 )
 
 target_compile_definitions(OpenReverse PRIVATE

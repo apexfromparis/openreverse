@@ -15,7 +15,6 @@
 #include "analysis/module_analysis.h"
 #include "extensions/extension_manager.h"
 
-
 #include "ui/panels/process_list.h"
 #include "ui/panels/hex_editor.h"
 #include "ui/panels/disasm_view.h"
@@ -130,7 +129,6 @@ private:
     panels::OffsetsPanel        offsetsPanel;
     panels::AICopilotPanel      aiCopilotPanel;
     panels::VersionIntelligencePanel versionIntelligencePanel;
-
 
     bool             showGotoModal_ = false;
     char             gotoAddressBuf_[32] = "0";

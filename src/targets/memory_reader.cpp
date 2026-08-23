@@ -205,13 +205,6 @@ MemoryReadReport MemoryReader::ReadReadableBlocks(HANDLE processHandle, uint64_t
     return report;
 }
 
-bool MemoryReader::WriteMemory(HANDLE processHandle, uint64_t address, const void* buffer, size_t size)
-{
-    SIZE_T bytesWritten = 0;
-    BOOL ok = WriteProcessMemory(processHandle, (LPVOID)address, buffer, size, &bytesWritten);
-    return ok && bytesWritten == size;
-}
-
 size_t MemoryReader::DumpToFile(HANDLE processHandle, uint64_t address, size_t size,
                                 const std::string& filePath)
 {

@@ -43,8 +43,6 @@ public:
     MemoryReadReport ReadReadableBlocks(HANDLE processHandle, uint64_t startAddress,
                                         uint64_t size, size_t maxBytes);
 
-    bool WriteMemory(HANDLE processHandle, uint64_t address, const void* buffer, size_t size);
-
     size_t DumpToFile(HANDLE processHandle, uint64_t address, size_t size,
                       const std::string& filePath);
 
