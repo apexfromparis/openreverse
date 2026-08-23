@@ -2,7 +2,7 @@
 
 Notable user-visible changes are documented here.
 
-## 2.0.0-beta.1 - Unreleased
+## 2.0.0-beta.1 - 2026-08-24
 
 Planned first public beta release of OpenReverse Community.
 
