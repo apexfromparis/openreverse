@@ -379,7 +379,7 @@ if(BUILD_TESTING)
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus_validation_test.ps1
             -Validator $<TARGET_FILE:OpenReverseValidation>
-            -Fixture $<TARGET_FILE:OpenReverseMissingEntrypointExtension>
+            -Fixture $<TARGET_FILE:OpenReverseTestFixture>
     )
 
     add_library(OpenReverseHelloExtension MODULE
