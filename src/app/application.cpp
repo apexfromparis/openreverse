@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
@@ -790,6 +791,7 @@ void Application::NavigateToAddress(uint64_t address)
 void Application::Render()
 {
     analysisScheduler.DrainCompletions();
+
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O) && !ImGui::GetIO().WantTextInput)
     {
         if (ImGui::GetIO().KeyShift) ShowOpenProjectDialog();
@@ -839,7 +841,6 @@ void Application::Render()
     if (showVersionIntelligence_) versionIntelligencePanel.Render(*this, &showVersionIntelligence_);
     RenderExtensionPanels();
     if (showExtensions_) RenderExtensionsWindow();
-
     RenderStatusBar();
 }
 
@@ -1392,7 +1393,6 @@ void Application::RenderMenuBar()
         if (ImGui::MenuItem("Strings")) showStrings_ = true;
         if (ImGui::MenuItem("AI Assistant")) ImGui::SetWindowFocus("AI ASSISTANT");
         ImGui::Separator();
-        if (ImGui::MenuItem("AI Settings...")) aiCopilotPanel.OpenSettings();
         if (ImGui::MenuItem("Extensions...")) showExtensions_ = true;
         const auto extensionCommands = extensionManager.Commands();
         if (!extensionCommands.empty() && ImGui::BeginMenu("Extension commands"))
@@ -1413,6 +1413,11 @@ void Application::RenderMenuBar()
             }
             ImGui::EndMenu();
         }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Settings"))
+    {
         ImGui::EndMenu();
     }
 

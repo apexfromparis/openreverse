@@ -1,7 +1,7 @@
-[CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [string]$OutputDirectory = 'dist'
+    [string]$OutputDirectory = 'dist',
+    [string]$BinaryDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,9 +14,30 @@ if ($project -notmatch 'project\(OpenReverse VERSION ([0-9]+\.[0-9]+\.[0-9]+)') 
 }
 $version = $Matches[1]
 
-$binaryDirectory = Join-Path $repositoryRoot "build/windows-x64/bin/$Configuration"
-$application = Join-Path $binaryDirectory 'OpenReverse.exe'
-$installer = Join-Path $binaryDirectory "OpenReverse-$version-Setup.exe"
+if ([string]::IsNullOrWhiteSpace($BinaryDirectory)) {
+    $candidates = @(
+        (Join-Path $repositoryRoot "build/bin/$Configuration"),
+        (Join-Path $repositoryRoot "build/windows-x64/bin/$Configuration")
+    )
+    $newestTime = [DateTime]::MinValue
+    foreach ($c in $candidates) {
+        $exe = Join-Path $c 'OpenReverse.exe'
+        if (Test-Path -LiteralPath $exe -PathType Leaf) {
+            $item = Get-Item -LiteralPath $exe
+            if ($item.LastWriteTimeUtc -gt $newestTime) {
+                $newestTime = $item.LastWriteTimeUtc
+                $BinaryDirectory = $c
+            }
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($BinaryDirectory) -or !(Test-Path -LiteralPath $BinaryDirectory)) {
+    throw "Missing binary directory for configuration $Configuration"
+}
+
+$application = Join-Path $BinaryDirectory 'OpenReverse.exe'
+$installer = Join-Path $BinaryDirectory "OpenReverse-$version-Setup.exe"
 if (!(Test-Path -LiteralPath $application -PathType Leaf)) {
     throw "Missing application build: $application"
 }

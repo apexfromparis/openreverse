@@ -157,6 +157,8 @@ target_compile_definitions(OpenReverseCore PUBLIC
 openreverse_enable_dia(OpenReverseCore)
 openreverse_enable_first_party_warnings(OpenReverseCore)
 
+
+
 add_library(OpenReverseExtensions STATIC
     src/extensions/extension_manifest.cpp
     src/extensions/extension_manager.cpp
@@ -331,6 +333,8 @@ if(BUILD_TESTING)
     )
     openreverse_enable_first_party_warnings(OpenReverseCoreTests)
     add_test(NAME OpenReverse.Core COMMAND OpenReverseCoreTests)
+
+
 
     add_executable(OpenReverseTestFixture tests/fixtures/crackme/hwid_crackme.cpp)
     openreverse_enable_first_party_warnings(OpenReverseTestFixture)
