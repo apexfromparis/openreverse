@@ -87,9 +87,14 @@ build, installation, and compatibility contract.
 ## Installation
 
 OpenReverse does not currently publish a GitHub release. Build it from source
-using the commands below. The current prerelease build produces
-`OpenReverse-2.0.0-beta.1-Setup.exe`; release binaries belong in GitHub Releases,
-not in this repository.
+using the commands below. The current prerelease build produces these release
+assets:
+
+- `OpenReverse-2.0.0-beta.1-Setup.exe`
+- `OpenReverse-2.0.0-beta.1-Portable.zip`
+- `SHA256SUMS.txt`
+
+Release binaries belong in GitHub Releases, not in this repository.
 
 ## Build from source
 
