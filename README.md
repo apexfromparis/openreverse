@@ -86,9 +86,10 @@ build, installation, and compatibility contract.
 
 ## Installation
 
-OpenReverse does not currently publish a GitHub release. Build it from source
-using the commands below. The current prerelease build produces these release
-assets:
+OpenReverse Community 2.0.0 Beta 1 is available from
+[GitHub Releases](https://github.com/apexfromparis/openreverse/releases/tag/v2.0.0-beta.1).
+Setup is recommended for normal installation, with the Portable ZIP available
+as an alternative. The release provides these assets:
 
 - `OpenReverse-2.0.0-beta.1-Setup.exe`
 - `OpenReverse-2.0.0-beta.1-Portable.zip`
