@@ -21,12 +21,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "OpenReverse Community\0"
             VALUE "FileDescription", "OpenReverse\0"
-            VALUE "FileVersion", "@PROJECT_VERSION@\0"
+            VALUE "FileVersion", "@OPENREVERSE_VERSION@\0"
             VALUE "InternalName", "OpenReverse\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 OpenReverse contributors\0"
             VALUE "OriginalFilename", "OpenReverse.exe\0"
             VALUE "ProductName", "OpenReverse\0"
-            VALUE "ProductVersion", "@PROJECT_VERSION@\0"
+            VALUE "ProductVersion", "@OPENREVERSE_VERSION@\0"
         END
     END
     BLOCK "VarFileInfo"

@@ -43,7 +43,10 @@ jobs:
           $versionOutput = Join-Path $env:RUNNER_TEMP 'openreverse-version.txt'
           $version = Start-Process $app -ArgumentList '--version' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $versionOutput
           if ($version.ExitCode -ne 0) { throw "--version failed with exit code $($version.ExitCode)" }
-          if ((Get-Content $versionOutput -Raw) -notmatch '2\.0\.0') { throw '--version returned unexpected output' }
+          $expectedVersion = (Get-Content VERSION -Raw).Trim()
+          if ((Get-Content $versionOutput -Raw).Trim() -ne "$expectedVersion (openreverse)") {
+            throw '--version returned unexpected output'
+          }
 
           $open = Start-Process $app -ArgumentList @('open', $fixture) -NoNewWindow -Wait -PassThru
           if ($open.ExitCode -ne 0) { throw "static PE open failed with exit code $($open.ExitCode)" }
@@ -54,9 +57,6 @@ jobs:
       - name: Verify installer
         shell: pwsh
         run: |
-          $project = Get-Content CMakeLists.txt -Raw
-          if ($project -notmatch 'project\(OpenReverse VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
-            throw 'Could not read the project version'
-          }
-          $installer = "build/windows-x64/bin/Release/OpenReverse-$($Matches[1])-Setup.exe"
+          $version = (Get-Content VERSION -Raw).Trim()
+          $installer = "build/windows-x64/bin/Release/OpenReverse-$version-Setup.exe"
           if (!(Test-Path $installer)) { throw "Installer was not built: $installer" }

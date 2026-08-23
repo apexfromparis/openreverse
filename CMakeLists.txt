@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.23)
-project(OpenReverse VERSION 2.0.0 LANGUAGES C CXX)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" OPENREVERSE_VERSION LIMIT_COUNT 1)
+string(STRIP "${OPENREVERSE_VERSION}" OPENREVERSE_VERSION)
+if(NOT OPENREVERSE_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(-[0-9A-Za-z.-]+)?$")
+    message(FATAL_ERROR "VERSION must contain a semantic version such as 2.0.0-beta.1")
+endif()
+set(OPENREVERSE_BASE_VERSION
+    "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
+
+project(OpenReverse VERSION ${OPENREVERSE_BASE_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -318,7 +327,7 @@ target_compile_definitions(OpenReverse_Setup PRIVATE
 openreverse_enable_first_party_warnings(OpenReverse_Setup)
 
 set_target_properties(OpenReverse_Setup PROPERTIES
-    OUTPUT_NAME "OpenReverse-${PROJECT_VERSION}-Setup"
+    OUTPUT_NAME "OpenReverse-${OPENREVERSE_VERSION}-Setup"
 )
 
 include(CTest)

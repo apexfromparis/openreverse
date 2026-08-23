@@ -27,11 +27,10 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $project = Get-Content CMakeLists.txt -Raw
-          if ($project -notmatch 'project\(OpenReverse VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
-            throw 'Could not read the project version from CMakeLists.txt'
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+            throw 'VERSION does not contain a valid release version'
           }
-          $version = $Matches[1]
           $expectedTag = "v$version"
           if ($env:GITHUB_REF_NAME -ne $expectedTag) {
             throw "Release tag $env:GITHUB_REF_NAME does not match project version $expectedTag"
@@ -41,6 +40,7 @@ jobs:
             throw 'The release tag must point to a commit reachable from origin/main'
           }
           "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Configure
         run: cmake --preset windows-x64
@@ -85,7 +85,13 @@ jobs:
             "dist/OpenReverse-$version-Portable.zip",
             'dist/SHA256SUMS.txt'
           )
-          gh release create $env:GITHUB_REF_NAME $assets `
-            --verify-tag `
-            --title "OpenReverse $version" `
-            --generate-notes
+          $arguments = @(
+            'release', 'create', $env:GITHUB_REF_NAME
+          ) + $assets + @(
+            '--verify-tag', '--title', "OpenReverse $version", '--generate-notes'
+          )
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') {
+            $arguments += '--prerelease'
+          }
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub release creation failed' }

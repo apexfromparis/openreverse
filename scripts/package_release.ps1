@@ -7,12 +7,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$projectFile = Join-Path $repositoryRoot 'CMakeLists.txt'
-$project = Get-Content -LiteralPath $projectFile -Raw
-if ($project -notmatch 'project\(OpenReverse VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
-    throw 'Could not read the OpenReverse version from CMakeLists.txt'
+$versionFile = Join-Path $repositoryRoot 'VERSION'
+$version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+    throw 'VERSION does not contain a valid OpenReverse release version'
 }
-$version = $Matches[1]
 
 if ([string]::IsNullOrWhiteSpace($BinaryDirectory)) {
     $candidates = @(
