@@ -1,15 +1,27 @@
 # OpenReverse architecture
 
-Last updated: 2026-08-16
+Last updated: 2026-08-18
 
 ## Composition
 
 OpenReverse is a Windows C++17 application using Win32, DirectX 11, Dear ImGui,
-Capstone, WinHTTP, DbgHelp, BCrypt, and nlohmann/json. `Application` remains the
-composition root for target lifecycle, analysis services, the scheduler,
-navigation, and panels. `AnalysisSession` now owns the canonical
-`AnalysisDatabase` plus persistent project/user state; `Application` keeps a
-compatibility reference while orchestration moves incrementally to the session.
+Capstone, WinHTTP, DbgHelp, BCrypt, and nlohmann/json. The first-party source
+tree follows the product's ownership boundaries:
+
+- `src/analysis` contains PE parsing, disassembly, function and data evidence,
+  signatures, diffs, and the bounded module-analysis pipeline.
+- `src/targets` contains address spaces, dump loading, memory reads, process
+  access, and the current module catalog.
+- `src/workspace` owns canonical analysis state, scheduling, session state, and
+  `.orev` persistence.
+- `src/app` composes those domains and coordinates desktop/CLI lifecycles.
+- `src/auth`, `src/extensions`, and `src/ai` are controlled subsystem
+  boundaries; `src/ui` and `src/cli` are presentation and interaction layers.
+
+`Application` remains the composition root for target lifecycle, analysis,
+navigation, and panels. `AnalysisSession` owns the canonical `AnalysisDatabase`
+plus persistent project/user state; `Application` keeps a compatibility
+reference while orchestration moves incrementally to the session.
 
 ## Persistent projects
 
@@ -47,7 +59,7 @@ require an explicit module selection.
 
 ## Shared analysis pipeline
 
-`ModuleAnalyzer` owns the common live and mapped-image pipelines. The pipeline
+`ModuleAnalysisPipeline` owns the common live and mapped-image pipeline. It
 validates PE metadata, decodes bounded executable ranges, discovers functions,
 builds CFGs and operand-level Xrefs, scans strings, derives globals and field
 evidence, builds typed offsets, and generates bounded candidate signatures.
@@ -74,9 +86,11 @@ source function, and typed access.
 Global candidates retain VA, RVA, section, access counts, source instructions,
 source functions, operand widths, and all contributing Xrefs. Field evidence
 retains base/index/scale/displacement/width/access and basic register origin.
-Block-local propagation follows straightforward `MOV` and `LEA` relationships,
-seeds RCX/RDX/R8/R9 as Windows x64 arguments 1–4, rejects stack locals, and stops
-when a transform is ambiguous.
+Propagation follows straightforward `MOV`, `LEA`, copies, and deterministic
+spill/reload relationships, seeds RCX/RDX/R8/R9 as Windows x64 arguments 1–4,
+and merges predecessor states across the CFG. Conflicting incoming origins are
+marked ambiguous instead of choosing one. Bounded direct-call return evidence
+is retained without claiming general interprocedural or alias analysis.
 
 Structure candidates group compatible fields by containing function and root
 argument/register evidence. They are explicitly inferred candidates, not
@@ -119,8 +133,11 @@ cancellation, and publishes only when the current target generation still
 matches. User decisions live in `AnalysisSession` and the additive version-1
 project section.
 
-`ISymbolProvider` defines optional symbol/type ingestion. No concrete DIA/PDB
-provider is shipped yet, so symbols are not required for analysis.
+`ISymbolProvider` defines optional symbol/type ingestion. The Windows DIA
+provider validates PE CodeView GUID/age association and imports public/function
+symbols, boundaries, structure fields, and enums when a compatible DIA runtime
+and PDB are available. Symbol provenance remains distinct from heuristic facts;
+analysis works normally without DIA or PDB files.
 
 ## Canonical state and indexes
 
@@ -128,8 +145,18 @@ provider is shipped yet, so symbols are not required for analysis.
 CFGs, Xrefs, strings, globals, fields, structures, offsets, signatures, and
 module identity. It rebuilds deterministic indexes for function addresses,
 source/target Xrefs, strings, and globals whenever a module snapshot changes.
-User-defined offsets survive automatic replacement. Some panels retain display
-snapshots, but they do not run separate analysis pipelines.
+User-defined offsets survive automatic replacement. `AnalysisPanel` and CLI
+query this database rather than owning alternate function collections. A small
+number of panels still consume compatibility Xref/string mirrors populated only
+from the canonical published result; they do not run separate pipelines.
+
+The build reflects these dependency boundaries with explicit reusable
+`OpenReverseCore`, `OpenReverseAuth`, `OpenReverseExtensions`, and
+`OpenReverseUI` libraries. Analysis and target code do not depend on Dear ImGui.
+The CLI command implementation uses `Application` orchestration and canonical
+session/database queries, never panel state. Extension hosting depends on the
+versioned C ABI rather than UI internals; auth does not depend on the AI or UI
+layers.
 
 ## Native extension boundary
 
@@ -150,6 +177,24 @@ The application owns callback ordering and unloads extensions in reverse order
 after shutdown callbacks. Native in-process extensions are trusted code, not a
 sandbox boundary. Out-of-process isolation remains research.
 
+## Optional account authentication
+
+`src/auth` implements a separate native public-client account boundary. Supabase
+Auth Email/Password authentication and session refresh communicate over HTTPS with
+the central account service and sync profile state via `GET /api/me`.
+
+`AuthSession` owns the account state machine, `IAccountApi` isolates provider
+sign-in/refresh/logout/profile behavior, and `DesktopAuthClient` owns asynchronous
+network worker threads. A short-lived access token stays in memory. A refresh
+credential and bounded account metadata use Windows Credential Manager under an
+account-specific target (`OpenReverse.Account.Session`). AI BYOK storage remains a
+different namespace, and account logout does not mutate projects or AI keys. See
+[Desktop authentication](AUTHENTICATION.md).
+
+Authentication is not an entitlement boundary and does not gate Community
+features. Billing, licensing, subscriptions, hosted services, and authoritative
+entitlements remain outside this Community repository.
+
 ## Lifecycle and safety
 
 Detach and shutdown cancel jobs, wait for the worker, clear database and panel
@@ -159,18 +204,29 @@ saved-project alternatives; OpenReverse does not attempt protection bypasses.
 
 ## Verification
 
-The Release regression path is:
+The Release and Debug regression paths are:
 
 ```powershell
 cmake --build --preset windows-x64-release --parallel
-ctest --test-dir build/windows-x64 -C Release --output-on-failure
+ctest --preset windows-x64-release
+cmake --build --preset windows-x64-debug --parallel
+ctest --preset windows-x64-debug
 ```
 
 `OpenReverse.Core` covers raw/mapped addressing, `.pdata`, mapped dump loading,
 operand Xrefs, globals, field provenance, register propagation, signatures,
 function comparison, migration ambiguity, JSON, SHA-256 identity, database
 indexes, scheduler publication/cancellation, `.orev` round-trips, corruption,
-atomic replacement, target mismatch/missing handling, session rebasing, and
-denied-access messaging. Controlled Version Intelligence fixtures cover indexed
+atomic replacement, target mismatch/missing handling, session rebasing,
+deterministic malformed-input mutations, and denied-access messaging.
+Controlled Version Intelligence fixtures cover indexed
 matching, ambiguity, false positives, deterministic changes, relationship-aware
 migrations, cancellation, and persisted decisions.
+
+`OpenReverse.Auth` runs without provider network access. It covers RFC 7636
+vectors, cryptographic verifier/state properties, strict callback parsing,
+credential-field injection, state mismatch, replay, timeout, cancellation,
+exchange and refresh failures, logout, loopback binding, and isolated Windows
+Credential Manager store/read/replace/delete behavior. `OpenReverse.StaticOpen`
+protects the no-execution invariant, and `OpenReverse.CorpusValidation` checks a
+valid Unicode-path PE and malformed candidate through the JSON corpus tool.

@@ -26,6 +26,8 @@ modules, and optional AI context visible together.
 - x86/x64 disassembly powered by Capstone
 - x64 runtime-function (`.pdata`) boundaries, PE seeds, decoded-call discovery,
   and bounded recursive control-flow graphs with provenance
+- Optional DIA-backed PDB identity validation, function boundaries, symbols,
+  structures, fields, and enums when a compatible DIA runtime is available
 - Operand-level call, branch, read, write, and address cross-references
 - ASCII and limited UTF-16 string scanning
 - RIP-relative globals and conservative object-field evidence with simple
@@ -38,6 +40,7 @@ modules, and optional AI context visible together.
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
+
 - Versioned Windows x64 native extension API with bounded manifests, read-only
   analysis queries, controlled commands/navigation/panels, and extension-owned
   `.orev` state
@@ -45,12 +48,13 @@ modules, and optional AI context visible together.
 ### Experimental
 
 - Review-first Version Intelligence workspace for old/new PE builds, with
-  indexed multi-signal function matching, explicit ambiguity, deterministic
+  indexed sequence/CFG/symbol-aware function matching, explicit ambiguity, deterministic
   change summaries, relationship-aware signature/global/offset/field migration,
   and persisted accept/reject decisions
 - Heuristic function discovery fallbacks and inferred globals, fields, and
   structure candidates
-- CFG block/edge presentation without a spatial graph layout
+- Layered graphical CFG with typed edges, zoom, pan, fit, bounded rendering, and
+  address navigation
 - AI explanations assembled from the current analysis selection
 - Integrated script editor; script execution is not available
 
@@ -60,8 +64,8 @@ results are not authoritative and require review against the disassembly.
 
 ### Planned
 
-Migration support for future project schema versions, a concrete symbol/PDB
-provider, deeper interprocedural data-flow analysis, and broader old-target formats
+Migration support for future project schema versions, symbol-server policy,
+deeper interprocedural data-flow analysis, and broader old-target formats
 are tracked in the
 [roadmap](ROADMAP.md). Planned work is not included in the current build.
 
@@ -97,7 +101,7 @@ Requirements:
 ```powershell
 cmake --preset windows-x64
 cmake --build --preset windows-x64-release --parallel
-ctest --test-dir build/windows-x64 -C Release --output-on-failure
+ctest --preset windows-x64-release
 ```
 
 Outputs are written to `build/windows-x64/bin/Release/`:
@@ -105,7 +109,9 @@ Outputs are written to `build/windows-x64/bin/Release/`:
 - `OpenReverse.exe`
 - `OpenReverse-2.0.0-Setup.exe`
 - `OpenReverseCoreTests.exe`
+-
 - `OpenReverseTestFixture.exe`
+- `OpenReverseValidation.exe`
 
 See [Building](docs/BUILDING.md) for details.
 
@@ -130,10 +136,24 @@ image base, and module size instead of guessing. Dump files are never executed.
 Because this is a Windows GUI-subsystem executable, automation should use
 `Start-Process -Wait -PassThru` when it needs a reliable exit code.
 
+## Local corpus validation
+
+Developers can safely run the bounded offline pipeline across a local directory
+of PE files. Candidates are parsed and mapped; they are never executed:
+
+```powershell
+build\windows-x64\bin\Release\OpenReverseValidation.exe C:\path\to\corpus `
+  --output openreverse-validation.json
+```
+
+The ignored JSON report records relative paths, SHA-256, architecture, status,
+analysis counts, budget flags, errors, and stage timings. Do not commit local
+corpus binaries or reports.
+
 ## Architecture and AI privacy
 
 The [architecture](docs/ARCHITECTURE.md) and
-[analysis pipeline](docs/ANALYSIS_PIPELINE.md) documents describe target
+[analysis pipeline](docs/ANALYSIS.md) documents describe target
 ownership, scheduling, and analysis boundaries.
 
 AI is optional. Selected context may include target names, disassembly,

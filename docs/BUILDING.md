@@ -29,15 +29,23 @@ The preset uses Visual Studio 2022 and writes its build tree to
 ## Test
 
 ```powershell
-ctest --test-dir build/windows-x64 -C Release --output-on-failure
+ctest --preset windows-x64-release
+cmake --build --preset windows-x64-debug --parallel
+ctest --preset windows-x64-debug
 ```
 
 `OpenReverse.Core` exercises PE mapping, bounded memory reads, disassembly,
 function and CFG discovery, typed cross-references, patterns, scheduling,
-database publication, inferred data candidates, extension manifests, ABI
-compatibility, loader failures, callbacks, and extension project state. CMake also builds
-`OpenReverseTestFixture.exe`, a small purpose-written PE used by CLI smoke
-checks.
+database publication, inferred data candidates, optional DIA symbols/types,
+parser mutations, Version Intelligence scaling, extension manifests, ABI
+compatibility, loader failures, callbacks, and extension project state.
+`OpenReverse.StaticOpen` and `OpenReverse.CorpusValidation` protect the static
+analysis invariant. CMake also builds `OpenReverseTestFixture.exe`, a small
+purpose-written PE used by CLI and corpus checks.
+
+First-party targets compile with `/W4`; vendored dependencies do not inherit
+that policy. Targeted MSVC code analysis can be enabled in a separate build with
+`-DOPENREVERSE_ENABLE_MSVC_ANALYZE=ON`.
 
 ## Extension SDK example
 
@@ -65,6 +73,16 @@ if ($result.ExitCode -ne 0) { throw 'OpenReverse --help failed' }
 
 The installer is `OpenReverse-2.0.0-Setup.exe`. Built executables are ignored by
 Git and should be published as release assets rather than committed.
+
+The developer-only corpus executable is `OpenReverseValidation.exe`:
+
+```powershell
+build\windows-x64\bin\Release\OpenReverseValidation.exe C:\path\to\corpus `
+  --output openreverse-validation.json
+```
+
+It statically parses/maps common PE files with explicit budgets and writes an
+ignored JSON report. It never launches corpus candidates.
 
 ## Package and publish a Community release
 

@@ -1,4 +1,4 @@
-# Analysis pipeline
+# OpenReverse analysis
 
 OpenReverse publishes disk files, dumps, and authorized live modules into the
 same `ModuleAnalysisResult` and `AnalysisDatabase` models.
@@ -28,7 +28,8 @@ loaded as executable modules.
 6. Emit one typed Xref for each meaningful resolved operand and assign its
    containing function.
 7. Scan bounded readable ranges for strings.
-8. Derive RIP-relative globals and block-local object-field evidence.
+8. Derive RIP-relative globals and conservative inter-block object-field
+   evidence, preserving ambiguity at conflicting CFG merges.
 9. Group conservative structure candidates and build typed offsets.
 10. Generate and uniqueness-test a bounded set of function signatures for
     mapped static inputs.
@@ -36,13 +37,16 @@ loaded as executable modules.
 
 Each stage observes byte, instruction, function, string, result-count, time, and
 cancellation limits. Truncation and cancellation remain explicit in the result.
-Progress values advance from completed work; no timer-based progress is used.
+The result records disassembly/discovery, CFG, data/structure, string,
+signature, and total durations. Progress values advance from completed work;
+no timer-based progress is used.
 
 ## Evidence and uncertainty
 
 Runtime-function ranges and valid PE metadata are `Known`. Resolved operands,
-global locations, and simple register copies are deterministic observations used
-to form `Inferred`, `Heuristic`, or `Partial` candidates. `evidenceScore` is a raw
+global locations, agreed predecessor register origins, and simple copies are
+deterministic observations used to form `Inferred`, `Heuristic`, or `Partial`
+candidates. `evidenceScore` is a raw
 evidence count/weight, not a calibrated confidence percentage.
 
 The assembly summary reproduces decoded instructions grouped by basic block. It
@@ -61,15 +65,25 @@ signatures once per import/database revision and reports `Unique`, `Ambiguous`,
 `Not found`, or `Invalid`. Only unique valid results expose a candidate; no weak
 or ambiguous candidate is silently accepted.
 
-Function fingerprint comparison is a separate core foundation. It returns
+Function fingerprint comparison is a separate comparison foundation. It returns
 ranked candidates with explicit similarity scores and contributing evidence.
+
+## Local corpus validation
+
+`OpenReverseValidation <directory> [--output report.json] [--max-files N]`
+recursively processes common PE extensions through the same bounded mapped-image
+pipeline. It never executes or dynamically loads candidates. The JSON report
+uses paths relative to the supplied root and records raw-file SHA-256,
+architecture, success/partial/failure/exception status, analysis counts, budget
+flags, errors, and stage timings. Local reports are ignored by Git.
 
 ## Scheduling and publication
 
 Desktop PE/dump analysis runs through `AnalysisScheduler`. Workers receive a
 cooperative cancellation token and return a UI-thread completion callback.
 Callbacks whose target generation no longer matches are discarded. CLI mode may
-invoke the same module analyzer synchronously because it has no render loop.
+invoke the same `ModuleAnalysisPipeline` synchronously because it has no render
+loop.
 
 Detach and shutdown cancel and join active analysis before target memory and
 panel state are released.
