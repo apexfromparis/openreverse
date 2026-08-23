@@ -80,6 +80,21 @@ struct WizardContext
 static WizardContext g_ctx;
 static void UpdatePageVisibility();
 
+struct PackagedDocument
+{
+    WORD resourceId;
+    const wchar_t* relativePath;
+};
+
+constexpr PackagedDocument kPackagedDocuments[] = {
+    {103, L"LICENSE"},
+    {104, L"THIRD_PARTY_NOTICES.md"},
+    {105, L"licenses\\DearImGui.LICENSE.txt"},
+    {106, L"licenses\\Capstone.LICENSE.txt"},
+    {107, L"licenses\\nlohmann-json.LICENSE.txt"},
+    {108, L"licenses\\Roboto.LICENSE.txt"}
+};
+
 static bool CreateShortcut(const std::wstring& targetPath,
                            const std::wstring& workingDir,
                            const std::wstring& shortcutPath,
@@ -405,7 +420,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         extensionResult != ERROR_ALREADY_EXISTS)
                         FailOperation(hwnd, 1, L"The extensions directory could not be created.");
                     else
+                    {
                         AppendLog(L"Create folder: " + extensionDirectory);
+                        const std::wstring licensesDirectory = g_ctx.installDir + L"\\licenses";
+                        const int licensesResult = SHCreateDirectoryExW(nullptr,
+                            licensesDirectory.c_str(), nullptr);
+                        if (licensesResult != ERROR_SUCCESS && licensesResult != ERROR_FILE_EXISTS &&
+                            licensesResult != ERROR_ALREADY_EXISTS)
+                            FailOperation(hwnd, 1, L"The licenses directory could not be created.");
+                        else
+                            AppendLog(L"Create folder: " + licensesDirectory);
+                    }
                 }
             }
             else if (g_ctx.step == 2)
@@ -425,6 +450,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     break;
                 }
 #endif
+                for (const PackagedDocument& document : kPackagedDocuments)
+                {
+                    const std::wstring destination = g_ctx.installDir + L"\\" + document.relativePath;
+                    AppendLog(L"Extract: " + std::wstring(document.relativePath));
+                    if (!WriteEmbeddedResource(document.resourceId, destination))
+                    {
+                        FailOperation(hwnd, 1, L"A required license document could not be extracted.");
+                        break;
+                    }
+                }
+                if (g_ctx.page == SetupPage::Failed) break;
                 AppendLog(L"Install: Uninstall.exe");
                 if (!CopyUninstaller())
                     FailOperation(hwnd, 1, L"The uninstaller could not be installed.");
@@ -545,6 +581,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     break;
                 }
 #endif
+
+                for (const PackagedDocument& document : kPackagedDocuments)
+                {
+                    const std::wstring path = g_ctx.installDir + L"\\" + document.relativePath;
+                    AppendLog(L"Delete: " + std::wstring(document.relativePath));
+                    DeleteFileW(path.c_str());
+                }
+                RemoveDirectoryW((g_ctx.installDir + L"\\licenses").c_str());
+                RemoveDirectoryW((g_ctx.installDir + L"\\extensions").c_str());
 
                 const std::wstring self = ModulePath();
                 if (_wcsicmp(self.c_str(), g_ctx.uninstallerExe.c_str()) != 0)

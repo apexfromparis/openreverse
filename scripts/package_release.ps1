@@ -59,6 +59,13 @@ try {
     $distributionDocuments = @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md') |
         ForEach-Object { Join-Path $repositoryRoot $_ }
     Copy-Item -LiteralPath $distributionDocuments -Destination $stagingDirectory
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'third_party/licenses') `
+        -Destination (Join-Path $stagingDirectory 'licenses') -Recurse
+
+    $diaRuntime = Join-Path $BinaryDirectory 'msdia140.dll'
+    if (Test-Path -LiteralPath $diaRuntime -PathType Leaf) {
+        Copy-Item -LiteralPath $diaRuntime -Destination $stagingDirectory
+    }
 
     $installerOutput = Join-Path $outputPath "OpenReverse-$version-Setup.exe"
     $portableOutput = Join-Path $outputPath "OpenReverse-$version-Portable.zip"

@@ -3,16 +3,21 @@
 OpenReverse uses the following third-party components. Their licenses apply to
 those components independently of the OpenReverse MIT License.
 
-## Build dependencies
+## Pinned build dependencies
 
-- [Dear ImGui](https://github.com/ocornut/imgui), pinned by commit in
-  `CMakeLists.txt` — MIT License.
-- [Capstone](https://github.com/capstone-engine/capstone) 5.0.1 — BSD 3-Clause
-  License.
-- [nlohmann/json](https://github.com/nlohmann/json) 3.11.3 — MIT License.
+- [Dear ImGui](https://github.com/ocornut/imgui) commit
+  `83f668625ad45364de71d385aeb6a5dd04bee02e` (`1.93.0 WIP`) —
+  [MIT License](third_party/licenses/DearImGui.LICENSE.txt).
+- [Capstone](https://github.com/capstone-engine/capstone) tag `5.0.1`, commit
+  `097c04d9413c59a58b00d4d1c8d5dc0ac158ffaa` —
+  [BSD 3-Clause License](third_party/licenses/Capstone.LICENSE.txt).
+- [nlohmann/json](https://github.com/nlohmann/json) tag `v3.11.3`, commit
+  `9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03` —
+  [MIT License](third_party/licenses/nlohmann-json.LICENSE.txt).
 
 CMake downloads these sources into the local build tree; they are not vendored
-in this repository.
+in this repository. The linked license text is taken from those pinned
+revisions.
 
 ## Vendored source
 
