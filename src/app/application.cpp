@@ -590,6 +590,7 @@ bool Application::OpenBinaryFile(const std::string& filePath)
         disassembler.Init(is64Bit);
         moduleCatalog.Clear();
         moduleCatalog.AddModule(attachedProcessName, info.imageBase, info.sizeOfImage, loadedFilePath);
+        NavigateToAddress(currentAddress);
 
         if (ImGui::GetCurrentContext())
         {
@@ -724,6 +725,7 @@ bool Application::OpenDumpFile(const std::string& filePath, const DumpImportOpti
         moduleCatalog.Clear();
         moduleCatalog.AddModule(dump.module.name, dump.module.baseAddress,
                                 dump.module.size, filePath);
+        NavigateToAddress(currentAddress);
 
         if (ImGui::GetCurrentContext())
         {
