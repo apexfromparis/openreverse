@@ -8,6 +8,9 @@ endif()
 set(OPENREVERSE_BASE_VERSION
     "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
 
+set(CMAKE_MSVC_RUNTIME_LIBRARY
+    "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 project(OpenReverse VERSION ${OPENREVERSE_BASE_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -376,7 +379,7 @@ if(BUILD_TESTING)
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus_validation_test.ps1
             -Validator $<TARGET_FILE:OpenReverseValidation>
-            -Fixture $<TARGET_FILE:OpenReverseTestFixture>
+            -Fixture $<TARGET_FILE:OpenReverseMissingEntrypointExtension>
     )
 
     add_library(OpenReverseHelloExtension MODULE
