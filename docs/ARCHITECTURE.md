@@ -1,6 +1,6 @@
 # OpenReverse architecture
 
-Last updated: 2026-08-18
+Last updated: 2026-08-23
 
 ## Composition
 
@@ -15,8 +15,8 @@ tree follows the product's ownership boundaries:
 - `src/workspace` owns canonical analysis state, scheduling, session state, and
   `.orev` persistence.
 - `src/app` composes those domains and coordinates desktop/CLI lifecycles.
-- `src/auth`, `src/extensions`, and `src/ai` are controlled subsystem
-  boundaries; `src/ui` and `src/cli` are presentation and interaction layers.
+- `src/extensions` and `src/ai` are controlled subsystem boundaries; `src/ui`
+  and `src/cli` are presentation and interaction layers.
 
 `Application` remains the composition root for target lifecycle, analysis,
 navigation, and panels. `AnalysisSession` owns the canonical `AnalysisDatabase`
@@ -151,12 +151,11 @@ number of panels still consume compatibility Xref/string mirrors populated only
 from the canonical published result; they do not run separate pipelines.
 
 The build reflects these dependency boundaries with explicit reusable
-`OpenReverseCore`, `OpenReverseAuth`, `OpenReverseExtensions`, and
-`OpenReverseUI` libraries. Analysis and target code do not depend on Dear ImGui.
+`OpenReverseCore`, `OpenReverseExtensions`, and `OpenReverseUI` libraries.
+Analysis and target code do not depend on Dear ImGui.
 The CLI command implementation uses `Application` orchestration and canonical
 session/database queries, never panel state. Extension hosting depends on the
-versioned C ABI rather than UI internals; auth does not depend on the AI or UI
-layers.
+versioned C ABI rather than UI internals.
 
 ## Native extension boundary
 
@@ -176,24 +175,6 @@ commands, and host-rendered text panels. See [Extensions](EXTENSIONS.md).
 The application owns callback ordering and unloads extensions in reverse order
 after shutdown callbacks. Native in-process extensions are trusted code, not a
 sandbox boundary. Out-of-process isolation remains research.
-
-## Optional account authentication
-
-`src/auth` implements a separate native public-client account boundary. Supabase
-Auth Email/Password authentication and session refresh communicate over HTTPS with
-the central account service and sync profile state via `GET /api/me`.
-
-`AuthSession` owns the account state machine, `IAccountApi` isolates provider
-sign-in/refresh/logout/profile behavior, and `DesktopAuthClient` owns asynchronous
-network worker threads. A short-lived access token stays in memory. A refresh
-credential and bounded account metadata use Windows Credential Manager under an
-account-specific target (`OpenReverse.Account.Session`). AI BYOK storage remains a
-different namespace, and account logout does not mutate projects or AI keys. See
-[Desktop authentication](AUTHENTICATION.md).
-
-Authentication is not an entitlement boundary and does not gate Community
-features. Billing, licensing, subscriptions, hosted services, and authoritative
-entitlements remain outside this Community repository.
 
 ## Lifecycle and safety
 
@@ -223,10 +204,6 @@ Controlled Version Intelligence fixtures cover indexed
 matching, ambiguity, false positives, deterministic changes, relationship-aware
 migrations, cancellation, and persisted decisions.
 
-`OpenReverse.Auth` runs without provider network access. It covers RFC 7636
-vectors, cryptographic verifier/state properties, strict callback parsing,
-credential-field injection, state mismatch, replay, timeout, cancellation,
-exchange and refresh failures, logout, loopback binding, and isolated Windows
-Credential Manager store/read/replace/delete behavior. `OpenReverse.StaticOpen`
-protects the no-execution invariant, and `OpenReverse.CorpusValidation` checks a
-valid Unicode-path PE and malformed candidate through the JSON corpus tool.
+`OpenReverse.StaticOpen` protects the no-execution invariant, and
+`OpenReverse.CorpusValidation` checks a valid Unicode-path PE and malformed
+candidate through the JSON corpus tool.

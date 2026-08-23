@@ -9,7 +9,7 @@ body:
     attributes:
       label: OpenReverse version
       description: Use Help > About, `OpenReverse.exe --version`, or a commit hash.
-      placeholder: 2.0.0 or commit SHA
+      placeholder: 2.0.0-beta.1 or commit SHA
     validations:
       required: true
   - type: input

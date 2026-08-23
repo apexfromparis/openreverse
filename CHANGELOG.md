@@ -2,16 +2,16 @@
 
 Notable user-visible changes are documented here.
 
-## 2.0.0-beta.1 - 2026-08-19
+## 2.0.0-beta.1 - Unreleased
 
-First public beta release of OpenReverse Community.
+Planned first public beta release of OpenReverse Community.
 
 ### Highlights
 
 - **Offline-First Windows PE & Dump Analysis**: Full static analysis for PE32 and PE32+ (x86/x64) executables, DLLs, system drivers, mapped memory dumps, and captured minidumps without target execution.
 - **Graphical Control-Flow Graphs (CFG)**: Layered graphical CFG with typed control flow edges (fallthrough, conditional true/false, unconditional jump, call, ret), interactive zoom, pan, fit, and synchronized address navigation.
 - **Version Intelligence Workspace**: Review-first binary comparison and function matching across builds with sequence/CFG/symbol indexes, structured similarity metrics, deterministic change summaries, and offset/field migrations.
-- **Projects & Extensions**: Unified `.orev` atomic project persistence and versioned C ABI native extension host with standalone Community SDK (`sdk/include/openreverse_extension.h`).
+- **Projects & Extensions**: Unified `.orev` atomic project persistence and versioned C ABI native extension host with standalone Community SDK (`sdk/include/openreverse/extension.h`).
 
 ### Analysis
 
@@ -35,12 +35,10 @@ First public beta release of OpenReverse Community.
 
 ### Extensions
 
-- In-process versioned C ABI extension API v1 (`sdk/include/openreverse_extension.h`).
+- In-process versioned C ABI extension API v1 (`sdk/include/openreverse/extension.h`).
 - Manifest validation with declared commands, panels, and custom `.orev` extension state namespaces.
 - Structured diagnostics for missing dependencies, invalid entry points, or runtime callback failures.
 - Example extension included in `examples/hello_extension`.
-
-
 
 ### Fixes & Hardening
 

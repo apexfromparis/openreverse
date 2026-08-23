@@ -13,6 +13,10 @@ The initial configure downloads the exact Dear ImGui, Capstone, and
 nlohmann/json revisions declared in `CMakeLists.txt`. Subsequent builds can use
 the local FetchContent trees without checking for updates.
 
+The simple root `VERSION` file is the public display and artifact version. Its
+numeric base is used for Windows numeric version fields and the CMake project
+version.
+
 ## Configure and build
 
 Run these commands from the repository root in PowerShell:
@@ -71,8 +75,9 @@ $result = Start-Process $app -ArgumentList '--help' -Wait -PassThru
 if ($result.ExitCode -ne 0) { throw 'OpenReverse --help failed' }
 ```
 
-The installer is `OpenReverse-2.0.0-Setup.exe`. Built executables are ignored by
-Git and should be published as release assets rather than committed.
+The current installer is `OpenReverse-2.0.0-beta.1-Setup.exe`. Built executables
+are ignored by Git and should be published as release assets rather than
+committed.
 
 The developer-only corpus executable is `OpenReverseValidation.exe`:
 
@@ -87,7 +92,8 @@ ignored JSON report. It never launches corpus candidates.
 ## Package and publish a Community release
 
 After the Release build and tests pass, the packaging script creates the three
-canonical release artifacts from the version declared in `CMakeLists.txt`:
+canonical release artifacts from the version declared in the root `VERSION`
+file:
 
 ```powershell
 .\scripts\package_release.ps1 -OutputDirectory dist
@@ -95,14 +101,15 @@ canonical release artifacts from the version declared in `CMakeLists.txt`:
 
 The output is:
 
-- `OpenReverse-x.y.z-Setup.exe`
-- `OpenReverse-x.y.z-Portable.zip`
+- `OpenReverse-<VERSION>-Setup.exe`
+- `OpenReverse-<VERSION>-Portable.zip`
 - `SHA256SUMS.txt`
 
-Pushing a protected tag named exactly `vx.y.z` runs the Windows Release workflow.
-The workflow rejects a tag that differs from the CMake project version, rebuilds
-and tests Community, packages the artifacts with the same script, and publishes
-them through GitHub Releases. Release executables and archives remain untracked.
+Pushing a protected tag named exactly `v<VERSION>` runs the Windows Release
+workflow. The workflow rejects a tag that differs from the root version,
+rebuilds and tests Community, packages the artifacts with the same script, and
+publishes prerelease versions through GitHub Releases with the prerelease flag.
+Release executables and archives remain untracked.
 
 The current pipeline provides reproducible checksums but does not yet provide
 Windows code signing or a signed update manifest. Automatic updating must remain

@@ -1,6 +1,6 @@
 # OpenReverse technical debt
 
-Last updated: 2026-08-18
+Last updated: 2026-08-23
 
 ## Analysis accuracy
 
@@ -69,7 +69,7 @@ Last updated: 2026-08-18
 
 ## Testing, packaging, and release
 
-- Release and Debug CTest cover core, auth, static-open, and corpus workflows.
+- Release and Debug CTest cover core, static-open, and corpus workflows.
   Target switching through the full desktop event loop and native dialogs is
   not automated.
 - The deterministic mutation corpus is not a coverage-guided long-running
@@ -79,7 +79,5 @@ Last updated: 2026-08-18
   redistributable corpus run is still required before public beta.
 - Installer compilation is automated; install/launch/uninstall behavior still
   requires a manual clean-VM pass.
-- The optional Supabase Auth flow uses client-safe public configuration and
-  verifies profile state via `GET /api/me`. Community analysis remains usable signed out.
 - Authenticode signing, signed update manifests, rollback, and WinGet metadata
   remain pending a legitimate release process. No signing is simulated.

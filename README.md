@@ -16,6 +16,10 @@ live-process inspection in a native C++17 desktop application. Its docked
 workspace keeps disassembly, hex data, cross-references, offsets, structures,
 modules, and optional AI context visible together.
 
+OpenReverse Community is local-first, account-free, and subscription-free. It
+contains no runtime Supabase integration. Optional AI requests use only the
+endpoint and API key configured by the user.
+
 ## Features
 
 ### Available
@@ -40,7 +44,6 @@ modules, and optional AI context visible together.
 - Hex view, data inspector, bookmarks, and indexed analysis navigation
 - Interactive command shell and optional OpenAI-compatible AI client
 - User API-key storage through Windows Credential Manager
-
 - Versioned Windows x64 native extension API with bounded manifests, read-only
   analysis queries, controlled commands/navigation/panels, and extension-owned
   `.orev` state
@@ -56,7 +59,6 @@ modules, and optional AI context visible together.
 - Layered graphical CFG with typed edges, zoom, pan, fit, bounded rendering, and
   address navigation
 - AI explanations assembled from the current analysis selection
-- Integrated script editor; script execution is not available
 
 The assembly summary contains decoded instructions and CFG facts only; it does
 not invent source variables or types. Experimental inference and migration
@@ -76,18 +78,18 @@ API. Extensions can read approved target/function snapshots, register controlled
 commands and text panels, request navigation, and persist bounded state under
 their own ID. They do not receive internal C++ or Dear ImGui objects.
 
-The minimal example in `examples/hello_extension` builds against only the
-header in `sdk/include`. Native extensions run in-process and must be trusted;
-OpenReverse does not claim that they are sandboxed. See the
+The minimal example in `examples/hello_extension` builds against only
+`sdk/include/openreverse/extension.h`. Native extensions run in-process and
+must be trusted; OpenReverse does not claim that they are sandboxed. See the
 [extension SDK documentation](docs/EXTENSIONS.md) for the manifest, lifecycle,
 build, installation, and compatibility contract.
 
 ## Installation
 
 OpenReverse does not currently publish a GitHub release. Build it from source
-using the commands below. Future installers will use the canonical name
-`OpenReverse-x.y.z-Setup.exe`; release binaries belong in GitHub Releases, not
-in this repository.
+using the commands below. The current prerelease build produces
+`OpenReverse-2.0.0-beta.1-Setup.exe`; release binaries belong in GitHub Releases,
+not in this repository.
 
 ## Build from source
 
@@ -107,9 +109,8 @@ ctest --preset windows-x64-release
 Outputs are written to `build/windows-x64/bin/Release/`:
 
 - `OpenReverse.exe`
-- `OpenReverse-2.0.0-Setup.exe`
+- `OpenReverse-2.0.0-beta.1-Setup.exe`
 - `OpenReverseCoreTests.exe`
--
 - `OpenReverseTestFixture.exe`
 - `OpenReverseValidation.exe`
 
